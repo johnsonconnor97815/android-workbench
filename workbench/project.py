@@ -112,6 +112,9 @@ def builtin_operations():
             compute=True,
             **({"uses_mcp": True} if name in ("mcp_smoke", "mcp_probe") else {}),
         )
+    operations["static.inspect_so"].update(
+        python=".android-static/venvs/native-python/bin/python", outputs=["--output"]
+    )
     return operations
 
 

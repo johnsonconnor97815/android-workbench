@@ -291,6 +291,20 @@ def normalize(request, config, directory):
         entry = project.get("operations", {}).get(operation)
         if entry is None:
             raise WorkbenchError(f"Unknown registered operation: {operation}")
+        if "python" in entry:
+            if not isinstance(entry["python"], str) or not entry["python"]:
+                raise WorkbenchError("Registered Python must be a nonempty path")
+            interpreter = (root / entry["python"]).expanduser().absolute()
+            if not interpreter.is_file():
+                raise WorkbenchError(
+                    "Registered Python is missing; prepare its tool environment: "
+                    + str(interpreter)
+                )
+            # Preserve the venv path: resolving its symlink would select the base interpreter.
+            spec["python"] = str(interpreter)
+            spec["resources"].append(
+                resource(path_resource(interpreter.parent.parent), "read")
+            )
         script = registered_path(root, project, entry["script"])
         args = spec.get("args", [])
         if (

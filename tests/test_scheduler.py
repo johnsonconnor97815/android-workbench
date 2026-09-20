@@ -238,6 +238,32 @@ class SchedulerTest(unittest.TestCase):
         path.write_text(json.dumps(manifest))
         return script
 
+    def test_registered_operation_preserves_private_python_environment(self):
+        private = self.project / "private-python"
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(private)], check=True
+        )
+        self.register_script(
+            "private",
+            "import sys; print(sys.prefix)\n",
+            readonly=True,
+            python="private-python/bin/python",
+        )
+        job = self.a.submit(operation="private", args=[])
+        result = self.a.wait(job["id"], 8)
+        self.assertEqual(result["state"], "succeeded", result)
+        self.assertEqual(
+            (Path(result["directory"]) / "stdout.log").read_text().strip(), str(private)
+        )
+        self.register_script(
+            "missing-python",
+            "raise AssertionError('must not run')\n",
+            readonly=True,
+            python="missing/bin/python",
+        )
+        with self.assertRaisesRegex(WorkbenchError, "Registered Python is missing"):
+            self.a.submit(operation="missing-python", args=[])
+
     def test_legacy_adapter_and_partial_result(self):
         self.register_script(
             "partial",
