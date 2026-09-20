@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "checked_on": "2026-09-16",
+  "artifacts": {
+    "mcp-jadx-plugin": {
+      "version": "V6.4.1",
+      "url": "https://github.com/zinja-coder/jadx-ai-mcp/releases/download/V6.4.1/jadx-ai-mcp-6.4.1.jar",
+      "checksum": "sha256:df7040ee4bc724c132635e8ad906b0961829db09a35da3365cbc46a761bed983",
+      "size": 9197269,
+      "source": "https://github.com/zinja-coder/jadx-ai-mcp/releases/tag/V6.4.1"
+    },
+    "mcp-jadx-server": {
+      "version": "V6.4.1",
+      "url": "https://github.com/zinja-coder/jadx-ai-mcp/releases/download/V6.4.1/jadx-mcp-server-6.4.1.zip",
+      "checksum": "sha256:e7cf0fa756b817cde3d3a2b6c04a6a6eb8546298eaff6a957e711fb68e53b532",
+      "size": 1762253,
+      "source": "https://github.com/zinja-coder/jadx-ai-mcp/releases/tag/V6.4.1"
+    },
+    "mcp-apktool-server": {
+      "version": "V3.0.2",
+      "url": "https://github.com/zinja-coder/apktool-mcp-server/releases/download/V3.0.2/apktool-mcp-server-v3.0.2.zip",
+      "checksum": "sha256:290f6d006290070ddf8ee427518905d7afabf1a86e96ba3bc7d780ae9a92dc7a",
+      "size": 19270,
+      "source": "https://github.com/zinja-coder/apktool-mcp-server/releases/tag/V3.0.2"
+    },
+    "mcp-jadx-plugin-source": {
+      "version": "d2dd72e6c0d84735b78773067075dac8cea651c1",
+      "url": "https://raw.githubusercontent.com/zinja-coder/jadx-ai-mcp/d2dd72e6c0d84735b78773067075dac8cea651c1/src/main/java/com/zin/jadxaimcp/server/PluginServer.java",
+      "git_blob_sha1": "6e3d5eafffb4ffe10107c1b32a7f02473328d987",
+      "source": "https://github.com/zinja-coder/jadx-ai-mcp/blob/V6.4.1/src/main/java/com/zin/jadxaimcp/server/PluginServer.java"
+    },
+    "mcp-ghidra-embedding-model": {
+      "version": "all-MiniLM-L6-v2-onnx",
+      "url": "https://chroma-onnx-models.s3.amazonaws.com/all-MiniLM-L6-v2/onnx.tar.gz",
+      "checksum": "sha256:913d7300ceae3b2dbc2c50d1de4baacab4be7b9380491c27fab7418616a16ec3",
+      "source": "https://github.com/chroma-core/chroma/blob/main/chromadb/utils/embedding_functions/onnx_mini_lm_l6_v2.py"
+    }
+  },
+  "python": {
+    "mcp-jadx": {
+      "package": "fastmcp",
+      "version": "3.0.2",
+      "extra_packages": {
+        "httpx": "0.28.1",
+        "requests": "2.34.2"
+      },
+      "source": "https://github.com/zinja-coder/jadx-ai-mcp/releases/tag/V6.4.1"
+    },
+    "mcp-apktool": {
+      "package": "fastmcp",
+      "version": "3.0.2",
+      "source": "https://github.com/zinja-coder/apktool-mcp-server/releases/tag/V3.0.2"
+    },
+    "mcp-ghidra": {
+      "package": "pyghidra-mcp",
+      "version": "0.2.5",
+      "source": "https://github.com/clearbluejar/pyghidra-mcp/releases/tag/v0.2.5"
+    }
+  },
+  "notes": [
+    "Semgrep uses the toolchain.lock.json version and its built-in mcp subcommand.",
+    "JADX is a GUI bridge: initialize/tools/list do not verify a loaded decompiler.",
+    "Python transitive dependencies are recorded with hashes on first installation.",
+    "JADX V6.4.1 plugin binds all interfaces upstream. Compile only PluginServer.java with a recorded loopback-only patch, preserving the original JAR.",
+    "The PyGhidra launcher redirects the Chroma ONNX model cache to the verified project-local artifact without changing HOME."
+  ]
+}

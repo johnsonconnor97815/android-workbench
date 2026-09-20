@@ -1,0 +1,3 @@
+# Patch context contains significant blank-line prefixes and indentation.
+# Preserve the bytes used by the recorded upstream patch hashes.
+*.patch -text -whitespace

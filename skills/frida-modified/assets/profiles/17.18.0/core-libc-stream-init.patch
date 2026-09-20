@@ -1,0 +1,40 @@
+diff --git a/lib/payload/libc-shim.c b/lib/payload/libc-shim.c
+index 862737f6..8fd2ea1e 100644
+--- a/lib/payload/libc-shim.c
++++ b/lib/payload/libc-shim.c
+@@ -301,9 +301,12 @@ frida_libc_shim_init (void)
+ 
+   G_LOCK (frida_stdio);
+ 
+-  frida_streams = g_hash_table_new (g_direct_hash, g_direct_equal);
++  /* Gum may have opened streams or directories while initializing. */
++  if (frida_streams == NULL)
++    frida_streams = g_hash_table_new (g_direct_hash, g_direct_equal);
+ #ifdef HAVE_FRIDA_DIR
+-  frida_dirs = g_hash_table_new (g_direct_hash, g_direct_equal);
++  if (frida_dirs == NULL)
++    frida_dirs = g_hash_table_new (g_direct_hash, g_direct_equal);
+ #endif
+ 
+   G_UNLOCK (frida_stdio);
+@@ -1904,6 +1907,10 @@ frida_stdio_register_stream (FILE * stream)
+ {
+   G_LOCK (frida_stdio);
+ 
++  /* ARM CPU feature detection can use stdio during gum_init_embedded(). */
++  if (frida_streams == NULL)
++    frida_streams = g_hash_table_new (g_direct_hash, g_direct_equal);
++
+   g_hash_table_add (frida_streams, stream);
+ 
+   G_UNLOCK (frida_stdio);
+@@ -1926,6 +1933,9 @@ frida_stdio_register_dir (DIR * dirp)
+ {
+   G_LOCK (frida_stdio);
+ 
++  if (frida_dirs == NULL)
++    frida_dirs = g_hash_table_new (g_direct_hash, g_direct_equal);
++
+   g_hash_table_add (frida_dirs, dirp);
+ 
+   G_UNLOCK (frida_stdio);

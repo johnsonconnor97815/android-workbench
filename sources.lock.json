@@ -1,0 +1,327 @@
+{
+  "version": 1,
+  "components": {
+    "android-static-env": {
+      "source": "android-static-env/skills/android-static-env",
+      "commit": "b96836560c08430034567bb541bd17c73c44096d",
+      "local_changes": [
+        " M skills/android-static-env/SKILL.md",
+        " M skills/android-static-env/references/mcp.md",
+        " M skills/android-static-env/scripts/ghidra_mcp_entry.py",
+        " M skills/android-static-env/scripts/inspect_so.py",
+        " M skills/android-static-env/scripts/mcp_probe.py",
+        " M skills/android-static-env/scripts/mcp_setup.py",
+        " M skills/android-static-env/scripts/mcp_smoke.py",
+        " M skills/android-static-env/scripts/setup.py",
+        " M skills/android-static-env/scripts/smoke.py",
+        "?? skills/android-static-env/scripts/semgrep_mcp_entry.py"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "source_sha256": "4885addfda024447aaa903aeac8fde8514eb3b7a3b7f9a03f1d695ddbdfad6c7",
+          "bundled_sha256": "4885addfda024447aaa903aeac8fde8514eb3b7a3b7f9a03f1d695ddbdfad6c7"
+        },
+        {
+          "path": "LICENSE",
+          "source_sha256": "8e20853a1c7c341dbdf3205d2f51e23a33370b5b7242ab1b85ff0d40344e6caa",
+          "bundled_sha256": "8e20853a1c7c341dbdf3205d2f51e23a33370b5b7242ab1b85ff0d40344e6caa"
+        },
+        {
+          "path": "scripts/mcp_smoke.py",
+          "source_sha256": "c2de5e06bcb632dcffc7eb030bf330abc0b37d9f437541c6bde9ce4282661314",
+          "bundled_sha256": "c2de5e06bcb632dcffc7eb030bf330abc0b37d9f437541c6bde9ce4282661314"
+        },
+        {
+          "path": "scripts/test_mcp.py",
+          "source_sha256": "29ac079e43860d0a8d48acf648a5c3da2f4c467b48f3b6332bfa014672e6c320",
+          "bundled_sha256": "29ac079e43860d0a8d48acf648a5c3da2f4c467b48f3b6332bfa014672e6c320"
+        },
+        {
+          "path": "scripts/ghidra_mcp_entry.py",
+          "source_sha256": "bc2393090d1aa6855dee9b71080de74f08f316657fbec84a0f09d9356c312c8e",
+          "bundled_sha256": "bc2393090d1aa6855dee9b71080de74f08f316657fbec84a0f09d9356c312c8e"
+        },
+        {
+          "path": "scripts/mcp_probe.py",
+          "source_sha256": "0660c89dbfd4b99c15c523a2a12ba6398268c9aec477b464fe02c6741d37e691",
+          "bundled_sha256": "0660c89dbfd4b99c15c523a2a12ba6398268c9aec477b464fe02c6741d37e691"
+        },
+        {
+          "path": "scripts/semgrep_mcp_entry.py",
+          "source_sha256": "aad2384238e228aabbc7cdecb6364829200947e6d7ba86cdc250c0487e473fc5",
+          "bundled_sha256": "aad2384238e228aabbc7cdecb6364829200947e6d7ba86cdc250c0487e473fc5"
+        },
+        {
+          "path": "scripts/test_setup.py",
+          "source_sha256": "6e963477ec85a804de144aa1e20af1394b71ea57a30dd68356378222fb669a28",
+          "bundled_sha256": "6e963477ec85a804de144aa1e20af1394b71ea57a30dd68356378222fb669a28"
+        },
+        {
+          "path": "scripts/mcp_setup.py",
+          "source_sha256": "61c5b1d3a05435322f6ea15dc99ba4ae8c095bb41a8f22641414302e9153ce8f",
+          "bundled_sha256": "61c5b1d3a05435322f6ea15dc99ba4ae8c095bb41a8f22641414302e9153ce8f"
+        },
+        {
+          "path": "scripts/smoke.py",
+          "source_sha256": "d4cb2097b38c37fbd9da8e41620133f914fd0084b8a183b4c5064b80189bb8c0",
+          "bundled_sha256": "d4cb2097b38c37fbd9da8e41620133f914fd0084b8a183b4c5064b80189bb8c0"
+        },
+        {
+          "path": "scripts/inspect_so.py",
+          "source_sha256": "c5114cbd67365bfbc18049c99f5652c42848552407e3d70736c095cf933488de",
+          "bundled_sha256": "c5114cbd67365bfbc18049c99f5652c42848552407e3d70736c095cf933488de"
+        },
+        {
+          "path": "scripts/setup.py",
+          "source_sha256": "e19a2adb7cc3364cba9f9274ac0f131983dca7e852e4e77cb6f38d4720325771",
+          "bundled_sha256": "e19a2adb7cc3364cba9f9274ac0f131983dca7e852e4e77cb6f38d4720325771"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "source_sha256": "d3e699356145b2db4e76ce749f5128f84ac3bbfc0a28fd6bdf84ee8bb0dd03df",
+          "bundled_sha256": "d3e699356145b2db4e76ce749f5128f84ac3bbfc0a28fd6bdf84ee8bb0dd03df"
+        },
+        {
+          "path": "references/platforms.md",
+          "source_sha256": "474c1a5d08c0fa8bf7d302242d08f85b05dc134ca0702af204de382c127947b2",
+          "bundled_sha256": "474c1a5d08c0fa8bf7d302242d08f85b05dc134ca0702af204de382c127947b2"
+        },
+        {
+          "path": "references/validation.md",
+          "source_sha256": "5d7cee0c62e965e566264e05b43a02b0b1b6094995df5265124f922b4e080e3f",
+          "bundled_sha256": "5d7cee0c62e965e566264e05b43a02b0b1b6094995df5265124f922b4e080e3f"
+        },
+        {
+          "path": "references/sources.md",
+          "source_sha256": "8ec0a6bf5e72c5aeb7f23a6f0de531dba960727aa4eb82b593308a767ed373a7",
+          "bundled_sha256": "8ec0a6bf5e72c5aeb7f23a6f0de531dba960727aa4eb82b593308a767ed373a7"
+        },
+        {
+          "path": "references/mcp.md",
+          "source_sha256": "c93572d9664d2050ba50516054627967600d67b28ec17a4fb786040a4b2f469c",
+          "bundled_sha256": "c93572d9664d2050ba50516054627967600d67b28ec17a4fb786040a4b2f469c"
+        },
+        {
+          "path": "references/tool-matrix.md",
+          "source_sha256": "622603f1901ae2380c1691e88bf653caf5045a69384841a072802d14fd5f0a09",
+          "bundled_sha256": "622603f1901ae2380c1691e88bf653caf5045a69384841a072802d14fd5f0a09"
+        },
+        {
+          "path": "assets/toolchain.lock.json",
+          "source_sha256": "8089f0db5485d1be5ee7dfda29f7bc57b96b2fe96dbe4ed9732deea997a76cd9",
+          "bundled_sha256": "8089f0db5485d1be5ee7dfda29f7bc57b96b2fe96dbe4ed9732deea997a76cd9"
+        },
+        {
+          "path": "assets/mcp.lock.json",
+          "source_sha256": "485700100b672201dced03969f84e7a0edfdcac12d39d67d35bf698a32e991f2",
+          "bundled_sha256": "485700100b672201dced03969f84e7a0edfdcac12d39d67d35bf698a32e991f2"
+        }
+      ],
+      "repository": "https://github.com/johnsonconnor97815/android-static-env.git"
+    },
+    "frida-modified": {
+      "source": "frida-modified/skills/frida-modified",
+      "commit": "c7f9b911839928282780ef97edccda1053dcb973",
+      "local_changes": [
+        " M skills/frida-modified/SKILL.md",
+        " M skills/frida-modified/scripts/apply_profile.py",
+        " M skills/frida-modified/scripts/build.py",
+        " M skills/frida-modified/scripts/deploy_server.py",
+        " M skills/frida-modified/scripts/fetch.py",
+        " M skills/frida-modified/scripts/inspect_device.py",
+        " M skills/frida-modified/scripts/probe_native.py",
+        " M skills/frida-modified/scripts/probe_uncrackable.py",
+        " M skills/frida-modified/scripts/provenance.py",
+        " M skills/frida-modified/scripts/sync_resources.py"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "source_sha256": "76f1f380d9a22f887816b216be211f4e6696ffde7fd27f241d33da11630570f1",
+          "bundled_sha256": "76f1f380d9a22f887816b216be211f4e6696ffde7fd27f241d33da11630570f1"
+        },
+        {
+          "path": "scripts/probe_uncrackable.py",
+          "source_sha256": "71e9eb68cfdc767edf1e3bc31ad5c4f513373d9348b55d99cd2d0824cf8ab3a2",
+          "bundled_sha256": "71e9eb68cfdc767edf1e3bc31ad5c4f513373d9348b55d99cd2d0824cf8ab3a2"
+        },
+        {
+          "path": "scripts/probe_native.py",
+          "source_sha256": "f8a9ba0dc4ebcd1aa48521dad8b6914e79ceb807e13ed751bf05aaff3eb9cb73",
+          "bundled_sha256": "f8a9ba0dc4ebcd1aa48521dad8b6914e79ceb807e13ed751bf05aaff3eb9cb73"
+        },
+        {
+          "path": "scripts/inspect_device.py",
+          "source_sha256": "480371b312f4ccbf9bfae2a6b1ce293f248aad19b1bf845aa8c26915fb14520a",
+          "bundled_sha256": "480371b312f4ccbf9bfae2a6b1ce293f248aad19b1bf845aa8c26915fb14520a"
+        },
+        {
+          "path": "scripts/build.py",
+          "source_sha256": "91cff8501bd61f700f91bcb0ca2d44b0672857460f4312eb7c18967947946dea",
+          "bundled_sha256": "91cff8501bd61f700f91bcb0ca2d44b0672857460f4312eb7c18967947946dea"
+        },
+        {
+          "path": "scripts/deploy_server.py",
+          "source_sha256": "c79ebf840bb888919e16d92cf99b85ab8e35da3c384807dd6f1d10518b600dae",
+          "bundled_sha256": "c79ebf840bb888919e16d92cf99b85ab8e35da3c384807dd6f1d10518b600dae"
+        },
+        {
+          "path": "scripts/sync_resources.py",
+          "source_sha256": "03d1cf80fe0dfe621988b6a4c87669c6fe8894600fcb5aa12feecdd8bf252c2d",
+          "bundled_sha256": "03d1cf80fe0dfe621988b6a4c87669c6fe8894600fcb5aa12feecdd8bf252c2d"
+        },
+        {
+          "path": "scripts/apply_profile.py",
+          "source_sha256": "12bff9dab16e4432694ab779854dc55500287092970404f4c800c2f071fa67c7",
+          "bundled_sha256": "12bff9dab16e4432694ab779854dc55500287092970404f4c800c2f071fa67c7"
+        },
+        {
+          "path": "scripts/provenance.py",
+          "source_sha256": "97c38c79caf282813c70c00ebed62a75032ca2cf9422b104db14c4c482a45349",
+          "bundled_sha256": "97c38c79caf282813c70c00ebed62a75032ca2cf9422b104db14c4c482a45349"
+        },
+        {
+          "path": "scripts/common.py",
+          "source_sha256": "02340283a5f6d8dad0a8360dd5bca37a297520c7cd29178b331123b4719c53c8",
+          "bundled_sha256": "02340283a5f6d8dad0a8360dd5bca37a297520c7cd29178b331123b4719c53c8"
+        },
+        {
+          "path": "scripts/fetch.py",
+          "source_sha256": "0a9d3d515c01fa992fd60b59449c5abf99351904138704d6a576e730c43c600f",
+          "bundled_sha256": "0a9d3d515c01fa992fd60b59449c5abf99351904138704d6a576e730c43c600f"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "source_sha256": "717c380f0063d844bfb8b7a179967a6e0042b9daadeadafa415b7806a9300e3e",
+          "bundled_sha256": "717c380f0063d844bfb8b7a179967a6e0042b9daadeadafa415b7806a9300e3e"
+        },
+        {
+          "path": "references/case-17.18.0.md",
+          "source_sha256": "9b792f9a724b51a9f18763ea0c37eade5157f296e7ac88fbfb571cdd2bc152da",
+          "bundled_sha256": "9b792f9a724b51a9f18763ea0c37eade5157f296e7ac88fbfb571cdd2bc152da"
+        },
+        {
+          "path": "references/app-regression.md",
+          "source_sha256": "b86e0502697a7f2010ef35a88b3351a801529e1fa5dd1b9659c610e1f326b0c8",
+          "bundled_sha256": "b86e0502697a7f2010ef35a88b3351a801529e1fa5dd1b9659c610e1f326b0c8"
+        },
+        {
+          "path": "references/deployment.md",
+          "source_sha256": "f6b7b140c9928f2a14227309bad30543a95dd6118499528e958f9941866dc3c2",
+          "bundled_sha256": "f6b7b140c9928f2a14227309bad30543a95dd6118499528e958f9941866dc3c2"
+        },
+        {
+          "path": "references/workflow.md",
+          "source_sha256": "1f77f1a2180fe2220e7c11cf0791e8824d83ecb0767abd8c27c9f85766f75038",
+          "bundled_sha256": "1f77f1a2180fe2220e7c11cf0791e8824d83ecb0767abd8c27c9f85766f75038"
+        },
+        {
+          "path": "references/adapting-versions.md",
+          "source_sha256": "1d52e0f809b1cf8180abef14f3904c3b88155010a7c90ba2664e3809a8f7fa6a",
+          "bundled_sha256": "1d52e0f809b1cf8180abef14f3904c3b88155010a7c90ba2664e3809a8f7fa6a"
+        },
+        {
+          "path": "references/version-selection.md",
+          "source_sha256": "87adc7f32060372f5e19b761ff3f4987d357f3dfb14748a281fc2eaf0c8ecf2f",
+          "bundled_sha256": "87adc7f32060372f5e19b761ff3f4987d357f3dfb14748a281fc2eaf0c8ecf2f"
+        },
+        {
+          "path": "assets/native-probe.js",
+          "source_sha256": "f29387e8f70f182db9242a4d6da433342f7943835552f1fd6c3a2994024ac7a8",
+          "bundled_sha256": "f29387e8f70f182db9242a4d6da433342f7943835552f1fd6c3a2994024ac7a8"
+        },
+        {
+          "path": "assets/native-probe.c",
+          "source_sha256": "781fe190779cfe51eb004f95f6997172f0145bfcd1f46476aee48b14dc87f1b4",
+          "bundled_sha256": "781fe190779cfe51eb004f95f6997172f0145bfcd1f46476aee48b14dc87f1b4"
+        },
+        {
+          "path": "assets/uncrackable-probe.js",
+          "source_sha256": "0cda218c638074c2ec75b79874b1a15599fba180a05b6101f143f2cd1564da09",
+          "bundled_sha256": "0cda218c638074c2ec75b79874b1a15599fba180a05b6101f143f2cd1564da09"
+        },
+        {
+          "path": "assets/licenses/LICENSE-MIT",
+          "source_sha256": "4095f06f392e4a860a9b1b91e5bb6b894ea87d9f7617483bd524d8ac3670bed2",
+          "bundled_sha256": "4095f06f392e4a860a9b1b91e5bb6b894ea87d9f7617483bd524d8ac3670bed2"
+        },
+        {
+          "path": "assets/licenses/Frida-COPYING.LIB",
+          "source_sha256": "681e386e44a19d7d0674b4320272c90e66b6610b741e7e6305f8219c42e85366",
+          "bundled_sha256": "681e386e44a19d7d0674b4320272c90e66b6610b741e7e6305f8219c42e85366"
+        },
+        {
+          "path": "assets/licenses/Frida-COPYING",
+          "source_sha256": "5ea1544b51a28bc823b03159190d4108f9fb4f4ef912389f5137c6d295e175b2",
+          "bundled_sha256": "5ea1544b51a28bc823b03159190d4108f9fb4f4ef912389f5137c6d295e175b2"
+        },
+        {
+          "path": "assets/profiles/17.18.0/core-runtime-names.patch",
+          "source_sha256": "d27cbd382775e106e37d29d60223324361387c51c28e3f50082a73387e70289a",
+          "bundled_sha256": "d27cbd382775e106e37d29d60223324361387c51c28e3f50082a73387e70289a"
+        },
+        {
+          "path": "assets/profiles/17.18.0/core-libc-stream-init.patch",
+          "source_sha256": "cb39876c980a3ca64fc5071306cdb36c1ee58fce4c35d38a7eb18ba2d03d14d7",
+          "bundled_sha256": "cb39876c980a3ca64fc5071306cdb36c1ee58fce4c35d38a7eb18ba2d03d14d7"
+        },
+        {
+          "path": "assets/profiles/17.18.0/gum-runtime-names.patch",
+          "source_sha256": "5607f70ee0ccee5f71ef32d74eba2a7d8be06629df4314eea7e038b63624e0a4",
+          "bundled_sha256": "5607f70ee0ccee5f71ef32d74eba2a7d8be06629df4314eea7e038b63624e0a4"
+        },
+        {
+          "path": "assets/profiles/17.18.0/profile.json",
+          "source_sha256": "322a3348772fc3171bdc21a99952cb6f41fa9f129d7b289b0d2c24ad2be6977d",
+          "bundled_sha256": "322a3348772fc3171bdc21a99952cb6f41fa9f129d7b289b0d2c24ad2be6977d"
+        }
+      ],
+      "repository": "https://github.com/johnsonconnor97815/frida-modified.git"
+    },
+    "pull-android-apk": {
+      "source": "pull-android-apk",
+      "commit": "908423fee7d4bb80ee6a9505ef9de5dd5b9f7abb",
+      "local_changes": [
+        " M SKILL.md",
+        " M plugins/pull-android-apk/skills/pull-android-apk/SKILL.md",
+        " M plugins/pull-android-apk/skills/pull-android-apk/scripts/apk_pull.py",
+        " M scripts/apk_pull.py"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "source_sha256": "415e1294fb62fb8a8c70c7ca31e669737af34742192cfe58769e1bb4e206bec4",
+          "bundled_sha256": "415e1294fb62fb8a8c70c7ca31e669737af34742192cfe58769e1bb4e206bec4"
+        },
+        {
+          "path": "LICENSE",
+          "source_sha256": "8e20853a1c7c341dbdf3205d2f51e23a33370b5b7242ab1b85ff0d40344e6caa",
+          "bundled_sha256": "8e20853a1c7c341dbdf3205d2f51e23a33370b5b7242ab1b85ff0d40344e6caa"
+        },
+        {
+          "path": "scripts/apk_pull.py",
+          "source_sha256": "b2fa2e94da440ea88542931fd63cf872e83299d2c57158cc8dc37381a8c94190",
+          "bundled_sha256": "b2fa2e94da440ea88542931fd63cf872e83299d2c57158cc8dc37381a8c94190"
+        },
+        {
+          "path": "scripts/android_tools.py",
+          "source_sha256": "524f90a092a5a89449474eafe83aeef79821a3650e16c72cbf60364d36667286",
+          "bundled_sha256": "524f90a092a5a89449474eafe83aeef79821a3650e16c72cbf60364d36667286"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "source_sha256": "7b008e18a67b45f6438c649d67c94e9463288c917f775d3cc1bb309bd55899e8",
+          "bundled_sha256": "7b008e18a67b45f6438c649d67c94e9463288c917f775d3cc1bb309bd55899e8"
+        },
+        {
+          "path": "references/export-format.md",
+          "source_sha256": "99925860e330b43783c509933a94da897701044b01819e9c789623f04c45c5db",
+          "bundled_sha256": "99925860e330b43783c509933a94da897701044b01819e9c789623f04c45c5db"
+        }
+      ],
+      "repository": "https://github.com/johnsonconnor97815/pull-android-apk.git"
+    }
+  },
+  "purpose": "Historical import provenance. Current sources are maintained in this repository; these hashes describe the initial import, not current files."
+}

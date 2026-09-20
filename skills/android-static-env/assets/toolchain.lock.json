@@ -1,0 +1,229 @@
+{
+  "schema": 1,
+  "verified_on": "2026-09-16",
+  "platform": "linux-x86_64",
+  "artifacts": {
+    "jadx": {
+      "version": "v1.5.6",
+      "url": "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip",
+      "size": 72646741,
+      "checksum": "sha256:545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974",
+      "source": "https://github.com/skylot/jadx/releases/tag/v1.5.6"
+    },
+    "apktool": {
+      "version": "v3.0.3",
+      "url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+      "size": 15478013,
+      "checksum": "sha256:dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+      "source": "https://github.com/iBotPeaches/Apktool/releases/tag/v3.0.3"
+    },
+    "dex2jar": {
+      "version": "v2.4",
+      "url": "https://github.com/pxb1988/dex2jar/releases/download/v2.4/dex-tools-v2.4.zip",
+      "size": 19105975,
+      "checksum": null,
+      "source": "https://github.com/pxb1988/dex2jar/releases/tag/v2.4"
+    },
+    "bundletool": {
+      "version": "1.18.3",
+      "url": "https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar",
+      "size": 32520401,
+      "checksum": "sha256:a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29",
+      "source": "https://github.com/google/bundletool/releases/tag/1.18.3"
+    },
+    "ghidra": {
+      "version": "Ghidra_12.1.3_build",
+      "url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip",
+      "size": 569445154,
+      "checksum": "sha256:93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54",
+      "source": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1.3_build"
+    },
+    "rizin": {
+      "version": "v0.9.1",
+      "url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz",
+      "size": 137626404,
+      "checksum": "sha256:9102249a9f0b6319c5334a2e5cf8d9cc3f2035e1d3def027c41f6a90f647e8cf",
+      "source": "https://github.com/rizinorg/rizin/releases/tag/v0.9.1"
+    },
+    "jdk": {
+      "version": "21.0.12+101.0.LTS",
+      "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+      "size": 207473347,
+      "checksum": "sha256:ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+      "source": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz.sha256.txt"
+    },
+    "sdk": {
+      "version": "21.0",
+      "url": "https://dl.google.com/android/repository/commandlinetools-linux-15641748_latest.zip",
+      "size": 174244366,
+      "checksum": "sha1:63523a02a975a81102238566f2a16c057d52301e",
+      "source": "https://dl.google.com/android/repository/repository2-3.xml"
+    },
+    "quark-rules": {
+      "version": "7bd3682165f35a91bb36cf3de24a335063339dd8",
+      "url": "https://github.com/quark-engine/quark-rules/archive/7bd3682165f35a91bb36cf3de24a335063339dd8.tar.gz",
+      "checksum": null,
+      "source": "https://github.com/quark-engine/quark-rules"
+    }
+  },
+  "python": {
+    "androguard": {
+      "package": "androguard",
+      "version": "4.1.4",
+      "source": "https://pypi.org/project/androguard/4.1.4/"
+    },
+    "apkid": {
+      "package": "apkid",
+      "version": "3.1.0",
+      "source": "https://pypi.org/project/apkid/3.1.0/"
+    },
+    "quark": {
+      "package": "quark-engine",
+      "version": "26.9.1",
+      "source": "https://pypi.org/project/quark-engine/26.9.1/"
+    },
+    "semgrep": {
+      "package": "semgrep",
+      "version": "1.177.0",
+      "source": "https://pypi.org/project/semgrep/1.177.0/"
+    },
+    "native-python": {
+      "package": "lief",
+      "version": "1.0.0",
+      "source": "https://lief.re/",
+      "extra_packages": {
+        "pyelftools": "0.33",
+        "capstone": "5.0.9"
+      },
+      "cli": null
+    }
+  },
+  "sdk_build_tools": "36.0.0",
+  "system_packages": [
+    "ca-certificates",
+    "curl",
+    "git",
+    "unzip",
+    "zip",
+    "p7zip-full",
+    "jq",
+    "ripgrep",
+    "file",
+    "binutils",
+    "llvm",
+    "openssl",
+    "yara",
+    "graphviz",
+    "python3-venv",
+    "python3-dev",
+    "build-essential",
+    "pkg-config",
+    "libffi-dev",
+    "libssl-dev",
+    "checksec"
+  ],
+  "smali": {
+    "version": "3.0.10",
+    "artifacts": [
+      {
+        "version": "3.0.10",
+        "url": "https://dl.google.com/android/maven2/com/android/tools/smali/smali/3.0.10/smali-3.0.10.jar",
+        "checksum": "sha1:661e6c8d086f551d79480dbfe7c68d1c90ff4824",
+        "source": "https://dl.google.com/android/maven2/com/android/tools/smali/smali/3.0.10/smali-3.0.10.pom"
+      },
+      {
+        "version": "3.0.10",
+        "url": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-baksmali/3.0.10/smali-baksmali-3.0.10.jar",
+        "checksum": "sha1:5e0b997e9dd445ccbbe5d9a3f84fac7ea97acb8f",
+        "source": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-baksmali/3.0.10/smali-baksmali-3.0.10.pom"
+      },
+      {
+        "version": "3.0.10",
+        "url": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-dexlib2/3.0.10/smali-dexlib2-3.0.10.jar",
+        "checksum": "sha1:168c00c2188fe7a37c331a10c76e5dce5856e4ec",
+        "source": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-dexlib2/3.0.10/smali-dexlib2-3.0.10.pom"
+      },
+      {
+        "version": "3.0.10",
+        "url": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-util/3.0.10/smali-util-3.0.10.jar",
+        "checksum": "sha1:ce76ca1eb5eef68820ee50e6407e623e4d1357b8",
+        "source": "https://dl.google.com/android/maven2/com/android/tools/smali/smali-util/3.0.10/smali-util-3.0.10.pom"
+      },
+      {
+        "version": "3.5.2",
+        "url": "https://repo.maven.apache.org/maven2/org/antlr/antlr/3.5.2/antlr-3.5.2.jar",
+        "checksum": "sha1:c4a65c950bfc3e7d04309c515b2177c00baf7764",
+        "source": "https://repo.maven.apache.org/maven2/org/antlr/antlr/3.5.2/antlr-3.5.2.pom"
+      },
+      {
+        "version": "3.5.2",
+        "url": "https://repo.maven.apache.org/maven2/org/antlr/antlr-runtime/3.5.2/antlr-runtime-3.5.2.jar",
+        "checksum": "sha1:cd9cd41361c155f3af0f653009dcecb08d8b4afd",
+        "source": "https://repo.maven.apache.org/maven2/org/antlr/antlr-runtime/3.5.2/antlr-runtime-3.5.2.pom"
+      },
+      {
+        "version": "3.2.1",
+        "url": "https://repo.maven.apache.org/maven2/org/antlr/stringtemplate/3.2.1/stringtemplate-3.2.1.jar",
+        "checksum": "sha1:59ec8083721eae215c6f3caee944c410d2be34de",
+        "source": "https://repo.maven.apache.org/maven2/org/antlr/stringtemplate/3.2.1/stringtemplate-3.2.1.pom"
+      },
+      {
+        "version": "1.85",
+        "url": "https://repo.maven.apache.org/maven2/org/jcommander/jcommander/1.85/jcommander-1.85.jar",
+        "checksum": "sha1:c6a75d1d1720c69a4cbb5409adee506bd5421f38",
+        "source": "https://repo.maven.apache.org/maven2/org/jcommander/jcommander/1.85/jcommander-1.85.pom"
+      },
+      {
+        "version": "31.1-android",
+        "url": "https://repo.maven.apache.org/maven2/com/google/guava/guava/31.1-android/guava-31.1-android.jar",
+        "checksum": "sha1:9222c47cc3ae890f07f7c961bbb3cb69050fe4aa",
+        "source": "https://repo.maven.apache.org/maven2/com/google/guava/guava/31.1-android/guava-31.1-android.pom"
+      },
+      {
+        "version": "3.0.2",
+        "url": "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.jar",
+        "checksum": "sha1:25ea2e8b0c338a877313bd4672d3fe056ea78f0d",
+        "source": "https://repo.maven.apache.org/maven2/com/google/code/findbugs/jsr305/3.0.2/jsr305-3.0.2.pom"
+      },
+      {
+        "version": "1.0.1",
+        "url": "https://repo.maven.apache.org/maven2/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.jar",
+        "checksum": "sha1:1dcf1de382a0bf95a3d8b0849546c88bac1292c9",
+        "source": "https://repo.maven.apache.org/maven2/com/google/guava/failureaccess/1.0.1/failureaccess-1.0.1.pom"
+      },
+      {
+        "version": "9999.0-empty-to-avoid-conflict-with-guava",
+        "url": "https://repo.maven.apache.org/maven2/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.jar",
+        "checksum": "sha1:b421526c5f297295adef1c886e5246c39d4ac629",
+        "source": "https://repo.maven.apache.org/maven2/com/google/guava/listenablefuture/9999.0-empty-to-avoid-conflict-with-guava/listenablefuture-9999.0-empty-to-avoid-conflict-with-guava.pom"
+      },
+      {
+        "version": "3.12.0",
+        "url": "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.12.0/checker-qual-3.12.0.jar",
+        "checksum": "sha1:d5692f0526415fcc6de94bb5bfbd3afd9dd3b3e5",
+        "source": "https://repo.maven.apache.org/maven2/org/checkerframework/checker-qual/3.12.0/checker-qual-3.12.0.pom"
+      },
+      {
+        "version": "2.11.0",
+        "url": "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotations/2.11.0/error_prone_annotations-2.11.0.jar",
+        "checksum": "sha1:c5a0ace696d3f8b1c1d8cc036d8c03cc0cbe6b69",
+        "source": "https://repo.maven.apache.org/maven2/com/google/errorprone/error_prone_annotations/2.11.0/error_prone_annotations-2.11.0.pom"
+      },
+      {
+        "version": "1.3",
+        "url": "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3.jar",
+        "checksum": "sha1:ba035118bc8bac37d7eff77700720999acd9986d",
+        "source": "https://repo.maven.apache.org/maven2/com/google/j2objc/j2objc-annotations/1.3/j2objc-annotations-1.3.pom"
+      }
+    ]
+  },
+  "base_system_packages": [
+    "ca-certificates",
+    "python3-venv",
+    "python3-dev",
+    "build-essential",
+    "pkg-config",
+    "libffi-dev",
+    "libssl-dev"
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pull Android APK"
+  short_description: "Export and verify installed Android APK sets"
+  default_prompt: "Use $pull-android-apk to export an installed app and every split APK to a local folder."

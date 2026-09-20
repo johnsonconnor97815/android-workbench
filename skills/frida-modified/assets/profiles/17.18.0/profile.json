@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "version": "17.18.0",
+  "upstream": "https://github.com/frida/frida.git",
+  "commits": {
+    ".": "5d85d2ced9de2fdce82668f1516f64866c079da4",
+    "subprojects/frida-core": "0602e5dca4c9d7be6098fc319edf978724dabeab",
+    "subprojects/frida-gum": "22e077120358a49b26e32110a6e2b8e80f1ed7f1",
+    "releng": "963fe3826f861a7d844d235957f2f13738e3a73b",
+    "subprojects/frida-python": "aee40b044d42379bf918f142b0b1eb97bb1a4895"
+  },
+  "groups": [
+    {
+      "name": "libc-stream-init",
+      "intent": "Initialize stream/directory registries before early ARM CPU probes",
+      "patches": [
+        {
+          "file": "core-libc-stream-init.patch",
+          "sha256": "cb39876c980a3ca64fc5071306cdb36c1ee58fce4c35d38a7eb18ba2d03d14d7",
+          "repository": "subprojects/frida-core"
+        }
+      ]
+    },
+    {
+      "name": "runtime-names",
+      "intent": "Synchronize selected runtime identifiers across core, gum, helper and embedded payloads",
+      "patches": [
+        {
+          "file": "core-runtime-names.patch",
+          "sha256": "d27cbd382775e106e37d29d60223324361387c51c28e3f50082a73387e70289a",
+          "repository": "subprojects/frida-core"
+        },
+        {
+          "file": "gum-runtime-names.patch",
+          "sha256": "5607f70ee0ccee5f71ef32d74eba2a7d8be06629df4314eea7e038b63624e0a4",
+          "repository": "subprojects/frida-gum"
+        }
+      ]
+    }
+  ],
+  "generated_resources": [
+    {
+      "path": "src/linux/helpers/artifacts/native/arm/zymbiote.elf",
+      "before_sha256": "045334af3d59ef4138fd4491b57bfcb567a04952e00b619b4c6cbf65a6b44b2a",
+      "after_sha256": "0079b7c4a847bf47b94a6ea829e1cfcd08157ad68fbb91ce7e32e92ed51ff0d6"
+    },
+    {
+      "path": "src/linux/helpers/artifacts/native/arm64/zymbiote.elf",
+      "before_sha256": "40fd37cb54c8749fe92761b530638700c1678907a5e95c008f9913bfbc8ef2f1",
+      "after_sha256": "688549c4357f5aa24d74c2b3cbfd3a96c1b0435c623a1fc6b8cc1acd0d3a14a1"
+    },
+    {
+      "path": "src/linux/helpers/artifacts/native/x86/zymbiote.elf",
+      "before_sha256": "ce09e4cc1cdcfd2c715274c2d00bf46ca69ce3eb24a778d235af16290aed675f",
+      "after_sha256": "3dc823ec9b7377df4ab49cd1ffd19c41523523c90febc6cdd094516e2aae30c4"
+    },
+    {
+      "path": "src/linux/helpers/artifacts/native/x86_64/zymbiote.elf",
+      "before_sha256": "3b09b588de9b2aad297fa5af74e682e407cdfe845c9809df030541302c931670",
+      "after_sha256": "88f536c1e24caad7490cfd1865b5c787021e4ade81b9eab2b7b41968f3d21b59"
+    }
+  ],
+  "server_filename": "system-worker",
+  "agent_filename": "libshadow-agent.so",
+  "gadget_filename": "libshadow-gadget.so",
+  "socket_field": {
+    "size": 64,
+    "old": "/frida-zymbiote-00000000000000000000000000000000",
+    "new": "/runtime-spawn-00000000000000000000000000000000"
+  },
+  "tested_build": {
+    "host": "linux-x86_64",
+    "target": "android-arm64",
+    "compat": "android-arm",
+    "ndk": "29.0.14206865",
+    "helper_api": 29,
+    "build_tools": "36.0.0",
+    "java_major": 17
+  },
+  "evidence_scope": "Pixel 3, Android 12/API 31; see references/case-17.18.0.md; not an Android 10 compatibility claim"
+}

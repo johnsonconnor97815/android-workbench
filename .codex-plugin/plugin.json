@@ -1,0 +1,19 @@
+{
+  "name": "android-workbench",
+  "version": "0.1.0+codex.20260920020859",
+  "description": "Coordinate Android analysis skills, devices, evidence and shared tools across sessions.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Android Workbench",
+    "shortDescription": "Android analysis with one shared device queue",
+    "longDescription": "Unifies APK export, static tools, Frida workflows and device scenes through a persistent local scheduler with optional LLM ordering.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Android Workbench to coordinate this Android analysis task."
+  },
+  "mcpServers": "./.mcp.json"
+}

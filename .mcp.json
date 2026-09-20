@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "android-workbench": {
+      "command": "/usr/bin/python3",
+      "args": [
+        "-c",
+        "import json,os; from pathlib import Path; s=Path(os.environ.get('ANDROID_WORKBENCH_STATE') or Path(os.environ.get('XDG_STATE_HOME',Path.home()/'.local/state'))/'android-workbench'); c=json.loads((s/'current-runtime.json').read_text())['command']; os.execv(c[0],c+['mcp'])"
+      ]
+    }
+  }
+}

@@ -1,0 +1,39 @@
+diff --git a/bindings/gumjs/gumscriptscheduler.c b/bindings/gumjs/gumscriptscheduler.c
+index b86a6c57..b51ee080 100644
+--- a/bindings/gumjs/gumscriptscheduler.c
++++ b/bindings/gumjs/gumscriptscheduler.c
+@@ -114,7 +114,7 @@ gum_script_scheduler_start (GumScriptScheduler * self)
+   {
+     self->js_loop = g_main_loop_new (self->js_context, TRUE);
+ 
+-    self->js_thread = g_thread_new ("gum-js-loop",
++    self->js_thread = g_thread_new ("js-worker",
+         (GThreadFunc) gum_script_scheduler_run_js_loop, self);
+   }
+ }
+diff --git a/gum/backend-linux/gumprocess-linux.c b/gum/backend-linux/gumprocess-linux.c
+index cd19b368..e4bc6816 100644
+--- a/gum/backend-linux/gumprocess-linux.c
++++ b/gum/backend-linux/gumprocess-linux.c
+@@ -734,7 +734,7 @@ gum_linux_modify_thread (GumThreadId thread_id,
+   if (thread_id == gum_process_get_current_thread_id ())
+   {
+     result = GPOINTER_TO_UINT (g_thread_join (g_thread_new (
+-            "gum-modify-thread-worker",
++            "task-worker",
+             gum_linux_handle_modify_thread_comms,
+             &ctx)));
+   }
+diff --git a/gum/gum.c b/gum/gum.c
+index f0230bd3..3a4bf21e 100644
+--- a/gum/gum.c
++++ b/gum/gum.c
+@@ -302,7 +302,7 @@ gum_init_embedded (void)
+   g_log_set_default_handler (gum_on_log_message, NULL);
+   gum_do_init ();
+ 
+-  g_set_prgname ("frida");
++  g_set_prgname ("system-worker");
+ 
+ #if defined (HAVE_LINUX) && defined (HAVE_GLIBC)
+   gum_libdl_prevent_unload ();

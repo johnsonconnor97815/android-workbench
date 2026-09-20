@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+.venv/
+# Local analysis projects, configuration and artifacts do not belong in the source repository.
+.envrc
+.env
+.env.*
+workbench.project.json
+.codex/
+.android-static/
+.tools/
+apps/
+evidence/
+reports/
+*.apk
+*.aab
+*.apks
+*.xapk
+*.db
+*.db-wal
+*.db-shm

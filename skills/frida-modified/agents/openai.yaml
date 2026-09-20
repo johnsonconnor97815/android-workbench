@@ -1,0 +1,4 @@
+interface:
+  display_name: "Android Frida 魔改"
+  short_description: "按 Android 设备选版，完成 Frida 修改、构建、验证与部署"
+  default_prompt: "使用 $frida-modified，先识别目标 Android 设备并选择适配版本，再完成魔改、构建和对照验证。"

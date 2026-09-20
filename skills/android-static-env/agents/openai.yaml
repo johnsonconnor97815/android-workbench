@@ -1,0 +1,3 @@
+interface:
+  display_name: "Android 静态分析环境"
+  short_description: "一键准备 Android 包、字节码、原生库与规则扫描工具，保留版本和校验证据"
