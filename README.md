@@ -6,7 +6,7 @@
 
 ## 独立安装
 
-调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。设备操作另外需要 ADB；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。
+调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。内置静态环境安装器要求 Linux x86_64 和 Python 3.12+；使用全部能力时建议以 Python 3.12+ 初始化项目。设备操作另外需要 ADB；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。
 
 在本仓库目录执行，分析项目可以放在任意位置：
 
@@ -94,6 +94,8 @@ LLM 只在程序给出的合法候选之间建议顺序，不能越过锁、前�
 特定 App 的还原 Skill、项目脚本和样本留在分析项目内，通过项目清单显式登记。新项目默认不包含任何特定 App 或设备序列号。登记方式见 [项目扩展](docs/project-extensions.md)。`--update` 保留这类自定义操作。
 
 ## 维护与验证
+
+GitHub 自动检查分别验证 Python 3.11 下的调度器和 Python 3.12 下的全部组件。
 
 直接修改本仓库内的代码。`sources.lock.json` 只记录最初导入来源；不再从旧仓库同步覆盖。组件许可证与补丁例外见 [NOTICE](NOTICE.md)。
 
