@@ -1,6 +1,6 @@
 # 项目扩展
 
-`workbench.project.json` 是可信的本地操作清单。内置操作的脚本来自 `@workbench/skills/...`；扩展脚本使用分析项目内的相对路径。调用者只能提交登记操作，不能自行降低它需要的锁。
+`workbench.project.json` 是可信的本地操作清单。内置操作的脚本来自唯一入口 Skill 内的 `@workbench/skills/android-workbench/components/...`；扩展脚本使用分析项目内的相对路径。调用者只能提交登记操作，不能自行降低它需要的锁。
 
 离线脚本示例，添加到 `operations`：
 
@@ -37,4 +37,4 @@
 
 可通过 `scripts/integrate_entries.py /path/to/analysis` 给登记的项目脚本加入排队入口；它只修改项目内代码，保留修改前副本。现存脚本已有旧入口时应审阅并迁移，不依靠目录名自动猜测新路径。CLI 的 `run` 与 MCP 的 `jobs_submit` 始终可用于登记操作。
 
-本仓库不会自动发现或捆绑 `apps/` 中的任何样本。`scripts/configure_project.py --update` 保留自定义操作与环境，并更新内置 Skill 的引用。
+本仓库不会自动发现或捆绑 `apps/` 中的任何样本。`scripts/configure_project.py --update` 保留自定义操作与环境，并更新内置入口 Skill 组件的引用。

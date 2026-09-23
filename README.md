@@ -2,9 +2,16 @@
 
 统一维护 Android 分析能力，并让多个 Session 共用同一条设备队列。同一台手机由一个任务控制；不同手机和互不冲突的本地任务可以并行。
 
-本仓库包含共享调度服务、CLI、MCP，以及五个 Skill：`android-analysis`、`android-device`、`android-static-env`、`frida-modified`、`pull-android-apk`。源码、测试、说明与许可证都在这里维护，不需要另行克隆原来的三个组件仓库。
+本仓库是一个 Android Workbench 插件，包含共享调度服务、CLI、MCP、唯一入口 Skill `android-workbench`，以及三个 Claude Code 子代理。原先的五个 Skill 收敛为入口 Skill 内的组件和参考文档；源码、测试、说明与许可证都在这里维护，不需要另行克隆原来的三个组件仓库。
 
-这里是上述 Skills 的唯一维护源；独立历史仓库和插件缓存不是同步来源。环境 Skill 的 full 工具链包含 Droid ASC，用于大型 APK 的类与引用快速定位。
+这里是上述能力的唯一维护源；独立历史仓库和插件缓存不是同步来源。静态环境组件的 full 工具链包含 Droid ASC，用于大型 APK 的类与引用快速定位。
+
+## 插件结构
+
+- `.claude-plugin/plugin.json` 是唯一维护的插件清单。`.codex-plugin/plugin.json` 是构建校验强制保持字节相同的 Codex 兼容镜像，不是第二来源。
+- `skills/android-workbench/SKILL.md` 是唯一自动加载的 Skill。调度规则在 `references/`，静态环境、Frida 和 APK 导出实现在 `components/`。
+- `agents/` 提供 `static-analyst`、`device-analyst`、`report-auditor` 三个 Claude Code 子代理。它们只是分工入口，所有设备和共享环境操作仍必须走 Workbench MCP。
+- `.mcp.json` 指向当前共享调度运行时。插件安装本身不下载 SDK、Frida 或分析工具链。
 
 ## 独立安装
 
@@ -28,7 +35,7 @@ python3 scripts/configure_project.py /path/to/analysis --update
 python3 scripts/configure_mcp.py /path/to/analysis
 ```
 
-更新会备份旧配置，保留项目环境和自定义操作，重绑内置操作。仓库的 `.codex-plugin/plugin.json` 与 `.mcp.json` 是插件入口；插件本身仍需上述初始化步骤，安装插件不会自动下载整个分析工具链。
+更新会备份旧配置，保留项目环境和自定义操作，重绑内置操作。仓库的 `.claude-plugin/plugin.json` 与 `.mcp.json` 是插件入口；插件本身仍需上述初始化步骤，安装插件不会自动下载整个分析工具链。
 
 ## 使用
 
@@ -42,16 +49,16 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
   pull --serial YOUR_ADB_SERIAL --package com.example.app --output /path/to/analysis/apps/export
 ```
 
-`operations` 列出 19 个内置脚本操作及其参数约定。截图、设备观察和有限时长场景是服务提供的操作，不计入这 19 个脚本。各 Skill 的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+`operations` 列出 19 个内置脚本操作及其参数约定。截图、设备观察和有限时长场景是服务提供的操作，不计入这 19 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
 
-初始化后，可以用环境 Skill 安装工具，例如：
+初始化后，可以用静态环境组件安装工具，例如：
 
 ```bash
 python3 scripts/workbench.py --project /path/to/analysis run environment.setup -- \
   plan --workspace /path/to/analysis --profile core
 ```
 
-根据计划和环境要求再执行 `install`；SDK 许可证接受、系统依赖安装沿用原 Skill 的明确参数。运行环境、APK、Frida 的细节分别见 [环境 Skill](skills/android-static-env/SKILL.md)、[APK Skill](skills/pull-android-apk/SKILL.md)、[Frida Skill](skills/frida-modified/SKILL.md)。
+根据计划和环境要求再执行 `install`；SDK 许可证接受、系统依赖安装沿用原组件的明确参数。运行环境、APK、Frida 的细节分别见 [静态环境组件](skills/android-workbench/components/static-env/README.md)、[APK 导出组件](skills/android-workbench/components/apk-export/README.md)、[Frida 组件](skills/android-workbench/components/frida/README.md)。
 
 有限场景示例：
 
@@ -71,11 +78,13 @@ python3 scripts/workbench.py --project /path/to/analysis submit - <<'JSON'
 JSON
 ```
 
-另一个 Session 可提交绑定此任务 `scene` 的截图请求，并带上 `app`、`activity`、`queue_timeout`；接受现有 Hook 环境时设置 `accept_hooks:true`。检查点只能插入兼容观察，仍由原控制者执行。需要指定业务页面时设置 `ui_expect`，例如 `[{"resource-id":"com.example.app:id/title","text":"订单详情"}]`；采集前后都验证，XML 留作证据。详情见 [设备 Skill](skills/android-device/SKILL.md)。
+另一个 Session 可提交绑定此任务 `scene` 的截图请求，并带上 `app`、`activity`、`queue_timeout`；接受现有 Hook 环境时设置 `accept_hooks:true`。检查点只能插入兼容观察，仍由原控制者执行。需要指定业务页面时设置 `ui_expect`，例如 `[{"resource-id":"com.example.app:id/title","text":"订单详情"}]`；采集前后都验证，XML 留作证据。详情见 [设备场景](skills/android-workbench/references/device-analysis.md)。
 
 用 `status`、`explain`、`artifacts` 查询任务，用 `cancel` 请求停止。取消受理不表示手机已释放；任务结果同时记录功能结果、`cleanup_ok` 和资源状态。`partial` 表示有部分可用结果；未知结果或未清理占用保留阻塞，不自动重放设备动作。
 
 MCP 提供 18 个工具。用 `service_capabilities` 查询服务与 Session 身份，用 `sessions_select` 恢复稳定身份；任务提交必须使用稳定 `request_key`。新 Session 才会加载更新后的插件和 MCP 配置。
+
+Claude Code 中可用 `@android-workbench:static-analyst`、`@android-workbench:device-analyst`、`@android-workbench:report-auditor` 调用子代理。子代理会预载唯一入口 Skill，但仍通过同一 MCP 队列执行设备与环境操作。
 
 ## 调度、模型与恢复
 
@@ -111,7 +120,7 @@ python3 scripts/build_plugin.py --output dist/android-workbench.zip
 python3 scripts/upgrade_runtime.py --project /path/to/analysis
 ```
 
-ZIP 包包含相同源码、Skill 与测试，可解压到其他目录使用。`pyproject.toml` 提供可选的调度器 Python 包；完整插件交付使用仓库或 ZIP，而不是仅安装调度器 wheel。
+ZIP 包包含相同源码、入口 Skill、组件与测试，可解压到其他目录使用。`pyproject.toml` 提供可选的调度器 Python 包；完整插件交付使用仓库或 ZIP，而不是仅安装调度器 wheel。
 
 真实设备与模型对照需另外执行，不在离线回归中调用手机或付费模型：
 

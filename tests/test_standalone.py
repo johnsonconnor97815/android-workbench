@@ -41,9 +41,12 @@ class ProjectSourceTest(unittest.TestCase):
         resolved = registered_path(
             self.project,
             self.manifest,
-            "@workbench/skills/pull-android-apk/scripts/apk_pull.py",
+            "@workbench/skills/android-workbench/components/apk-export/scripts/apk_pull.py",
         )
-        self.assertEqual(resolved, ROOT / "skills/pull-android-apk/scripts/apk_pull.py")
+        self.assertEqual(
+            resolved,
+            ROOT / "skills/android-workbench/components/apk-export/scripts/apk_pull.py",
+        )
 
     def test_update_keeps_project_extensions_and_environment(self):
         old = {
@@ -64,9 +67,14 @@ class ProjectSourceTest(unittest.TestCase):
         self.assertEqual(actual["python"], "/project/python")
         self.assertEqual(actual["env"], old["env"])
         self.assertEqual(actual["skills"]["custom"], "local-skill")
+        self.assertNotIn("android-static-env", actual["skills"])
+        self.assertEqual(
+            actual["skills"]["android-workbench"],
+            "@workbench/skills/android-workbench",
+        )
         self.assertEqual(
             actual["operations"]["custom"]["nested_sources"],
-            ["@workbench/skills/android-static-env", "local-skill"],
+            ["@workbench/skills/android-workbench", "local-skill"],
         )
         self.assertEqual(json.dumps(old, sort_keys=True), before)
 
@@ -188,7 +196,10 @@ class StandaloneInstallTest(unittest.TestCase):
                 result = subprocess.run(
                     [
                         sys.executable,
-                        str(moved / "skills/pull-android-apk/scripts/apk_pull.py"),
+                        str(
+                            moved
+                            / "skills/android-workbench/components/apk-export/scripts/apk_pull.py"
+                        ),
                         "devices",
                         "--adb",
                         str(fake_adb),

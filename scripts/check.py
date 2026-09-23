@@ -17,9 +17,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="awb-check-") as cwd:
         for folder in (
             "tests",
-            "skills/pull-android-apk/tests",
-            "skills/frida-modified/tests",
-            "skills/android-static-env/scripts",
+            "skills/android-workbench/components/apk-export/tests",
+            "skills/android-workbench/components/frida/tests",
+            "skills/android-workbench/components/static-env/scripts",
         ):
             print("Checking " + folder, flush=True)
             subprocess.run(

@@ -5,11 +5,14 @@ import argparse
 import ast
 import json
 from pathlib import Path
+import tomllib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 DIRECTORIES = (
+    ".claude-plugin",
     ".codex-plugin",
+    "agents",
     "workbench",
     "scripts",
     "skills",
@@ -43,18 +46,38 @@ def payload():
 
 
 def validate():
-    manifest = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
+    source_manifest_path = ROOT / ".claude-plugin/plugin.json"
+    manifest = json.loads(source_manifest_path.read_text())
+    compatibility_manifest_path = ROOT / ".codex-plugin/plugin.json"
+    compatibility_manifest = json.loads(compatibility_manifest_path.read_text())
+    if (
+        compatibility_manifest != manifest
+        or compatibility_manifest_path.read_bytes() != source_manifest_path.read_bytes()
+    ):
+        raise ValueError("Codex compatibility manifest differs from the source manifest")
     if manifest["name"] != "android-workbench" or manifest["skills"] != "./skills/":
         raise ValueError("Unexpected plugin identity or Skill root")
-    for name in (
-        "android-analysis",
-        "android-device",
-        "android-static-env",
-        "frida-modified",
-        "pull-android-apk",
-    ):
-        if not (ROOT / "skills" / name / "SKILL.md").is_file():
-            raise ValueError("Required Skill missing: " + name)
+    if manifest["mcpServers"] != "./.mcp.json":
+        raise ValueError("Unexpected plugin MCP server path")
+    package = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    if manifest["version"] != package["version"]:
+        raise ValueError("Plugin and package versions differ")
+    skill_files = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "skills").rglob("SKILL.md")
+    )
+    if skill_files != ["skills/android-workbench/SKILL.md"]:
+        raise ValueError("The plugin must contain exactly one entry Skill")
+    for name in ("workbench-routing.md", "device-analysis.md"):
+        if not (ROOT / "skills/android-workbench/references" / name).is_file():
+            raise ValueError("Required reference missing: " + name)
+    for name in ("static-env", "frida", "apk-export"):
+        component = ROOT / "skills/android-workbench/components" / name
+        if not (component / "README.md").is_file():
+            raise ValueError("Required component guide missing: " + name)
+    for name in ("static-analyst.md", "device-analyst.md", "report-auditor.md"):
+        if not (ROOT / "agents" / name).is_file():
+            raise ValueError("Required plugin agent missing: " + name)
     for name in ("android-static-env", "frida-modified", "pull-android-apk"):
         if not (ROOT / "licenses" / name / "LICENSE").is_file():
             raise ValueError("Component license missing: " + name)

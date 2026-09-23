@@ -24,9 +24,12 @@ def main():
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     evidence = root / "evidence/design" / ("workbench-installed-entry-routing-" + stamp)
     manifest = json.loads((root / "workbench.project.json").read_text())
-    copies = {
-        "android-static-env": [Path.home() / ".codex/skills/android-static-env"],
-        "pull-android-apk": [],
+    legacy_components = {
+        "android-static-env": (
+            "static-env",
+            [Path.home() / ".codex/skills/android-static-env"],
+        ),
+        "pull-android-apk": ("apk-export", []),
     }
     # Only the explicitly installed legacy plugin is in scope.
     listing = json.loads(
@@ -41,11 +44,14 @@ def main():
                 / plugin["version"]
                 / "skills/pull-android-apk"
             )
-            copies["pull-android-apk"].extend([source, cache])
+            legacy_components["pull-android-apk"][1].extend([source, cache])
+    canonical_skill = registered_path(
+        root, manifest, manifest["skills"]["android-workbench"]
+    )
     changes = []
     records = []
-    for name, folders in copies.items():
-        canonical = registered_path(root, manifest, manifest["skills"][name])
+    for name, (component_name, folders) in legacy_components.items():
+        canonical = canonical_skill / "components" / component_name
         names = {
             Path(e["script"]).name
             for e in manifest["operations"].values()

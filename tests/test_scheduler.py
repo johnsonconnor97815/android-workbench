@@ -345,7 +345,10 @@ class SchedulerTest(unittest.TestCase):
     def test_apk_device_release_precedes_local_validation(self):
         import shutil
 
-        sys.path.insert(0, str(ROOT / "skills/pull-android-apk/tests"))
+        sys.path.insert(
+            0,
+            str(ROOT / "skills/android-workbench/components/apk-export/tests"),
+        )
         from fixtures import (
             ADB_SCRIPT,
             AAPT2_SCRIPT,
@@ -391,7 +394,10 @@ class SchedulerTest(unittest.TestCase):
         source.mkdir()
         for name in ("apk_pull.py", "android_tools.py"):
             shutil.copyfile(
-                ROOT / "skills/pull-android-apk/scripts" / name, source / name
+                ROOT
+                / "skills/android-workbench/components/apk-export/scripts"
+                / name,
+                source / name,
             )
         (self.project / "android-workbench").symlink_to(ROOT, target_is_directory=True)
         manifest = {

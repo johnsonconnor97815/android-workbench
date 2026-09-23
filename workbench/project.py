@@ -7,7 +7,20 @@ import sys
 from .common import WorkbenchError
 
 BUNDLE_PREFIX = "@workbench/"
-SKILLS = ("android-static-env", "frida-modified", "pull-android-apk")
+SKILL = "android-workbench"
+LEGACY_SKILLS = (
+    "android-analysis",
+    "android-device",
+    "android-static-env",
+    "frida-modified",
+    "pull-android-apk",
+)
+SKILL_SOURCE = BUNDLE_PREFIX + "skills/" + SKILL
+COMPONENTS = {
+    "static-env": "components/static-env",
+    "frida": "components/frida",
+    "apk-export": "components/apk-export",
+}
 
 
 def bundle_root(root, project):
@@ -38,15 +51,15 @@ def registered_path(root, project, value):
 def builtin_operations():
     operations = {}
 
-    def add(name, skill, script, **entry):
-        source = BUNDLE_PREFIX + "skills/" + skill
+    def add(name, component, script, **entry):
+        source = SKILL_SOURCE + "/" + COMPONENTS[component]
         operations[name] = {
             "script": source + "/scripts/" + script,
             "source": source,
             **entry,
         }
 
-    apk = "pull-android-apk"
+    apk = "apk-export"
     add(
         "apk.pull",
         apk,
@@ -94,11 +107,11 @@ def builtin_operations():
         "provenance": {"readonly": True},
     }
     for name, entry in definitions.items():
-        add("frida." + name, "frida-modified", name + ".py", **entry)
+        add("frida." + name, "frida", name + ".py", **entry)
     for name in ("setup", "mcp_setup"):
         add(
             "environment." + name,
-            "android-static-env",
+            "static-env",
             name + ".py",
             mutates_environment=True,
             **({"uses_mcp": True} if name == "mcp_setup" else {}),
@@ -106,7 +119,7 @@ def builtin_operations():
     for name in ("smoke", "mcp_smoke", "mcp_probe", "inspect_so"):
         add(
             "static." + name,
-            "android-static-env",
+            "static-env",
             name + ".py",
             readonly=True,
             compute=True,
@@ -158,7 +171,7 @@ def generate(root, checkout, python=None):
             "ANDROID_HOME": str(sdk),
             "ANDROID_SDK_ROOT": str(sdk),
         },
-        "skills": {name: BUNDLE_PREFIX + "skills/" + name for name in SKILLS},
+        "skills": {SKILL: SKILL_SOURCE},
         "operations": builtin_operations(),
     }
     bundle_root(root, doc)
@@ -177,13 +190,19 @@ def update(existing, generated, python=None):
     if python or "python" not in result:
         result["python"] = generated["python"]
     old_skills = existing.get("skills", {})
-    result.setdefault("skills", {}).update(generated["skills"])
+    result["skills"] = {
+        name: location
+        for name, location in result.get("skills", {}).items()
+        if name not in LEGACY_SKILLS
+    }
+    result["skills"].update(generated["skills"])
     result.setdefault("operations", {}).update(generated["operations"])
-    # Preserve nested resource coverage when an older wrapper calls a bundled Skill.
+    # Preserve nested resource coverage when an older wrapper calls a bundled component.
     replacements = {
-        location: generated["skills"][name]
-        for name, location in old_skills.items()
-        if name in generated["skills"]
+        location: generated["skills"][SKILL]
+        for name in LEGACY_SKILLS
+        for location in (old_skills.get(name), BUNDLE_PREFIX + "skills/" + name)
+        if location
     }
     for entry in result["operations"].values():
         if "nested_sources" in entry:
