@@ -132,6 +132,13 @@ def main():
         if 'androguard' in selected:
             code = 'from androguard.core.dex import DEX; import sys; d=DEX(open(sys.argv[1],"rb").read()); assert "Lskill/smoke/Probe;" in d.get_classes_names(); print("DEX class parsed")'
             attempt('androguard-parse', lambda: run('androguard-parse', ['androguard-python', '-c', code, dex]))
+        if 'droidasc' in selected:
+            droidasc_apk = out / 'droidasc-fixture.apk'
+            with zipfile.ZipFile(droidasc_apk, 'w') as package:
+                package.write(dex, 'classes.dex')
+            attempt('droidasc-listclass', lambda: run('droidasc-listclass', ['droidasc', 'listclass', droidasc_apk], lambda t: require('Lskill/smoke/Probe;' in t, 'Droid ASC class missing')))
+            attempt('droidasc-findrefs', lambda: run('droidasc-findrefs', ['droidasc', 'findrefs', droidasc_apk, 'string', MARKER], lambda t: require(MARKER in t and '->marker' in t, 'Droid ASC marker reference missing')))
+            attempt('droidasc-getclass', lambda: run('droidasc-getclass', ['droidasc', 'getclass', droidasc_apk, 'Lskill/smoke/Probe;'], lambda t: require('class Probe' in t and MARKER in t, 'Droid ASC decompiled marker missing')))
         if 'apkid' in selected:
             def verify_apkid(output):
                 data = json.loads(output)

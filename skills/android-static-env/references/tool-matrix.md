@@ -9,6 +9,7 @@
 | 签名与对齐验证 | apksigner、zipalign | core；使用 verify/check，不重签原样本 |
 | Java/Kotlin 反编译 | JADX CLI/GUI | core；反编译错误保留为证据，不能当作完整原始源码 |
 | DEX 汇编与反汇编 | Google smali / baksmali | core；从 Google Maven 下载固定版本及运行依赖，使用完整 classpath |
+| 大型 APK 的类与引用快速定位 | Droid ASC | full，独立 venv；输入为 APK/ZIP 容器，不直接接受裸 DEX。先用于 `listclass`、`getclass`、`getmanifest`、`findrefs` 快速缩小范围，重要命中仍需 JADX、Smali、Androguard 或数据流工具复核；类名优先使用完整 Dalvik 描述符，`findrefs` 查询按正则处理，字面量需转义 `.*?[](){}|^$` 等元字符 |
 | DEX → JAR 交叉验证 | dex2jar | full；提供 d2j-dex2jar 等入口，不替代 Smali 语义核对 |
 | AAB / APKS | bundletool、unzip、JADX | core；dump/validate 用于检查；需要生成 APK 时保存派生产物和参数 |
 | XAPK/APKM/拆分 APK | unzip/7z、逐 APK 的 apkanalyzer/apksigner、split 元数据 | 不把任意 ZIP 当 bundletool APKS；保留 base 和全部 splits，不能只分析 base 后声称覆盖整个应用 |

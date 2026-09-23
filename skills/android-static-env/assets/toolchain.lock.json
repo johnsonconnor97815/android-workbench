@@ -72,6 +72,14 @@
       "version": "4.1.4",
       "source": "https://pypi.org/project/androguard/4.1.4/"
     },
+    "droidasc": {
+      "package": "droidasc",
+      "version": "0.1.1.post2",
+      "source": "https://pypi.org/project/droidasc/0.1.1.post2/",
+      "extra_packages": {
+        "androguard": "4.1.4"
+      }
+    },
     "apkid": {
       "package": "apkid",
       "version": "3.1.0",

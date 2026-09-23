@@ -1,6 +1,6 @@
 # 官方来源与核对记录
 
-核对日期：2026-09-16。具体 URL、版本、制品大小与上游校验值保存在 `assets/toolchain.lock.json`。版本是本次选用的基线，不是未来的“最新版本”承诺。
+核对日期：2026-09-16；Droid ASC 于 2026-09-23 补充核对。具体 URL、版本、制品大小与上游校验值保存在 `assets/toolchain.lock.json`。版本是本次选用的基线，不是未来的“最新版本”承诺。
 
 | 组件 | 官方来源 | 本次采用 / 需要保留的差异 |
 | --- | --- | --- |
@@ -12,6 +12,7 @@
 | dex2jar | [2.4](https://github.com/pxb1988/dex2jar/releases/tag/v2.4) | 该 release 元数据未提供 digest；首次下载 SHA-256 的证据等级需如实记录 |
 | bundletool | [google/bundletool](https://github.com/google/bundletool)、[官方说明](https://developer.android.com/tools/bundletool) | 1.18.3 的 all jar；AAB/APKS 与第三方拆分容器格式分别处理 |
 | Androguard | [官方仓库](https://github.com/androguard/androguard)、[PyPI](https://pypi.org/project/androguard/4.1.4/) | 4.1.4；版本元数据优先于旧 wiki 里的安装示例 |
+| Droid ASC | [官方仓库](https://github.com/MG1937/ASC)、[PyPI](https://pypi.org/project/droidasc/0.1.1.post2/) | 0.1.1.post2 + Androguard 4.1.4；作为快速类与引用定位器，不能替代完整反编译器 |
 | APKiD | [rednaga/APKiD](https://github.com/rednaga/APKiD)、[PyPI](https://pypi.org/project/apkid/3.1.0/) | 3.1.0，依赖 `yara-python-dex>=1.0.1`；单独 venv |
 | Quark | [quark-engine](https://github.com/quark-engine/quark-engine)、[文档](https://quark-engine.readthedocs.io/)、[规则仓库](https://github.com/quark-engine/quark-rules) | 26.9.1、Python >=3.10；规则 commit 单独固定 |
 | Semgrep | [文档](https://semgrep.dev/docs/)、[本地规则](https://semgrep.dev/docs/running-rules/) | 1.177.0；安装与本地规则 smoke 分开验证 |

@@ -10,6 +10,13 @@
 - 安装器 6 项本地回归通过：plan 无副作用、保留不受管理目录、拒绝损坏缓存、拒绝归档路径穿越、部分失败返回非零且继续独立组件、含空格路径的重复环境激活。
 - Skill 格式校验通过，Python 脚本语法校验通过。
 
+## Droid ASC 补充验证（2026-09-23，America/Los_Angeles）
+
+- 固定安装 PyPI `droidasc==0.1.1.post2` 和 `androguard==4.1.4`，独立 venv 与 CLI wrapper 可用。
+- 在授权样本 `apps/com.berylclarity.cleaner.zgien/base.apk` 上实测：`listclass --prefix com.berylclarity` 返回 170 类；`findrefs string firebaseappcheck.googleapis.com` 返回 2 条；完整描述符 `Lcom/berylclarity/cleaner/zgien/MainActivity;` 的 `getclass` 输出 346 行。样本 SHA-256：`68eb72a3e4f8d95c5fc363e3c8cb741394adcd4d3dc54e25b8db94c3e05209ec`。
+- 生成 DEX 并封装为最小 APK 后：`listclass` 能列出 `Lskill/smoke/Probe;`，`findrefs` 能定位 `marker` 字符串引用，`getclass` 能反编译包含该标记的方法。
+- 结论边界：Droid ASC 是快速定位工具，不是 JADX 替代品；重要命中需用 JADX、Smali、Androguard 或数据流工具复核。
+
 ## 实测中修正的问题
 
 SDK 不能把 Command-Line Tools 根目录直接软链到不符合其目录约定的位置。固定版本启动脚本还会在 Java/工具路径含空格时错误拆参；安装器改为标准目录布局和等价的 Java Main/classpath wrapper，保留原发布包不改写。

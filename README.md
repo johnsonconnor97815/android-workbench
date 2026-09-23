@@ -4,6 +4,8 @@
 
 本仓库包含共享调度服务、CLI、MCP，以及五个 Skill：`android-analysis`、`android-device`、`android-static-env`、`frida-modified`、`pull-android-apk`。源码、测试、说明与许可证都在这里维护，不需要另行克隆原来的三个组件仓库。
 
+这里是上述 Skills 的唯一维护源；独立历史仓库和插件缓存不是同步来源。环境 Skill 的 full 工具链包含 Droid ASC，用于大型 APK 的类与引用快速定位。
+
 ## 独立安装
 
 调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。内置静态环境安装器要求 Linux x86_64 和 Python 3.12+；使用全部能力时建议以 Python 3.12+ 初始化项目。设备操作另外需要 ADB；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。

@@ -47,7 +47,7 @@ import zipfile
 SKILL = Path(__file__).resolve().parents[1]
 CATALOG = SKILL / 'assets/toolchain.lock.json'
 CORE = ['jdk', 'sdk', 'jadx', 'apktool', 'smali', 'bundletool', 'androguard']
-FULL = CORE + ['dex2jar', 'apkid', 'quark', 'semgrep', 'rizin', 'ghidra', 'native-python', 'utilities']
+FULL = CORE + ['droidasc', 'dex2jar', 'apkid', 'quark', 'semgrep', 'rizin', 'ghidra', 'native-python', 'utilities']
 DEPS = {name: ['jdk'] for name in ['sdk', 'jadx', 'apktool', 'smali', 'bundletool', 'dex2jar', 'ghidra']}
 UTILITY_CHECKS = {
     'git': ['--version'], 'curl': ['--version'], 'unzip': ['-v'], 'zip': ['-v'],
@@ -392,6 +392,7 @@ class Environment:
             'smali': [['smali', '--version'], ['baksmali', '--version']],
             'bundletool': [['bundletool', 'version']], 'dex2jar': [['d2j-dex2jar', '--help']],
             'androguard': [['androguard', '--version'], ['androguard-python', '-c', 'from androguard.core.apk import APK; from androguard.core.dex import DEX; print("APK and DEX imports OK")']],
+            'droidasc': [['droidasc', '--help']],
             'apkid': [['apkid', '--help'], [root / 'venvs/apkid/bin/python', '-c', 'import yara; yara.compile(source=\'import "dex" rule dex_module_smoke { condition: true }\'); print("YARA dex module OK")']],
             'native-python': [['native-python', '-c', 'import lief, capstone; from elftools.elf.elffile import ELFFile; from importlib.metadata import version; print({p: version(p) for p in ["lief", "pyelftools", "capstone"]}); assert capstone.cs_support(capstone.CS_ARCH_ARM) and capstone.cs_support(capstone.CS_ARCH_ARM64)']],
             'quark': [['quark', '--help']], 'semgrep': [['semgrep', '--version']],

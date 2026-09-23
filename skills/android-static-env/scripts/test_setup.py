@@ -27,7 +27,16 @@ class InstallerInvariants(unittest.TestCase):
     def test_plan_has_no_side_effects(self):
         result = subprocess.run([sys.executable, str(Path(setup.__file__)), 'plan', '--workspace', str(self.project)], capture_output=True, text=True, check=True)
         self.assertIn('ghidra', json.loads(result.stdout)['tools'])
+        self.assertIn('droidasc', json.loads(result.stdout)['tools'])
         self.assertFalse(self.project.exists())
+
+    def test_droidasc_is_full_profile_only(self):
+        args = argparse.Namespace(workspace=str(self.project), cache_dir=None, only=None, profile='core', with_mobsf=False, action='plan', install_system_deps=False, accept_sdk_licenses=False, mobsf_image=None)
+        env = setup.Environment(args)
+        self.assertNotIn('droidasc', env.selected)
+        env.args.profile = 'full'
+        env.selected = setup.select_tools(env.args)
+        self.assertIn('droidasc', env.selected)
 
     def test_unmanaged_install_directory_is_preserved(self):
         self.env.root.mkdir(parents=True)
