@@ -178,6 +178,7 @@ class Service:
                         "device.scene",
                         "device.screenshot",
                         "device.observe",
+                        "device.info",
                         "device.recover",
                     ],
                     "operations": manifest.get("operations", {}),
@@ -552,6 +553,11 @@ class Service:
 
     def available(self, job, parent=None, fairness=True):
         spec = job["spec"]
+        repairs = (
+            set(spec.get("entry", {}).get("recovery_for", []))
+            if spec.get("recovery")
+            else set()
+        )
         if (
             job["cancel"]
             or job["state"] != "queued"
@@ -568,6 +574,7 @@ class Service:
             return False, "waiting_bound_scene"
         if spec.get("not_before", 0) > time.time():
             return False, "waiting_start_time"
+        all_jobs = self.store.jobs()
         health = self.store.rows("SELECT * FROM resources")
         for h in health:
             if any(overlap(h["key"], x["key"]) for x in spec["resources"]):
@@ -577,8 +584,16 @@ class Service:
                     and h["key"] == "device:" + spec.get("device", "")
                 ):
                     continue
+                if spec.get("recovery") and h["status"] == "needs_recovery":
+                    source = json.loads(h["detail"]).get("job")
+                    old = next((x for x in all_jobs if x["id"] == source), None)
+                    if (
+                        old
+                        and old["spec"]["operation"] in repairs
+                        and not (old.get("worker") and same_process(old["worker"]))
+                    ):
+                        continue
                 return False, h["status"]
-        all_jobs = self.store.jobs()
         active = [j for j in all_jobs if j["state"] in ACTIVE]
         for current in active:
             if parent and current["id"] == parent["id"]:
@@ -586,9 +601,14 @@ class Service:
             if (
                 spec.get("recovery")
                 and current["state"] == "needs_recovery"
-                and current["spec"].get("device") == spec.get("device")
             ):
-                if current.get("worker") and same_process(current["worker"]):
+                if (
+                    current["spec"]["operation"] not in repairs
+                    or (
+                        current.get("worker")
+                        and same_process(current["worker"])
+                    )
+                ):
                     return False, "old_worker_alive"
                 continue
             if conflict(spec["resources"], current["spec"]["resources"]):
@@ -645,6 +665,7 @@ class Service:
         token = secrets.token_urlsafe(32)
         spec = job["spec"]
         if spec.get("recovery"):
+            repairs = set(spec.get("entry", {}).get("recovery_for", []))
             affected = {
                 j["id"]
                 for j in self.store.jobs()
@@ -652,10 +673,12 @@ class Service:
                 and j["spec"].get("device") == spec.get("device")
             }
             for record in self.store.rows("SELECT * FROM resources"):
-                if record["key"] == "device:" + spec.get("device", ""):
-                    source = json.loads(record["detail"]).get("job")
-                    if source:
-                        affected.add(source)
+                source = json.loads(record["detail"]).get("job")
+                old = next(
+                    (j for j in self.store.jobs() if j["id"] == source), None
+                )
+                if old and old["spec"]["operation"] in repairs:
+                    affected.add(source)
             spec["recovery_targets"] = sorted(affected)
             self.store.update(job["id"], spec=spec)
         internal = {
@@ -749,6 +772,23 @@ class Service:
                     )
         self.store.db.execute("BEGIN IMMEDIATE")
         try:
+            if job["spec"].get("recovery") and state == "succeeded" and cleanup:
+                device = job["spec"].get("device")
+                if device:
+                    self.store.db.execute(
+                        "DELETE FROM resources WHERE key=?", ("device:" + device,)
+                    )
+                for row in self.store.rows("SELECT * FROM resources"):
+                    if json.loads(row["detail"]).get("job") in result.get(
+                        "reconciled_jobs", []
+                    ):
+                        if any(
+                            r["key"] == row["key"]
+                            for r in result.get("recovered_resources", [])
+                        ):
+                            self.store.db.execute(
+                                "DELETE FROM resources WHERE key=?", (row["key"],)
+                            )
             self.store.update(
                 job["id"],
                 state=state,
@@ -764,21 +804,7 @@ class Service:
             self.store.db.execute("ROLLBACK")
             raise
         if job["spec"].get("recovery") and state == "succeeded" and cleanup:
-            device = job["spec"]["device"]
-            self.store.db.execute(
-                "DELETE FROM resources WHERE key=?", ("device:" + device,)
-            )
-            for row in self.store.rows("SELECT * FROM resources"):
-                if json.loads(row["detail"]).get("job") in result.get(
-                    "reconciled_jobs", []
-                ):
-                    if any(
-                        r["key"] == row["key"]
-                        for r in result.get("recovered_resources", [])
-                    ):
-                        self.store.db.execute(
-                            "DELETE FROM resources WHERE key=?", (row["key"],)
-                        )
+            device = job["spec"].get("device")
             for old in self.store.jobs():
                 if (
                     old["id"] != job["id"]

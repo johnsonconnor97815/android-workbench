@@ -101,6 +101,20 @@ def same_process(identity):
     return bool(identity) and process_identity(identity["pid"]) == identity
 
 
+def is_adb_server(identity):
+    if not identity:
+        return False
+    try:
+        argv = (
+            Path(f"/proc/{int(identity['pid'])}/cmdline")
+            .read_bytes()
+            .split(b"\0")
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return b"adb" in argv and b"fork-server" in argv and b"server" in argv
+
+
 def stop_group(proc, grace=2):
     if proc.poll() is not None:
         return
@@ -184,9 +198,12 @@ def descendants(pid):
         if not extra:
             break
         owned.update(extra)
-    return [
-        process_identity(child) for child in owned - {pid} if process_identity(child)
-    ]
+    remaining = []
+    for child in owned - {pid}:
+        identity = process_identity(child)
+        if identity and not is_adb_server(identity):
+            remaining.append(identity)
+    return remaining
 
 
 def become_subreaper():

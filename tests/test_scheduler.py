@@ -11,6 +11,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workbench.client import Client
 from workbench.common import WorkbenchError, atomic_json, rpc
+from workbench.registry import normalize
 from workbench.service import DEFAULTS
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,6 +113,52 @@ class SchedulerTest(unittest.TestCase):
 
     def events(self, j):
         return self.a.call("jobs.subscribe", {"id": j["id"]})["events"]
+
+    def test_scene_logcat_step_is_bounded_and_clear_makes_it_mutating(self):
+        directory = self.root / "normalized"
+        directory.mkdir()
+        config = {
+            **DEFAULTS,
+            "devices": {"one": {"serial": "fake-one", "adb": "fake-adb"}},
+        }
+        request = {
+            "project": str(self.project),
+            "operation": "device.scene",
+            "device": "one",
+            "steps": [
+                {"action": "logcat", "lines": 100, "buffer": "main", "level": "E"}
+            ],
+            "request_key": "logcat-readonly",
+        }
+        spec = normalize(request, config, directory)
+        self.assertTrue(spec["readonly"])
+        self.assertEqual(spec["steps"][0]["lines"], 100)
+
+        request["steps"][0]["clear"] = True
+        request["request_key"] = "logcat-clear"
+        spec = normalize(request, config, directory)
+        self.assertFalse(spec["readonly"])
+
+    def test_device_info_is_readonly_and_routed_to_the_device(self):
+        directory = self.root / "normalized-info"
+        directory.mkdir()
+        config = {
+            **DEFAULTS,
+            "devices": {"one": {"serial": "fake-one", "adb": "fake-adb"}},
+        }
+        request = {
+            "project": str(self.project),
+            "operation": "device.info",
+            "device": "one",
+            "request_key": "device-info",
+        }
+        spec = normalize(request, config, directory)
+        self.assertTrue(spec["readonly"])
+        self.assertFalse(spec["insertable"])
+        self.assertEqual(spec["steps"], [{"action": "info"}])
+        self.assertIn(
+            "device.info", self.a.call("operations.list", {})["builtin"]
+        )
 
     def test_same_device_serial_other_device_parallel(self):
         a = self.submit(seconds=0.8)
@@ -264,6 +311,21 @@ class SchedulerTest(unittest.TestCase):
         with self.assertRaisesRegex(WorkbenchError, "Registered Python is missing"):
             self.a.submit(operation="missing-python", args=[])
 
+    def test_shared_named_output_can_be_rewritten(self):
+        self.register_script(
+            "session",
+            "import sys\npath=sys.argv[sys.argv.index('--state')+1]\n"
+            "open(path, 'a').write('x')\n",
+            outputs=["--state"],
+            shared_outputs=["--state"],
+        )
+        state = self.root / "session.txt"
+        for _ in range(2):
+            job = self.a.submit(operation="session", args=["--state", str(state)])
+            result = self.a.wait(job["id"], 8)
+            self.assertEqual(result["state"], "succeeded", result)
+        self.assertEqual(state.read_text(), "xx")
+
     def test_legacy_adapter_and_partial_result(self):
         self.register_script(
             "partial",
@@ -308,6 +370,73 @@ class SchedulerTest(unittest.TestCase):
             self.a.submit(
                 operation="test.simulate", device="one", recovery=True, resources=[]
             )
+
+    def test_registered_recovery_only_repairs_declared_operations(self):
+        self.register_script("broken", "raise RuntimeError('interrupted')\n", serial=0)
+        failed = self.a.submit(operation="broken", device="one", args=["fake-one"])
+        self.assertFalse(self.a.wait(failed["id"], 8)["result"]["cleanup_ok"])
+        code = "import json,pathlib,sys\nout=pathlib.Path(sys.argv[2]);out.mkdir();(out/'result.json').write_text(json.dumps({'pass':True}))\n"
+        self.register_script("repair", code, serial=0, recovery=True,
+                             recovery_for=["broken"], outputs=["--output"], result_file="result.json")
+        # A caller cannot label an arbitrary adapter as a recovery operation.
+        with self.assertRaisesRegex(WorkbenchError, "adapter-owned"):
+            self.a.submit(operation="broken", device="one", args=["fake-one"], recovery=True)
+        # The reviewed repair runs even while that device needs recovery.
+        # Script uses positional output; --output remains present for resource locking.
+        output = self.project / "recovered"
+        repaired = self.a.submit(operation="repair", device="one",
+                                 args=["fake-one", str(output), "--output", str(output)])
+        done = self.a.wait(repaired["id"], 8)
+        self.assertEqual(done["state"], "succeeded", done.get("result"))
+        self.assertFalse(any(x["key"] == "device:one" for x in self.a.call("resources.state")))
+
+    def test_local_recovery_repairs_declared_shared_resources(self):
+        old_code = (
+            "import json,pathlib,sys\n"
+            "out=pathlib.Path(sys.argv[2]);out.mkdir()\n"
+            "(out/'result.json').write_text(json.dumps({'pass':True,"
+            "'cleanup_errors':['Task descendants still alive']}))\n"
+        )
+        self.register_script(
+            "environment_check",
+            old_code,
+            mutates_environment=True,
+            result_file="result.json",
+            outputs=["--output"],
+        )
+        old_output = self.project / "environment-check"
+        failed = self.a.submit(
+            operation="environment_check",
+            args=["--output", str(old_output)],
+        )
+        self.assertFalse(self.a.wait(failed["id"], 8)["result"]["cleanup_ok"])
+        self.assertTrue(
+            any(x["key"] == "service:adb" for x in self.a.call("resources.state"))
+        )
+
+        repair_code = (
+            "import json,pathlib,sys\n"
+            "out=pathlib.Path(sys.argv[2]);out.mkdir()\n"
+            "(out/'result.json').write_text(json.dumps({'pass':True}))\n"
+        )
+        self.register_script(
+            "environment_repair",
+            repair_code,
+            adb_exclusive=True,
+            recovery=True,
+            recovery_for=["environment_check"],
+            result_file="result.json",
+            outputs=["--output"],
+            readonly=True,
+        )
+        repair_output = self.project / "environment-repair"
+        repaired = self.a.submit(
+            operation="environment_repair",
+            args=["--output", str(repair_output)],
+        )
+        done = self.a.wait(repaired["id"], 8)
+        self.assertEqual(done["state"], "succeeded", done.get("result"))
+        self.assertEqual(self.a.call("resources.state"), [])
 
     def test_dependency_does_not_hold_phone_while_waiting(self):
         upstream = self.submit(device="two", seconds=0.5)
@@ -819,6 +948,47 @@ class PageValidationTest(unittest.TestCase):
                 device.screenshot()
             self.assertTrue((Path(folder) / "screenshot.png").is_file())
             self.assertTrue(any(args[:3] == ("shell", "rm", "-f") for args in calls))
+
+
+class DeviceInfoTest(unittest.TestCase):
+    def test_collects_bounded_reproducibility_facts(self):
+        from types import SimpleNamespace
+        from workbench.worker import Device
+
+        def adb(*args, **kwargs):
+            if "getprop" in args:
+                return "\n".join(
+                    [
+                        "[ro.product.model]: [Test Model]",
+                        "[ro.build.version.release]: [15]",
+                        "[ro.build.version.sdk]: [35]",
+                        "[ro.product.cpu.abilist]: [arm64-v8a]",
+                        "[ignored]: [value]",
+                    ]
+                )
+            if args == ("shell", "wm", "size"):
+                return "Physical size: 1080x2400\nOverride size: 1080x2340"
+            if args == ("shell", "cat", "/proc/meminfo"):
+                return "MemTotal:       8192000 kB\nMemFree:         1 kB\n"
+            if args == ("shell", "df", "-k", "/data"):
+                return (
+                    "Filesystem 1K-blocks Used Available Use% Mounted on\n"
+                    "/data 262144000 131072000 131072000 50% /data\n"
+                )
+            if args == ("shell", "cat", "/proc/sys/kernel/random/boot_id"):
+                return "boot-id"
+            raise AssertionError("unexpected adb call: " + repr(args))
+
+        device = Device(SimpleNamespace())
+        device.adb = adb
+        result = device.info()
+        self.assertEqual(result["boot_id"], "boot-id")
+        self.assertEqual(result["properties"]["ro.product.model"], "Test Model")
+        self.assertEqual(result["screen"]["size"], "1080x2340")
+        self.assertEqual(result["memory"]["total_gib"], 7.81)
+        self.assertEqual(result["storage"]["filesystem"], "/data")
+        self.assertEqual(result["storage"]["available_gib"], 125.0)
+        self.assertEqual(result["storage"]["mount"], "/data")
 
 
 if __name__ == "__main__":

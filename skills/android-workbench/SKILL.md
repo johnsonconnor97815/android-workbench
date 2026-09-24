@@ -14,8 +14,10 @@ metadata:
 | 任务 | 读取 |
 | --- | --- |
 | 多能力组合、队列、冲突与恢复 | `references/workbench-routing.md` |
-| 截图、页面操作、状态观测、受管 Hook | `references/device-analysis.md` |
+| 设备信息、截图、页面操作、状态观测、受管 Hook | `references/device-analysis.md` |
 | 静态环境、分析 MCP、工具链版本 | `components/static-env/README.md` |
+| 分析请求路由、包概览、Manifest/资源/预览、JADX 反编译、源码导航、签名、字符串、知识检索、Python 计算/session 状态、持久 scratchpad 与宿主执行 | `components/analysis-agent/README.md` |
+| APK 补丁、方法级 DEX 补丁、USB 联网代理、重打包与复杂逆向 | `components/apk-reverse/README.md` |
 | Frida 选版、修改、构建、部署 | `components/frida/README.md` |
 | 已安装 App 的 APK 导出与校验 | `components/apk-export/README.md` |
 

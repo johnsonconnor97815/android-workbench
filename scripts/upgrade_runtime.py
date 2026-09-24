@@ -41,6 +41,19 @@ def main():
         raise SystemExit(
             "Existing work must finish before upgrading: " + ",".join(state["active"])
         )
+    try:
+        subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts/configure_project.py"),
+                str(args.project.resolve()),
+                "--update",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        client.call("service.resume")
+        raise
     identity = process_identity(capabilities["pid"])
     os.kill(identity["pid"], signal.SIGTERM)
     deadline = time.monotonic() + 10

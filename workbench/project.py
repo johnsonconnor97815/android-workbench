@@ -20,6 +20,8 @@ COMPONENTS = {
     "static-env": "components/static-env",
     "frida": "components/frida",
     "apk-export": "components/apk-export",
+    "apk-reverse": "components/apk-reverse",
+    "analysis-agent": "components/analysis-agent",
 }
 
 
@@ -128,6 +130,442 @@ def builtin_operations():
     operations["static.inspect_so"].update(
         python=".android-static/venvs/native-python/bin/python", outputs=["--output"]
     )
+
+    analysis = "analysis-agent"
+    analysis_definitions = {
+        "route": {
+            "subcommand": "route",
+            "readonly": True,
+            "outputs": ["--output"],
+        },
+        "overview": {
+            "subcommand": "overview",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "files": {
+            "subcommand": "files",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "entry_points": {
+            "subcommand": "entry-points",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "manifest": {
+            "subcommand": "manifest",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "resources": {
+            "subcommand": "resources",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "preview": {
+            "subcommand": "preview",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output", "--extract"],
+        },
+        "decompile": {
+            "subcommand": "decompile",
+            "readonly": False,
+            "compute": True,
+            "outputs": ["--output", "--output-dir"],
+        },
+        "code": {
+            "subcommand": "code",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "signature": {
+            "subcommand": "signature",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "strings": {
+            "subcommand": "strings",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "snapshot": {
+            "subcommand": "snapshot",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "knowledge": {
+            "subcommand": "knowledge",
+            "readonly": False,
+            "compute": True,
+            "outputs": ["--index", "--output"],
+            "shared_outputs": ["--index"],
+        },
+        "python": {
+            "subcommand": "python",
+            "readonly": False,
+            "compute": True,
+            "outputs": ["--output", "--save-session"],
+            "shared_outputs": ["--save-session"],
+        },
+        "exec": {
+            "subcommand": "exec",
+            "readonly": False,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "scratchpad": {
+            "subcommand": "scratchpad",
+            "readonly": True,
+            "outputs": ["--output", "--path"],
+            "shared_outputs": ["--path"],
+        },
+    }
+    for name, entry in analysis_definitions.items():
+        add("analysis." + name, analysis, "analysis.py", **entry)
+
+    apkrev = "apk-reverse"
+
+    def add_apkrev(name, script, **entry):
+        source = SKILL_SOURCE + "/" + COMPONENTS[apkrev]
+        operations["apkrev." + name] = {
+            "script": source + "/scripts/" + script,
+            "source": source,
+            **entry,
+        }
+
+    apkrev_definitions = {
+        "doctor": {
+            "script": "doctor.py",
+            "serial": "--device",
+            "readonly": True,
+        },
+        "capabilities": {
+            "script": "capabilities.py",
+            "readonly": True,
+        },
+        "device_shell": {
+            "script": "device_shell.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "preflight": {
+            "script": "preflight.py",
+            "serial": "--serial",
+            "readonly": True,
+        },
+        "apk_diff": {
+            "script": "apk_diff.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "blob_decode": {
+            "script": "blob_decode.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "coldstart": {
+            "script": "coldstart.py",
+            "serial": "--serial",
+            "outputs": ["--out"],
+        },
+        "dart_disasm": {
+            "script": "dart_disasm.py",
+            "python": ".android-static/venvs/native-python/bin/python",
+            "readonly": True,
+            "compute": True,
+        },
+        "dart_pool_strings": {
+            "script": "dart_pool_strings.py",
+            "readonly": True,
+            "compute": True,
+            "output_positions": [1],
+            "shared_output_positions": True,
+        },
+        "dart_pprefs": {
+            "script": "dart_pprefs.py",
+            "readonly": True,
+            "compute": True,
+            "output_positions": [1],
+            "shared_output_positions": True,
+        },
+        "datastore_inject": {
+            "script": "datastore_inject.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--file"],
+        },
+        "devsh": {
+            "script": "devsh.py",
+            "serial": "--serial",
+            "adb_exclusive": True,
+        },
+        "dex_check_verifier": {
+            "script": "dex_check_verifier.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dex_classdiff": {
+            "script": "dex_classdiff.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dex_dump_validate": {
+            "script": "dex_dump_validate.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dexutil": {
+            "script": "dexutil.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dex_find_insn": {
+            "script": "dex_find_insn.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dex_method_patch": {
+            "script": "dex_method_patch.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--output"],
+        },
+        "dex_mem_scan": {
+            "script": "dex_mem_scan.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--dump"],
+        },
+        "dex_patch_bytes": {
+            "script": "dex_patch_bytes.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out", "--report"],
+        },
+        "dex_strings": {
+            "script": "dex_strings.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "dex_strpatch": {
+            "script": "dex_strpatch.py",
+            "readonly": True,
+            "compute": True,
+            "output_positions": [1],
+        },
+        "elf_plt": {
+            "script": "elf_plt.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "find_refs": {
+            "script": "find_refs.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "frida_rpc_serve": {
+            "script": "frida_rpc_serve.py",
+            "serial": "--device-serial",
+        },
+        "grab_crash": {
+            "script": "grab_crash.py",
+            "serial": "--serial",
+            "readonly": True,
+        },
+        "install_test": {
+            "script": "install_test.py",
+            "serial": "--serial",
+            "outputs": ["--shots"],
+        },
+        "java2c_probe": {
+            "script": "java2c_probe.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--dir"],
+        },
+        "lib_map": {
+            "script": "lib_map.py",
+            "serial": "--serial",
+            "readonly": True,
+        },
+        "lsposed_scaffold": {
+            "script": "lsposed_scaffold.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "mt_mcp_probe": {
+            "script": "mt_mcp_probe.py",
+            "readonly": True,
+        },
+        "native_crash": {
+            "script": "native_crash.py",
+            "python": ".android-static/venvs/native-python/bin/python",
+            "readonly": True,
+            "compute": True,
+        },
+        "patch_smali": {
+            "script": "patch_smali.py",
+            "readonly": False,
+            "compute": True,
+        },
+        "probe_api": {
+            "script": "probe_api.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "protobuf_decode": {
+            "script": "protobuf_decode_raw.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "repack": {
+            "script": "repack.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out", "--split-out-dir", "--workdir"],
+        },
+        "run_probe": {
+            "script": "run_probe.py",
+            "serial": "--device",
+            "outputs": ["--log"],
+        },
+        "scan_leaks": {
+            "script": "scan_leaks.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "sig_probe": {
+            "script": "sig_probe.py",
+            "serial": "--serial",
+            "readonly": True,
+        },
+        "smali_disasm": {
+            "script": "smtool.py",
+            "subcommand": "d",
+            "readonly": True,
+            "compute": True,
+            "output_positions": [2],
+        },
+        "smali_assemble": {
+            "script": "smtool.py",
+            "subcommand": "a",
+            "readonly": False,
+            "compute": True,
+            "output_positions": [2],
+        },
+        "snap": {
+            "script": "snap.py",
+            "serial": "--serial",
+            "readonly": True,
+            "outputs": ["--out"],
+        },
+        "so_constpatch": {
+            "script": "so_constpatch.py",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "spawn_patch_detach": {
+            "script": "spawn_patch_detach.py",
+            "serial": "--serial",
+            "outputs": ["--out-prefix"],
+        },
+        "stalker_report": {
+            "script": "stalker_report.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "svc_scan": {
+            "script": "svc_scan.py",
+            "python": ".android-static/venvs/native-python/bin/python",
+            "readonly": True,
+            "compute": True,
+        },
+        "tls_check": {
+            "script": "tls_check.py",
+            "readonly": True,
+            "compute": True,
+        },
+        "usb_net_proxy": {
+            "script": "usb_net_proxy.py",
+            "readonly": True,
+            "compute": True,
+            "output_positions": [1],
+        },
+        "kernel_gates": {
+            "script": "kernelsu_syscall_mask.py",
+            "subcommand": "gates",
+            "readonly": True,
+        },
+        "kernel_generate": {
+            "script": "kernelsu_syscall_mask.py",
+            "subcommand": "generate",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "kernel_verify": {
+            "script": "kernelsu_syscall_mask.py",
+            "subcommand": "verify",
+            "readonly": True,
+            "compute": True,
+        },
+        "rasc_build": {
+            "script": "rasc_build.py",
+            "mutates_environment": True,
+            "compute": True,
+            "outputs": ["--work"],
+        },
+        "vmp_audit": {
+            "script": "vmp_diff_harness.py",
+            "subcommand": "audit",
+            "readonly": True,
+            "compute": True,
+        },
+        "vmp_build": {
+            "script": "vmp_diff_harness.py",
+            "subcommand": "build",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "vmp_compare": {
+            "script": "vmp_diff_harness.py",
+            "subcommand": "compare",
+            "readonly": True,
+            "compute": True,
+        },
+        "vmp_emit_smali": {
+            "script": "vmp_diff_harness.py",
+            "subcommand": "emit-smali",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+        "vmp_simulate": {
+            "script": "vmp_diff_harness.py",
+            "subcommand": "simulate",
+            "readonly": True,
+            "compute": True,
+            "outputs": ["--out"],
+        },
+    }
+    for name, entry in apkrev_definitions.items():
+        add_apkrev(name, **entry)
     return operations
 
 
@@ -178,6 +616,13 @@ def generate(root, checkout, python=None):
     for entry in doc["operations"].values():
         if not registered_path(root, doc, entry["script"]).is_file():
             raise WorkbenchError("Bundled operation missing: " + entry["script"])
+        if not set(entry.get("shared_outputs", [])).issubset(
+            entry.get("outputs", [])
+        ):
+            raise WorkbenchError(
+                "Bundled operation has shared_outputs outside outputs: "
+                + entry["script"]
+            )
     return doc
 
 

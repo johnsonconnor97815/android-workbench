@@ -71,14 +71,14 @@ def validate():
     for name in ("workbench-routing.md", "device-analysis.md"):
         if not (ROOT / "skills/android-workbench/references" / name).is_file():
             raise ValueError("Required reference missing: " + name)
-    for name in ("static-env", "frida", "apk-export"):
+    for name in ("static-env", "frida", "apk-export", "apk-reverse", "analysis-agent"):
         component = ROOT / "skills/android-workbench/components" / name
         if not (component / "README.md").is_file():
             raise ValueError("Required component guide missing: " + name)
     for name in ("static-analyst.md", "device-analyst.md", "report-auditor.md"):
         if not (ROOT / "agents" / name).is_file():
             raise ValueError("Required plugin agent missing: " + name)
-    for name in ("android-static-env", "frida-modified", "pull-android-apk"):
+    for name in ("android-static-env", "frida-modified", "pull-android-apk", "apk-reverse"):
         if not (ROOT / "licenses" / name / "LICENSE").is_file():
             raise ValueError("Component license missing: " + name)
     paths = payload()

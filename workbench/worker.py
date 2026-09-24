@@ -23,6 +23,7 @@ from .common import (
     process_identity,
     rpc,
     same_process,
+    is_adb_server,
     stop_group,
     descendants,
     become_subreaper,
@@ -77,6 +78,72 @@ class Device:
         }
         self.runner.call("observation", observation=value)
         return value
+
+    def info(self):
+        properties = {}
+        for line in self.adb("shell", "getprop").splitlines():
+            match = re.fullmatch(r"\[([^\]]+)\]: \[([^\]]*)\]", line.strip())
+            if match and match.group(1) in {
+                "ro.product.brand",
+                "ro.product.manufacturer",
+                "ro.product.model",
+                "ro.product.name",
+                "ro.product.device",
+                "ro.build.id",
+                "ro.build.version.release",
+                "ro.build.version.sdk",
+                "ro.build.version.security_patch",
+                "ro.build.fingerprint",
+                "ro.product.cpu.abilist",
+            }:
+                properties[match.group(1)] = match.group(2)
+
+        size_output = self.adb("shell", "wm", "size")
+        size = None
+        for line in size_output.splitlines():
+            match = re.search(r"(?:Override|Physical) size:\s*(\d+x\d+)", line)
+            if match:
+                size = match.group(1)
+
+        meminfo = self.adb("shell", "cat", "/proc/meminfo")
+        memory = None
+        for line in meminfo.splitlines():
+            match = re.fullmatch(r"MemTotal:\s*(\d+)\s*kB", line.strip())
+            if match:
+                total_kib = int(match.group(1))
+                memory = {
+                    "total_kib": total_kib,
+                    "total_gib": round(total_kib / (1024 * 1024), 2),
+                }
+                break
+
+        storage = None
+        data_lines = [
+            line for line in self.adb("shell", "df", "-k", "/data").splitlines() if line.strip()
+        ]
+        if data_lines:
+            columns = data_lines[-1].split()
+            if len(columns) >= 4:
+                total_kib = int(columns[1])
+                available_kib = int(columns[3])
+                storage = {
+                    "filesystem": columns[0],
+                    "total_kib": total_kib,
+                    "available_kib": available_kib,
+                    "total_gib": round(total_kib / (1024 * 1024), 2),
+                    "available_gib": round(available_kib / (1024 * 1024), 2),
+                    "mount": columns[-1],
+                }
+
+        return {
+            "schema": 1,
+            "boot_id": self.adb("shell", "cat", "/proc/sys/kernel/random/boot_id"),
+            "properties": properties,
+            "screen": {"size": size},
+            "memory": memory,
+            "storage": storage,
+            "observed_at": time.time(),
+        }
 
     def validate_ui(self, suffix):
         expected = self.runner.spec.get("ui_expect", [])
@@ -489,6 +556,9 @@ class Runner:
                 )
             atomic_json(self.directory / "observation.json", observation)
             return
+        if spec["operation"] == "device.info":
+            atomic_json(self.directory / "device-info.json", self.device.info())
+            return
         if spec.get("scene") and spec.get("expected_boot"):
             if self.device.observe()["boot_id"] != spec["expected_boot"]:
                 raise WorkbenchError("Bound scene boot identity expired")
@@ -527,6 +597,22 @@ class Runner:
                     )
                 finally:
                     self.device.adb("shell", "rm", "-f", remote, cleanup=True)
+            elif action == "logcat":
+                buffer = step.get("buffer", "main")
+                if step.get("clear"):
+                    self.device.adb("shell", "logcat", "-b", buffer, "-c")
+                arguments = [
+                    "logcat", "-d", "-b", buffer, "-t", str(step["lines"])
+                ]
+                if step.get("level"):
+                    arguments.append("*:" + step["level"])
+                (self.directory / f"logcat-{index}.log").write_text(
+                    self.device.adb(
+                        "shell", *arguments, timeout=min(60, max(5, step["lines"] / 100))
+                    ),
+                    encoding="utf-8",
+                    errors="replace",
+                )
             elif action == "launch":
                 self.device.adb("shell", "am", "start", "-W", "-n", step["component"])
             elif action == "tap":
@@ -553,6 +639,24 @@ class Runner:
 
     def legacy(self):
         entry = self.spec["entry"]
+        if self.spec.get("recovery"):
+            # Only a reviewed, registered adapter may repair the named operations.
+            for identifier in self.spec.get("recovery_targets", []):
+                folder = Path(self.grant["state"]) / "jobs" / identifier
+                old = json.loads((folder / "normalized.json").read_text())
+                if old.get("operation") not in entry["recovery_for"]:
+                    raise WorkbenchError("Recovery adapter does not cover: " + old["operation"])
+                for name in ("active-process.json", "residual-processes.json"):
+                    path = folder / name
+                    if path.is_file():
+                        data = json.loads(path.read_text())
+                        identities = data if isinstance(data, list) else [data.get("identity")]
+                        if any(
+                            same_process(x)
+                            for x in identities
+                            if x and not is_adb_server(x)
+                        ):
+                            raise WorkbenchError("Old adapter process is still alive")
         # Snapshot Python code while preserving original __file__-relative project defaults.
         for relative, expected in self.spec.get("source_manifest", {}).items():
             original = Path(self.spec["source"]) / relative
@@ -658,6 +762,12 @@ class Runner:
                     "Adapter exited successfully without a passing result record"
                 )
         if code == 0:
+            if self.spec.get("recovery"):
+                for identifier in self.spec.get("recovery_targets", []):
+                    folder = Path(self.grant["state"]) / "jobs" / identifier
+                    old = json.loads((folder / "normalized.json").read_text())
+                    self.reconciled_jobs.append(identifier)
+                    self.recovered_resources.extend(old.get("resources", []))
             return "succeeded", code
         if code in entry.get("partial_codes", []):
             output = self.spec.get("outputs", [])

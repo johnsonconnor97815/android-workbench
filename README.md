@@ -9,7 +9,7 @@
 ## 插件结构
 
 - `.claude-plugin/plugin.json` 是唯一维护的插件清单。`.codex-plugin/plugin.json` 是构建校验强制保持字节相同的 Codex 兼容镜像，不是第二来源。
-- `skills/android-workbench/SKILL.md` 是唯一自动加载的 Skill。调度规则在 `references/`，静态环境、Frida 和 APK 导出实现在 `components/`。
+- `skills/android-workbench/SKILL.md` 是唯一自动加载的 Skill。调度规则在 `references/`，静态环境、分析代理、Frida、APK 导出和 APK 逆向补丁实现在 `components/`。
 - `agents/` 提供 `static-analyst`、`device-analyst`、`report-auditor` 三个 Claude Code 子代理。它们只是分工入口，所有设备和共享环境操作仍必须走 Workbench MCP。
 - `.mcp.json` 指向当前共享调度运行时。插件安装本身不下载 SDK、Frida 或分析工具链。
 
@@ -49,7 +49,7 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
   pull --serial YOUR_ADB_SERIAL --package com.example.app --output /path/to/analysis/apps/export
 ```
 
-`operations` 列出 19 个内置脚本操作及其参数约定。截图、设备观察和有限时长场景是服务提供的操作，不计入这 19 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+`operations` 列出 92 个内置脚本操作及其参数约定，其中 `apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 92 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
 
 初始化后，可以用静态环境组件安装工具，例如：
 
@@ -58,7 +58,7 @@ python3 scripts/workbench.py --project /path/to/analysis run environment.setup -
   plan --workspace /path/to/analysis --profile core
 ```
 
-根据计划和环境要求再执行 `install`；SDK 许可证接受、系统依赖安装沿用原组件的明确参数。运行环境、APK、Frida 的细节分别见 [静态环境组件](skills/android-workbench/components/static-env/README.md)、[APK 导出组件](skills/android-workbench/components/apk-export/README.md)、[Frida 组件](skills/android-workbench/components/frida/README.md)。
+根据计划和环境要求再执行 `install`；SDK 许可证接受、系统依赖安装沿用原组件的明确参数。运行环境、分析代理、APK、Frida 和 APK 逆向补丁的细节分别见 [静态环境组件](skills/android-workbench/components/static-env/README.md)、[分析代理组件](skills/android-workbench/components/analysis-agent/README.md)、[APK 导出组件](skills/android-workbench/components/apk-export/README.md)、[Frida 组件](skills/android-workbench/components/frida/README.md)、[APK 逆向组件](skills/android-workbench/components/apk-reverse/README.md)。
 
 有限场景示例：
 

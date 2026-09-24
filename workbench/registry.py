@@ -16,6 +16,7 @@ SCENE_STEPS = {
     "observe",
     "screenshot",
     "ui_dump",
+    "logcat",
     "launch",
     "tap",
     "swipe",
@@ -189,12 +190,15 @@ def normalize(request, config, directory):
         "device.scene",
         "device.screenshot",
         "device.observe",
+        "device.info",
         "device.recover",
     }:
         if not spec.get("device"):
             raise WorkbenchError("Device required")
         if operation == "device.scene":
             steps = spec.get("steps", [])
+        elif operation == "device.info":
+            steps = [{"action": "observe"}]
         else:
             steps = [
                 {
@@ -252,6 +256,20 @@ def normalize(request, config, directory):
                 not isinstance(step.get("text"), str) or len(step["text"]) > 10000
             ):
                 raise WorkbenchError("Input text must be at most 10000 characters")
+            if step["action"] == "logcat":
+                step["lines"] = int(
+                    bounded(step.get("lines", 500), 1, 10000, "logcat.lines")
+                )
+                if step.get("buffer", "main") not in {
+                    "main", "system", "crash", "events", "radio", "all"
+                }:
+                    raise WorkbenchError("Unsupported logcat buffer")
+                if step.get("level") not in {
+                    None, "V", "D", "I", "W", "E", "F", "S"
+                }:
+                    raise WorkbenchError("Unsupported logcat level")
+                if not isinstance(step.get("clear", False), bool):
+                    raise WorkbenchError("logcat.clear must be boolean")
             if step["action"] == "hook_attach":
                 hook = Path(step["script"]).expanduser().resolve()
                 if not hook.is_relative_to(root) or not hook.is_file():
@@ -264,9 +282,12 @@ def normalize(request, config, directory):
                 spec["snapshot_hashes"][str(target)] = file_hash(target)
                 if not re.fullmatch(r"[A-Za-z0-9_.]+", step.get("package", "")):
                     raise WorkbenchError("Hook package required")
-        spec["steps"] = steps
-        spec["readonly"] = all(
+        spec["steps"] = (
+            [{"action": "info"}] if operation == "device.info" else steps
+        )
+        spec["readonly"] = operation == "device.info" or all(
             x["action"] in {"observe", "screenshot", "ui_dump", "wait", "checkpoint"}
+            or (x["action"] == "logcat" and not x.get("clear"))
             for x in steps
         )
         spec["insertable"] = operation in {
@@ -291,6 +312,13 @@ def normalize(request, config, directory):
         entry = project.get("operations", {}).get(operation)
         if entry is None:
             raise WorkbenchError(f"Unknown registered operation: {operation}")
+        shared_outputs = entry.get("shared_outputs", [])
+        if not isinstance(shared_outputs, list) or not all(
+            isinstance(flag, str) and flag for flag in shared_outputs
+        ):
+            raise WorkbenchError("shared_outputs must be an array of flags")
+        if not set(shared_outputs).issubset(entry.get("outputs", [])):
+            raise WorkbenchError("shared_outputs must be a subset of outputs")
         if "python" in entry:
             if not isinstance(entry["python"], str) or not entry["python"]:
                 raise WorkbenchError("Registered Python must be a nonempty path")
@@ -359,6 +387,19 @@ def normalize(request, config, directory):
         spec["source_hash"] = file_hash(script)
         spec["snapshot_hashes"][str(copy_path)] = file_hash(copy_path)
         spec["entry"] = entry
+        if entry.get("recovery"):
+            repairs = entry.get("recovery_for")
+            if (not entry.get("result_file")
+                    or not isinstance(repairs, list) or not repairs
+                    or not all(isinstance(x, str) and x for x in repairs)):
+                raise WorkbenchError("Recovery adapters require result_file and recovery_for")
+            if not spec.get("device") and not (
+                entry.get("adb_exclusive") or entry.get("mutates_environment")
+            ):
+                raise WorkbenchError(
+                    "Local recovery adapters require an exclusive shared resource"
+                )
+            spec["recovery"] = True
         spec["nested_source_manifests"] = {}
         for index, location in enumerate(entry.get("nested_sources", [])):
             nested = registered_path(root, project, location)
@@ -389,10 +430,12 @@ def normalize(request, config, directory):
             "--lock",
             "--so-dir",
             "--python",
+            "--session",
             "--previous-python",
             "--adb",
             "--aapt2",
             "--apksigner",
+            "--keytool",
         }
         directory_flags = {
             "--workspace",
@@ -402,6 +445,7 @@ def normalize(request, config, directory):
             "--prefix",
             "--output-dir",
             "--project-path",
+            "--root",
         }
         for i, arg in enumerate(args):
             flag = arg.split("=", 1)[0]
@@ -455,7 +499,8 @@ def normalize(request, config, directory):
             values += [x.split("=", 1)[1] for x in args if x.startswith(flag + "=")]
             for value in values:
                 target = (root / value).resolve()
-                spec["outputs"].append(str(target))
+                if flag not in entry.get("shared_outputs", []):
+                    spec["outputs"].append(str(target))
                 spec["resources"].append(resource(path_resource(target)))
     # Resource effects come exclusively from the registered adapter.
     spec["resources"] = list(

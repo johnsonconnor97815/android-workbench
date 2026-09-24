@@ -7,9 +7,11 @@
 能力路由：
 
 - 环境安装及分析 MCP：读取 `components/static-env/README.md`。修改环境要等实际使用者收尾。
+- 分析请求路由、包概览、Manifest 组件、资源、包内预览、JADX 反编译、源码导航、签名、字符串、知识检索、Python 计算/session 状态、持久 scratchpad 和宿主执行：读取 `components/analysis-agent/README.md`。先用 `analysis.route` 获得模式、上下文预算和候选操作，再按需执行 `analysis.overview`、`analysis.files`、`analysis.entry_points`、`analysis.manifest`、`analysis.resources`、`analysis.preview`、`analysis.decompile`、`analysis.code`、`analysis.signature`、`analysis.strings`、`analysis.snapshot`、`analysis.knowledge`、`analysis.python`、`analysis.scratchpad` 或 `analysis.exec`。
 - 已安装 App 的 APK：读取 `components/apk-export/README.md`，通过 `apk.pull` 操作提交原有 `pull` 参数；保留拆分、签名与来源校验。
+- APK 补丁、方法级 DEX 补丁、USB 联网代理、重打包、去广告、客户端限制与复杂加固样本：读取 `components/apk-reverse/README.md`；先确认交付物、环境、归属层和基线，再修改。仅导出、静态阅读或环境搭建时不加载。
 - Frida 版本、补丁、构建和部署：读取 `components/frida/README.md`；通过 `frida.*` 登记操作执行，不用日常 Hook 代替构建验证。
-- 截图、界面操作、受管 Hook：读取 `references/device-analysis.md`。同设备任务默认连续执行，只有适配后的检查点允许兼容观察。
+- 截图、设备信息、界面操作、受管 Hook：读取 `references/device-analysis.md`。同设备任务默认连续执行，只有适配后的检查点允许兼容观察。
 - 项目专用能力：仅使用项目清单显式登记的扩展，读取对应项目说明；保留其输入哈希、适用版本和部分完成含义。纯离线操作不申请手机。
 
 已有脚本在登记项目中运行时会转交服务。服务不可用时先检查启动状态，不退回裸 ADB/Frida。CLI 同样可用：`python <插件目录>/scripts/workbench.py --project <项目目录> operations`；执行前用 `start` 启动独立服务。

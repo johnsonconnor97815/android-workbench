@@ -321,6 +321,636 @@
         }
       ],
       "repository": "https://github.com/johnsonconnor97815/pull-android-apk.git"
+    },
+    "apk-reverse": {
+      "source": "skills/apk-reverse",
+      "commit": "971a961217917accb0cc7f5ccbc9162b09e8e191",
+      "local_changes": [
+        " M README.md",
+        " M references/protocol-reverse.md",
+        " M references/rasc-and-droidsaw.md",
+        " M references/split-apk.md",
+        " M scripts/apk_diff.py",
+        " M scripts/blob_decode.py",
+        " M scripts/capabilities.py",
+        " M scripts/coldstart.py",
+        " M scripts/dart_disasm.py",
+        " M scripts/dart_pool_strings.py",
+        " M scripts/dart_pprefs.py",
+        " M scripts/datastore_inject.py",
+        " M scripts/dex_check_verifier.py",
+        " M scripts/dex_classdiff.py",
+        " M scripts/dex_dump_validate.py",
+        " M scripts/dex_find_insn.py",
+        " M scripts/dex_mem_scan.py",
+        " M scripts/dex_patch_bytes.py",
+        " M scripts/dex_strings.py",
+        " M scripts/doctor.py",
+        " M scripts/elf_plt.py",
+        " M scripts/find_refs.py",
+        " M scripts/frida_rpc_serve.py",
+        " M scripts/grab_crash.py",
+        " M scripts/install_test.py",
+        " M scripts/java2c_probe.py",
+        " M scripts/kernelsu_syscall_mask.py",
+        " M scripts/lib_map.py",
+        " M scripts/lsposed_scaffold.py",
+        " M scripts/mt_mcp_probe.py",
+        " M scripts/native_crash.py",
+        " M scripts/preflight.py",
+        " M scripts/probe_api.py",
+        " M scripts/protobuf_decode_raw.py",
+        " M scripts/rasc_build.py",
+        " M scripts/repack.py",
+        " M scripts/run_probe.py",
+        " M scripts/scan_leaks.py",
+        " M scripts/sig_probe.py",
+        " M scripts/snap.py",
+        " M scripts/so_constpatch.py",
+        " M scripts/spawn_patch_detach.py",
+        " M scripts/stalker_report.py",
+        " M scripts/svc_scan.py",
+        " M scripts/tls_check.py",
+        " M scripts/vmp_diff_harness.py"
+      ],
+      "files": [
+        {
+          "path": "LICENSE",
+          "source_sha256": "ed9f20bb2778d834ff8c66f7c61b345e7a88c25354845aed1555b445df188b1f",
+          "bundled_sha256": "ed9f20bb2778d834ff8c66f7c61b345e7a88c25354845aed1555b445df188b1f"
+        },
+        {
+          "path": "README.md",
+          "source_sha256": "0d6d4727fac35811fd94c4fa3bd2b3a4dff80906875e0676c7b188a77701cc05",
+          "bundled_sha256": "f55aaa978a829c043c430eff3ea80335dce03071bcea2d5e3fe8d17c6ad28e6f"
+        },
+        {
+          "path": "evals/evals.json",
+          "source_sha256": "6c407547886bc0e7b201103e45640faeae210c4977dd231670a0f7379337114d",
+          "bundled_sha256": "6c407547886bc0e7b201103e45640faeae210c4977dd231670a0f7379337114d"
+        },
+        {
+          "path": "evidence/capability-matrix.json",
+          "source_sha256": "c30265b8efee85c2bd91511a3ffb2dec1384a4c055b597bc49b78d041629c034",
+          "bundled_sha256": "c30265b8efee85c2bd91511a3ffb2dec1384a4c055b597bc49b78d041629c034"
+        },
+        {
+          "path": "evidence/known-limitations.md",
+          "source_sha256": "72f819d0a34fa052b6f34bb13ff9232c975233cc5c68cc2ec6a2d6e93079dcf9",
+          "bundled_sha256": "72f819d0a34fa052b6f34bb13ff9232c975233cc5c68cc2ec6a2d6e93079dcf9"
+        },
+        {
+          "path": "evidence/tested-tool-versions.json",
+          "source_sha256": "b0774191ed2da4e8a0128153d09a8afcd48a6773c40b2a37c9ef4fae0881d963",
+          "bundled_sha256": "b0774191ed2da4e8a0128153d09a8afcd48a6773c40b2a37c9ef4fae0881d963"
+        },
+        {
+          "path": "references/account-gates.md",
+          "source_sha256": "98cc2540e77aa1e8249c767d36382ca8cb1b7779693e7ff51a6caff319158181",
+          "bundled_sha256": "98cc2540e77aa1e8249c767d36382ca8cb1b7779693e7ff51a6caff319158181"
+        },
+        {
+          "path": "references/ad-removal.md",
+          "source_sha256": "a93246ef89d2670c645402df126f6adbaed4ddc5157ad63c089c1acaafb87799",
+          "bundled_sha256": "a93246ef89d2670c645402df126f6adbaed4ddc5157ad63c089c1acaafb87799"
+        },
+        {
+          "path": "references/advanced-unpacking.md",
+          "source_sha256": "8b48ba652d5ef9207048bf09bc505af874484881dc1e3e7ba3947d22f6c962f4",
+          "bundled_sha256": "8b48ba652d5ef9207048bf09bc505af874484881dc1e3e7ba3947d22f6c962f4"
+        },
+        {
+          "path": "references/byte-level-patching.md",
+          "source_sha256": "3f7c3bd2fa4b25767a6f564697d78370f790596397ffdff1395ea79ae666fca0",
+          "bundled_sha256": "3f7c3bd2fa4b25767a6f564697d78370f790596397ffdff1395ea79ae666fca0"
+        },
+        {
+          "path": "references/code-virtualization-and-custom-linkers.md",
+          "source_sha256": "06f25c7855d0968cc0a23c7fbc143d6fa311ae5e8dfa89dd9a5313ab872d8b64",
+          "bundled_sha256": "06f25c7855d0968cc0a23c7fbc143d6fa311ae5e8dfa89dd9a5313ab872d8b64"
+        },
+        {
+          "path": "references/coverage/route-inventory.md",
+          "source_sha256": "1380999d4718599c9b4a5a4112ca2c3160e2da7a106573c77ac9f6f46964bb07",
+          "bundled_sha256": "1380999d4718599c9b4a5a4112ca2c3160e2da7a106573c77ac9f6f46964bb07"
+        },
+        {
+          "path": "references/coverage-and-limits.md",
+          "source_sha256": "37e658f80da4d8c7e8519264fe5cc9d364055e12dcf8403b40be86f7a7d7bfe9",
+          "bundled_sha256": "37e658f80da4d8c7e8519264fe5cc9d364055e12dcf8403b40be86f7a7d7bfe9"
+        },
+        {
+          "path": "references/dart-aot.md",
+          "source_sha256": "4557b4e3dafcb33f038d5fdf866375cfd1916bfd484a3f7fdef89ee683b27029",
+          "bundled_sha256": "4557b4e3dafcb33f038d5fdf866375cfd1916bfd484a3f7fdef89ee683b27029"
+        },
+        {
+          "path": "references/desensitization-and-leak-scans.md",
+          "source_sha256": "edcfba6121d4bedc0f53fce3c5459a1f5dffae00b909662832d6f4c4456784b7",
+          "bundled_sha256": "edcfba6121d4bedc0f53fce3c5459a1f5dffae00b909662832d6f4c4456784b7"
+        },
+        {
+          "path": "references/detection-and-anti-analysis.md",
+          "source_sha256": "7639eb93066e2a1a090b2ed7b6a2bfb5abb72ef06bc02d5467e4a358e14dda32",
+          "bundled_sha256": "7639eb93066e2a1a090b2ed7b6a2bfb5abb72ef06bc02d5467e4a358e14dda32"
+        },
+        {
+          "path": "references/dex-patching.md",
+          "source_sha256": "ebced793d8496c18f4276cc415a48c54d4f8575610f7b7f9faa83ed2a78cedd0",
+          "bundled_sha256": "ebced793d8496c18f4276cc415a48c54d4f8575610f7b7f9faa83ed2a78cedd0"
+        },
+        {
+          "path": "references/dynamic-frida.md",
+          "source_sha256": "692339bfdf7185e9e7f337c7729cd918467acede2a681e2cb655ac99c45f87f0",
+          "bundled_sha256": "692339bfdf7185e9e7f337c7729cd918467acede2a681e2cb655ac99c45f87f0"
+        },
+        {
+          "path": "references/emulation-and-rpc.md",
+          "source_sha256": "2f95756413338d973426db0bc51484d09d23ee8959c91c2489b108e9ad9c9917",
+          "bundled_sha256": "2f95756413338d973426db0bc51484d09d23ee8959c91c2489b108e9ad9c9917"
+        },
+        {
+          "path": "references/environment.md",
+          "source_sha256": "066e4a71d200fa77dc9f59978139ee66751ff96fedad1a4f2f768290617b9111",
+          "bundled_sha256": "066e4a71d200fa77dc9f59978139ee66751ff96fedad1a4f2f768290617b9111"
+        },
+        {
+          "path": "references/evidence-summary.md",
+          "source_sha256": "51728694a627a1bcac19de42cc1447ddf29b4bfd8c8659f244ccda39ce4d0d64",
+          "bundled_sha256": "51728694a627a1bcac19de42cc1447ddf29b4bfd8c8659f244ccda39ce4d0d64"
+        },
+        {
+          "path": "references/framework-runtimes.md",
+          "source_sha256": "04cdf9c5d980a2daebd57639e13860f51b2d7309e51e2853cabf35e76879bc63",
+          "bundled_sha256": "04cdf9c5d980a2daebd57639e13860f51b2d7309e51e2853cabf35e76879bc63"
+        },
+        {
+          "path": "references/handoff-boundaries.md",
+          "source_sha256": "00c6423474ff523c2b19ea54be54a00b94a84250d07b90bf1e930ff51ec80fc6",
+          "bundled_sha256": "00c6423474ff523c2b19ea54be54a00b94a84250d07b90bf1e930ff51ec80fc6"
+        },
+        {
+          "path": "references/java2c-and-jni-sinking.md",
+          "source_sha256": "93a552e0fc40ae4fed764dec70e2c61a8c060255591ad534554cba4b71d4e40b",
+          "bundled_sha256": "93a552e0fc40ae4fed764dec70e2c61a8c060255591ad534554cba4b71d4e40b"
+        },
+        {
+          "path": "references/kernel-and-environment-hardening.md",
+          "source_sha256": "4a26e019d4263dce2d38854abe3f5cb95d495de24870a14cda60f23a7abc7ea4",
+          "bundled_sha256": "4a26e019d4263dce2d38854abe3f5cb95d495de24870a14cda60f23a7abc7ea4"
+        },
+        {
+          "path": "references/long-task-discipline.md",
+          "source_sha256": "69f6e7691346095dcaed033e3b1efcc6425a2670e2e4fc4f1e3ebfb0f5c497fd",
+          "bundled_sha256": "69f6e7691346095dcaed033e3b1efcc6425a2670e2e4fc4f1e3ebfb0f5c497fd"
+        },
+        {
+          "path": "references/lsposed-and-modules.md",
+          "source_sha256": "c08e2ab27167ec29b768a30e945f669308e20f70f533bfa0b33a5cabaaca0971",
+          "bundled_sha256": "c08e2ab27167ec29b768a30e945f669308e20f70f533bfa0b33a5cabaaca0971"
+        },
+        {
+          "path": "references/membership-and-limits.md",
+          "source_sha256": "7ff3b755035911915b0d34ad0d329d1c46460512445c816dacae441ee5baf250",
+          "bundled_sha256": "7ff3b755035911915b0d34ad0d329d1c46460512445c816dacae441ee5baf250"
+        },
+        {
+          "path": "references/native-and-so.md",
+          "source_sha256": "bfb505d1eaf3f65318c470a7fcf36f064fd411c59dfecbeb25591d8c3de4c881",
+          "bundled_sha256": "bfb505d1eaf3f65318c470a7fcf36f064fd411c59dfecbeb25591d8c3de4c881"
+        },
+        {
+          "path": "references/native-dbi-and-deobfuscation.md",
+          "source_sha256": "e9ff567996cc3c915181f1453407a865fb734ee5586a27082247860f58f36af9",
+          "bundled_sha256": "e9ff567996cc3c915181f1453407a865fb734ee5586a27082247860f58f36af9"
+        },
+        {
+          "path": "references/native-tamper-and-suicide.md",
+          "source_sha256": "bf11d2d600b235daeb4ab8c4144296fa5fa6cf16d3d37aea7011df5cc1b6e556",
+          "bundled_sha256": "bf11d2d600b235daeb4ab8c4144296fa5fa6cf16d3d37aea7011df5cc1b6e556"
+        },
+        {
+          "path": "references/on-device-tooling.md",
+          "source_sha256": "7ef275001f3fa09a8a8946eeb18881c9ccfad9156d71f8409f9469b1241986f4",
+          "bundled_sha256": "7ef275001f3fa09a8a8946eeb18881c9ccfad9156d71f8409f9469b1241986f4"
+        },
+        {
+          "path": "references/packers.md",
+          "source_sha256": "7879d908d5db6954ac9fb68cbc129ce9939ae96d8a2e320ae71769e65b7b6cbd",
+          "bundled_sha256": "7879d908d5db6954ac9fb68cbc129ce9939ae96d8a2e320ae71769e65b7b6cbd"
+        },
+        {
+          "path": "references/patch-audit.md",
+          "source_sha256": "578053db400989347df6053eb1a603d88456ba6ec4acf0b401fcec2cd47c7566",
+          "bundled_sha256": "578053db400989347df6053eb1a603d88456ba6ec4acf0b401fcec2cd47c7566"
+        },
+        {
+          "path": "references/pitfalls.md",
+          "source_sha256": "ff9672079dbdd2403c2ba32f7d1b6c2884ee52930c7d71882d13ae9d2907d7b2",
+          "bundled_sha256": "ff9672079dbdd2403c2ba32f7d1b6c2884ee52930c7d71882d13ae9d2907d7b2"
+        },
+        {
+          "path": "references/precedents/README.md",
+          "source_sha256": "82d0560aa3b789eba7316334d5f2c3cccd38fa51115447e1cbc40cd94faf6984",
+          "bundled_sha256": "82d0560aa3b789eba7316334d5f2c3cccd38fa51115447e1cbc40cd94faf6984"
+        },
+        {
+          "path": "references/precedents/flutter-plus-shell-case-1.md",
+          "source_sha256": "fff8f8956f7f7d4b82791c14cff5bd785f64e9365698482f9c93ecede33f51e8",
+          "bundled_sha256": "fff8f8956f7f7d4b82791c14cff5bd785f64e9365698482f9c93ecede33f51e8"
+        },
+        {
+          "path": "references/precedents/frida-spawn-hangs-zero-events-case-2.md",
+          "source_sha256": "5aa28cfd116e0afc6174487d45d1c1c211947a6bb62fcb8d357727357fbd2df1",
+          "bundled_sha256": "5aa28cfd116e0afc6174487d45d1c1c211947a6bb62fcb8d357727357fbd2df1"
+        },
+        {
+          "path": "references/precedents/l1-equal-length-patch-case-4.md",
+          "source_sha256": "ea030b086f1e15310595d2da878ea5b1fcaafe3f291780837dd1725d68a35150",
+          "bundled_sha256": "ea030b086f1e15310595d2da878ea5b1fcaafe3f291780837dd1725d68a35150"
+        },
+        {
+          "path": "references/precedents/logd-broken-module-never-ran-case-3.md",
+          "source_sha256": "5d4e25f37db2a9ee02489f7943056a6307b4b8f10ae6d70484df3a2687555979",
+          "bundled_sha256": "5d4e25f37db2a9ee02489f7943056a6307b4b8f10ae6d70484df3a2687555979"
+        },
+        {
+          "path": "references/precedents/manual-grep-finds-what-nobody-grepped-case-5.md",
+          "source_sha256": "d751ee40e88a6bdba54e2977a13b15f88bbe0de40ef1dc7e0e01fbf95d65850d",
+          "bundled_sha256": "d751ee40e88a6bdba54e2977a13b15f88bbe0de40ef1dc7e0e01fbf95d65850d"
+        },
+        {
+          "path": "references/protocol-reverse.md",
+          "source_sha256": "f33ac0ccf86cef6fb8b22f82f7df495b48c81a7c0f5ca008e2273e87bd60538d",
+          "bundled_sha256": "13403aac32cd7794a3a992e5ae73091825dad7d1bb40fd5911e5b8db9959e81f"
+        },
+        {
+          "path": "references/rasc-and-droidsaw.md",
+          "source_sha256": "9b595564d57736045f3d54885537006347c2bcc1a92c62b0d6eb43535521b6a1",
+          "bundled_sha256": "aae2e5949a192a9512bcf49a548e8b9d788f82a6dc3c696d0173b3318c48b647"
+        },
+        {
+          "path": "references/recon.md",
+          "source_sha256": "37c1c502fa832da6319e62c2e4e057a3d966eb3445528faf85f5959260bd3aa2",
+          "bundled_sha256": "37c1c502fa832da6319e62c2e4e057a3d966eb3445528faf85f5959260bd3aa2"
+        },
+        {
+          "path": "references/repack-and-sign.md",
+          "source_sha256": "84ea7eb05f3b42c9ed0d255b3c15a565473a4cea4c42a2304f1219e46381d67d",
+          "bundled_sha256": "84ea7eb05f3b42c9ed0d255b3c15a565473a4cea4c42a2304f1219e46381d67d"
+        },
+        {
+          "path": "references/routing.md",
+          "source_sha256": "a2b2b0c869b883f1a8d686a03d19b996612eabcd1962fe4591430ea1823f606b",
+          "bundled_sha256": "a2b2b0c869b883f1a8d686a03d19b996612eabcd1962fe4591430ea1823f606b"
+        },
+        {
+          "path": "references/runtime-data.md",
+          "source_sha256": "bf247e60879283fd1d0da8b9b34ce8d4eec870cd4c1907a07a710baa907b2ace",
+          "bundled_sha256": "bf247e60879283fd1d0da8b9b34ce8d4eec870cd4c1907a07a710baa907b2ace"
+        },
+        {
+          "path": "references/server-api.md",
+          "source_sha256": "1842c5962421d6ef4fed75f83ed1736034ce78bc5aa254e3dc9b59d972159735",
+          "bundled_sha256": "1842c5962421d6ef4fed75f83ed1736034ce78bc5aa254e3dc9b59d972159735"
+        },
+        {
+          "path": "references/server-config-and-updates.md",
+          "source_sha256": "19818c34ba7c3e4c9f982c4eafff97427507c787b9028025fd8b7b848b32c2a4",
+          "bundled_sha256": "19818c34ba7c3e4c9f982c4eafff97427507c787b9028025fd8b7b848b32c2a4"
+        },
+        {
+          "path": "references/signature-derived-keys.md",
+          "source_sha256": "859c2c39cafe7f77c458468931c4ed9948723fb3a8e98c408606b648e1ffd19e",
+          "bundled_sha256": "859c2c39cafe7f77c458468931c4ed9948723fb3a8e98c408606b648e1ffd19e"
+        },
+        {
+          "path": "references/split-apk.md",
+          "source_sha256": "828870b8ec0547707af26813821c7f236c4023d6b330e45954dcafeb4df34149",
+          "bundled_sha256": "b8c52f527ee750f5d738e02b82474ef57149ee1c0b4f713262197da0af7196c6"
+        },
+        {
+          "path": "references/third-party-builds.md",
+          "source_sha256": "28ae42ef1775178fc63454ee347b8124e9cc91716602ba5d463122fa6db51d2d",
+          "bundled_sha256": "28ae42ef1775178fc63454ee347b8124e9cc91716602ba5d463122fa6db51d2d"
+        },
+        {
+          "path": "references/tls-and-cert.md",
+          "source_sha256": "8d5f662b704df985f53c418f3b5fd62361f39add9586f77cf9bba6529c35fda3",
+          "bundled_sha256": "8d5f662b704df985f53c418f3b5fd62361f39add9586f77cf9bba6529c35fda3"
+        },
+        {
+          "path": "references/toolchain.md",
+          "source_sha256": "5be007e34a4626b68464f1be15b735084615e8e33098251d8ace3fbb4fcc7b39",
+          "bundled_sha256": "5be007e34a4626b68464f1be15b735084615e8e33098251d8ace3fbb4fcc7b39"
+        },
+        {
+          "path": "references/updates-and-forced-upgrade.md",
+          "source_sha256": "5f117e5f54848a57eac4676cb5e437548bca80cb58cd723f914b0fce7bc58522",
+          "bundled_sha256": "5f117e5f54848a57eac4676cb5e437548bca80cb58cd723f914b0fce7bc58522"
+        },
+        {
+          "path": "references/verification.md",
+          "source_sha256": "228db84c50834910a30c0d53a23c46696feab718915d44390a9bdd6cc0940cfd",
+          "bundled_sha256": "228db84c50834910a30c0d53a23c46696feab718915d44390a9bdd6cc0940cfd"
+        },
+        {
+          "path": "references/vmp-differential-analysis.md",
+          "source_sha256": "f8f560727c672f6f432c48a263995a39905a988f6b0a0f56afb4307835f0baac",
+          "bundled_sha256": "f8f560727c672f6f432c48a263995a39905a988f6b0a0f56afb4307835f0baac"
+        },
+        {
+          "path": "scripts/anti_detect_probe.js",
+          "source_sha256": "4c8328a74e1fb470d242d33438434bd2bcebb606557425df85a59284647c88ad",
+          "bundled_sha256": "4c8328a74e1fb470d242d33438434bd2bcebb606557425df85a59284647c88ad"
+        },
+        {
+          "path": "scripts/apk_diff.py",
+          "source_sha256": "ae37529c7a82963da4e00e9bdd46617d29a609c9f0862399b47972c75e0ccc6e",
+          "bundled_sha256": "28a2650ba685c2d16687e22ba99d1555dfb70f04da09adfeb682ecad18d3bbcd"
+        },
+        {
+          "path": "scripts/blob_decode.py",
+          "source_sha256": "f0f6d39b87e881fc4f29cab07adecefcf847f07117f63700a4c248639f9064d4",
+          "bundled_sha256": "15528ab2665d3bde80b05dcf4c0f4cb47fb83224f8f728b84105f3459c81b16d"
+        },
+        {
+          "path": "scripts/capabilities.py",
+          "source_sha256": "bef20c2ba8aec756959f16050c4342b7e51ba5e69754666a7a4c2185d0907b00",
+          "bundled_sha256": "ab7ab2edced69b9796487bf2a0b940e5ca908cabbcd0931806561e074066b2fd"
+        },
+        {
+          "path": "scripts/coldstart.py",
+          "source_sha256": "9449ae420d63a8db186294d7758de1678046bb0329ce16931ea75243f569f052",
+          "bundled_sha256": "51b3d78a730a84845fa94161d7e9fc7b8a35d9a8ac5614e7e76e236a3846d0d4"
+        },
+        {
+          "path": "scripts/dart_disasm.py",
+          "source_sha256": "f619c370baa2bf982928d039d050d2576ec8b457b10cf992407da440baa2dfe7",
+          "bundled_sha256": "61af6a77cc4897cbebe6fd2e6ae36ba385d3cae05e50db31b0a9c45efadd2f12"
+        },
+        {
+          "path": "scripts/dart_pool_strings.py",
+          "source_sha256": "c1d72666ddc9be38b88b52a87a9f3473ef6ef9f769f6d0244bfc2bf3a93826f5",
+          "bundled_sha256": "7b3e08c45312d6136f4cbdfd71aa5dfc1721657a43505a8272e0d53361a29f9c"
+        },
+        {
+          "path": "scripts/dart_pprefs.py",
+          "source_sha256": "c85915d85a4b39ee0f2e70074ec6030f417ccf56997d4b8f0ba0a31601c2b017",
+          "bundled_sha256": "702e11ef180bd15a99777bddcd599252df6de7394d29ca77486b430c24954a0d"
+        },
+        {
+          "path": "scripts/datastore_inject.py",
+          "source_sha256": "45b9b5a21f50795c067bfdb4033b64b8f0464743b3cf1abeed6c65943278529f",
+          "bundled_sha256": "b6eb6920deac8763cf85b585a930ecf51fb1500312bb081fce39e86ee71fd071"
+        },
+        {
+          "path": "scripts/device_shell.py",
+          "source_sha256": "0fc03c98d08dcc8044bd720c214006459f2542d19cc9ffa26e7e3a6511296b38",
+          "bundled_sha256": "0fc03c98d08dcc8044bd720c214006459f2542d19cc9ffa26e7e3a6511296b38"
+        },
+        {
+          "path": "scripts/devsh.py",
+          "source_sha256": "2a055555017c272c4422fd88ffd9a0260bd32a1be401730723215bb1f35749d0",
+          "bundled_sha256": "2a055555017c272c4422fd88ffd9a0260bd32a1be401730723215bb1f35749d0"
+        },
+        {
+          "path": "scripts/dex_check_verifier.py",
+          "source_sha256": "bc852bcd5cc977a40d9ad90bd7cf57fca9ffeb31de8ddfdeab3999d104c68455",
+          "bundled_sha256": "6f626bac0947ab672dd6783f7b09d6ae434dbe1477e17dd642c94ae195860856"
+        },
+        {
+          "path": "scripts/dex_classdiff.py",
+          "source_sha256": "50b652b7c69f5372e5b8520b514cf5c7fedec8ce6125d126a03d266f8568b42b",
+          "bundled_sha256": "78caaabcf822d168ee80cb48655ae15a940ac373b34c3ed6895dd47f3a34f00a"
+        },
+        {
+          "path": "scripts/dex_dump_validate.py",
+          "source_sha256": "274acb9e86514e0856b9348df88c7e476c4f8369f2d1cba1893029647d505a29",
+          "bundled_sha256": "b3e0433c0601b34ed866220797df639a01971b60a852971938d5f12dec593f50"
+        },
+        {
+          "path": "scripts/dex_find_insn.py",
+          "source_sha256": "0b4b29f71a75de4adde53a693c2e1ae2118ecffe9f3171c857892962e87998b5",
+          "bundled_sha256": "a9c936b2cf8b7fbae61ef24c51b1844d0df673e81cca8d81e81fa0ae5194a175"
+        },
+        {
+          "path": "scripts/dex_mem_scan.py",
+          "source_sha256": "e906d806e3831a1caca8e485c099497e8b4d71b1323f393c7e1b75463232ea6e",
+          "bundled_sha256": "9e75099bf7c007c52d27fc5d50303574ec75227b2841ecb01391da58d4ef32b1"
+        },
+        {
+          "path": "scripts/dex_patch_bytes.py",
+          "source_sha256": "66386df3c3fbf4675008c004b4604af1efc9b3ca6dc50d89efe11f6d10525717",
+          "bundled_sha256": "8c76f45d8111a061bc376b1de4e84f37bc7a2fde90853e9d9367f4bffb836353"
+        },
+        {
+          "path": "scripts/dex_strings.py",
+          "source_sha256": "10d1e8cdc043a25b0e35145da8787ca2263506b9d723f74e645a19c13558d8ca",
+          "bundled_sha256": "5a7c7b10f21ebc2fc57221ea6759fae5f3c05288921038fa13888f3c8bbb424f"
+        },
+        {
+          "path": "scripts/dex_strpatch.py",
+          "source_sha256": "a63b373047ddf33691f708162d7c75d423d72a838594fa120f3edda47134dbf1",
+          "bundled_sha256": "a63b373047ddf33691f708162d7c75d423d72a838594fa120f3edda47134dbf1"
+        },
+        {
+          "path": "scripts/dexpatch/PatchMethod.java",
+          "source_sha256": "142cc0b81fe4269030c12c0902581064949bf867e021fabe7d4f9fefdf1ac733",
+          "bundled_sha256": "142cc0b81fe4269030c12c0902581064949bf867e021fabe7d4f9fefdf1ac733"
+        },
+        {
+          "path": "scripts/dexpatch/PatchMethodExample.java",
+          "source_sha256": "0668e03a42f717259232732680d4b9059bb53631baf451fcd7f941c4a1ba7fbe",
+          "bundled_sha256": "0668e03a42f717259232732680d4b9059bb53631baf451fcd7f941c4a1ba7fbe"
+        },
+        {
+          "path": "scripts/dexpatch/README.md",
+          "source_sha256": "24f91dfeccd3ac522ad50264e2a278d732a8241c2d26076c0d6284493743487c",
+          "bundled_sha256": "24f91dfeccd3ac522ad50264e2a278d732a8241c2d26076c0d6284493743487c"
+        },
+        {
+          "path": "scripts/dexutil.py",
+          "source_sha256": "6d578966dc5c44f40d173263db32db697c9a18e6b5852f4df23efbd50675928a",
+          "bundled_sha256": "6d578966dc5c44f40d173263db32db697c9a18e6b5852f4df23efbd50675928a"
+        },
+        {
+          "path": "scripts/doctor.py",
+          "source_sha256": "5138e6bc3a0791c4343b4395eb52ab0580a20be7f491ab8a0fb456343b6cebed",
+          "bundled_sha256": "eb81a0fd17ebdc309c943537dbbdce2c5fcb7fb6e9e35202778f7a6199d86737"
+        },
+        {
+          "path": "scripts/elf_plt.py",
+          "source_sha256": "a1c26d2ab7f480842503d14dc447449c626393aeb9c3313c3094a1548ad9591d",
+          "bundled_sha256": "621fd286810f16951c8db631e1a33707a8e3f7c9738490250078c962be7cede8"
+        },
+        {
+          "path": "scripts/find_refs.py",
+          "source_sha256": "8011820f78febcd7fa7b1e108d38028fe96d795bc4d196ae10651c204f48db61",
+          "bundled_sha256": "7a823a7bfeac39d8c0c88d2483b9649f6825a97cb7888a872b74b2c2898a0e3f"
+        },
+        {
+          "path": "scripts/frida_probe.js",
+          "source_sha256": "64ca0428e586f606ee25011fef4a88af0734ae0b910a0cebde0c4f311f2437f6",
+          "bundled_sha256": "64ca0428e586f606ee25011fef4a88af0734ae0b910a0cebde0c4f311f2437f6"
+        },
+        {
+          "path": "scripts/frida_rpc_serve.py",
+          "source_sha256": "2d59822b7c14b8cfb756563344627a955539677d1353db42bfcdb0d2009f9dfb",
+          "bundled_sha256": "39f601b206d3b023685bfaf84f57460872421bb28af1181548e24b369b6bc83d"
+        },
+        {
+          "path": "scripts/grab_crash.py",
+          "source_sha256": "d040ad9f01e21a4f91e36e436ca680201036b66ba26ae3fd53b0338c8a5fcd40",
+          "bundled_sha256": "b8f3e91d93fd2cfa6fea33a4c5de95bc74386818d1f105c4ea0e784d89cd4de1"
+        },
+        {
+          "path": "scripts/hook_patch_only.js",
+          "source_sha256": "9e0ca8631819a99d7292ce0526bd4fe176f67a02a420bfc8b18eb1a29e43da30",
+          "bundled_sha256": "9e0ca8631819a99d7292ce0526bd4fe176f67a02a420bfc8b18eb1a29e43da30"
+        },
+        {
+          "path": "scripts/install_test.py",
+          "source_sha256": "4f92526327f36880e4e5b4e18caccf19918a42aa706c85f669557245c6c3f58d",
+          "bundled_sha256": "3af5005029785e3467ad228f7bda0bb5a9e5e0851ea429e4bd91934d62787ff3"
+        },
+        {
+          "path": "scripts/java2c_probe.py",
+          "source_sha256": "d1f7b89bd234c1f03c9cd727d0f8304e8363368d72912338ff08e002e559681d",
+          "bundled_sha256": "fd9abd87f7f92088fc182cd865be43eb7122863a109056d5157fb55812e22fb3"
+        },
+        {
+          "path": "scripts/kernelsu_syscall_mask.py",
+          "source_sha256": "f59a9573baa7d80730ece4ef10f642e43dd326818c5e47e63d7d0c83637bd403",
+          "bundled_sha256": "70f00fedc1579d17c5fc4339b3024e20ad6eb62cc906245a9f696e2c5581c572"
+        },
+        {
+          "path": "scripts/lib_map.py",
+          "source_sha256": "6037331fac2ecd2cfdbc52926cc0bd47a4a2e16fc913cfa48631b05b411b0f5d",
+          "bundled_sha256": "1a9904cb2a672ce715e7a53ffe72a1e36c588cd16ab1400080a6395d5f4de31a"
+        },
+        {
+          "path": "scripts/lsposed_scaffold.py",
+          "source_sha256": "eb40578368854ac56e91d07a1ad1a5e49eef8bcf9a6cc8a1c3491d9c46435b34",
+          "bundled_sha256": "342d61dba2e50dc55b2b494ed8c6ff18fd65a1dbe5ac70b699eb8fbce0f49e8e"
+        },
+        {
+          "path": "scripts/mt_mcp_probe.py",
+          "source_sha256": "ae8787039324122b3680709c6e5b463182bcd7b6d63e79b0f0087721069127e6",
+          "bundled_sha256": "77ab0d80d9ab6272f646e7f2ecadbc458e14e8c74348b90abee5af4655514a05"
+        },
+        {
+          "path": "scripts/native_crash.py",
+          "source_sha256": "496a2e000bca11df79c20c747d1bef6c67a5ed089bb4f9cb9a5fdefe1d6b7649",
+          "bundled_sha256": "7e227a2f46d612ee84bfaba4e0759d673d02391668ffd01b6d68fba280d3ac56"
+        },
+        {
+          "path": "scripts/patch_smali.py",
+          "source_sha256": "1e38ae4a48d06e2c1771d240b51831b42e120bff071b3a08216f2145e38b6556",
+          "bundled_sha256": "1e38ae4a48d06e2c1771d240b51831b42e120bff071b3a08216f2145e38b6556"
+        },
+        {
+          "path": "scripts/preflight.py",
+          "source_sha256": "366bc68c8cb1d0f917498a06231cfd186928a5bf4d594141072c09c3b16dcdc1",
+          "bundled_sha256": "ec4c739d0d8cf8eeb67d68e409e6a55d9f0bed4231a7e0867c27975365ebd287"
+        },
+        {
+          "path": "scripts/probe_api.py",
+          "source_sha256": "fbc3b0a3f0a409e92fac9edfd9fc99f3958219da53f65ba4c18f7e78560eba4b",
+          "bundled_sha256": "650d2f98ea6ef61d9e4e5d14d6d1e9066dc497a2633863058183cd69e7567cc9"
+        },
+        {
+          "path": "scripts/protobuf_decode_raw.py",
+          "source_sha256": "2c9a4e88476538c1c459baabc7c8510da717769213d6ef1783cfc64b16e50fef",
+          "bundled_sha256": "6c58646981ee3c4e7b51c5b073cccbe19d06a3ec04dd8054414dfadf412651b1"
+        },
+        {
+          "path": "scripts/rasc_build.py",
+          "source_sha256": "8b520b1a12155e60cf5bd30f89f97d1648984ad87bc0eac07afe52ca6f4ca3d1",
+          "bundled_sha256": "fe6a46a804340ae1abfea6ea040d86f71cdd9bc31849b7a73ca021870011134a"
+        },
+        {
+          "path": "scripts/repack.py",
+          "source_sha256": "1a3d0122625427fd9d2adc60a870c02006ee32ccbc6d7941839a5c2c82cf80f3",
+          "bundled_sha256": "fd024f9fc4d82c970c3a43c0df7a12c652d6d8bee83ff23a1345ee32a72ed72f"
+        },
+        {
+          "path": "scripts/rpc_template.js",
+          "source_sha256": "10a420f565c77c08ccb39f45936af8acf25d7a28f12326d57720e64273cfc0a8",
+          "bundled_sha256": "10a420f565c77c08ccb39f45936af8acf25d7a28f12326d57720e64273cfc0a8"
+        },
+        {
+          "path": "scripts/run_probe.py",
+          "source_sha256": "40712e8cc9d367196111de161f1d6550c6d8eab76217c5b2bc2dad8135edf5d8",
+          "bundled_sha256": "47dd177bb09ee13a8319c1d20b67e169f3b4655faf96a876c0fc2e38252f5473"
+        },
+        {
+          "path": "scripts/scan_leaks.py",
+          "source_sha256": "da4ede5c9aafe17e8ac7a864a48da6c123df35cf1220c5bdb31820758a12bd6d",
+          "bundled_sha256": "9d39272461dc3b356f875688f829fc34b454aefdfa41dddf47263edccf034c55"
+        },
+        {
+          "path": "scripts/sig_probe.py",
+          "source_sha256": "46b4ddfe7193ec1204943742bfed59ab7d9fc50880b5b75f6936be4c104101db",
+          "bundled_sha256": "a52da397743bba485054fb36b20f86d9551ac3f1be881cd6e8d6d2816a5ff2fd"
+        },
+        {
+          "path": "scripts/smali_cp.txt",
+          "source_sha256": "eaa849de4cb3e4333fbc8a6cd315db75f0e76c2c62ef9fdf39cc116251bacf16",
+          "bundled_sha256": "eaa849de4cb3e4333fbc8a6cd315db75f0e76c2c62ef9fdf39cc116251bacf16"
+        },
+        {
+          "path": "scripts/smtool.py",
+          "source_sha256": "f9e496695214facffa4d5a1b27d60cd70418f1e5f4b402f77e451b127a443221",
+          "bundled_sha256": "f9e496695214facffa4d5a1b27d60cd70418f1e5f4b402f77e451b127a443221"
+        },
+        {
+          "path": "scripts/snap.py",
+          "source_sha256": "f1104d55de01b9e13e3c213f9993bebe95f64b64d9df11aa8e02a826aed1e937",
+          "bundled_sha256": "f8223495d97fafa3371376e083f793b83097c9683c6a429fa637d7858501a014"
+        },
+        {
+          "path": "scripts/so_constpatch.py",
+          "source_sha256": "1b049ffaa4e7d7c90ee399c516db0c8bfeaf569742b593ae1eea845bc66a8c01",
+          "bundled_sha256": "b5db5065c9623370460618e462ff03f16cb98498000a99c7ce0f6dee0d4bea50"
+        },
+        {
+          "path": "scripts/spawn_patch_detach.py",
+          "source_sha256": "f697a944c9ad5979c5073119e41b8d88ea61183bbd400639573254e75ebe5a93",
+          "bundled_sha256": "1f98cfbd62aceb2ce3abca93515c8fcf60b422dcd063d616ca67409b51b25fa0"
+        },
+        {
+          "path": "scripts/stalker_report.py",
+          "source_sha256": "7f6f89cb1d73f1747ed6697e0a4d6a76e60e68339222c819b22ed3e4852e11d0",
+          "bundled_sha256": "d10233c74089d7452bb58c72fdc68d61b7e6923819d39683fe03782e3ccd45c4"
+        },
+        {
+          "path": "scripts/stalker_trace.js",
+          "source_sha256": "4cf506302eb3015974d3dbbcc712d1d3eece5eb7d34a4d38b5d08b6397796fad",
+          "bundled_sha256": "4cf506302eb3015974d3dbbcc712d1d3eece5eb7d34a4d38b5d08b6397796fad"
+        },
+        {
+          "path": "scripts/svc_scan.py",
+          "source_sha256": "328f1ce48dff5de12208af22f8094aa688342ea4e133ac2378081700fa48b1d2",
+          "bundled_sha256": "0d0c069c979a2e7878ef628fa1e33aa66b7438de0b32866a2fc0a7cb51bbe9b1"
+        },
+        {
+          "path": "scripts/tls_check.py",
+          "source_sha256": "becaefbeca838387dd72fb528e4c6991517cfdbc0308ab1d79b7421da4fe7eb8",
+          "bundled_sha256": "95c388f80555a57fddd31ffcb9ec370ffdec2543034044543f0f8213c0f4f563"
+        },
+        {
+          "path": "scripts/usb_net_proxy.py",
+          "source_sha256": "dca9a5fba4780bb531036b2ec0f7ffb75dcb1540f9d64bd76c1e9b60715bcdf2",
+          "bundled_sha256": "dca9a5fba4780bb531036b2ec0f7ffb75dcb1540f9d64bd76c1e9b60715bcdf2"
+        },
+        {
+          "path": "scripts/vmp_diff_harness.py",
+          "source_sha256": "c125f87130cda9a09437caad69fdc81d411488194a2bf0378b60ef4257eb4af3",
+          "bundled_sha256": "15b8c713e8c8561daacfe40b352002245e3eb0d98498d20c802a3060b09e3edd"
+        }
+      ],
+      "repository": "https://github.com/newliver666/apk-reverse.git"
     }
   },
   "purpose": "Historical import provenance. Current sources are maintained in this repository; these hashes describe the initial import, not current files."

@@ -19,7 +19,9 @@
 
 `device.observe` 读取当前活动、进程和设备运行代次。缓存状态带观测时间；要求新状态时提交任务。截图会验证 PNG 和采集前后的 Activity／进程；需要指定业务页面时，增加 `ui_expect`，例如 `[{"resource-id":"com.example.app:id/title","text":"订单详情"}]`。采集前后都必须找到匹配节点；XML 会留作证据。它仍不能替代对截图内容的检查，UI 转储也要计入检查点预算。
 
-`device.scene` 接受连续步骤。可用动作：`observe`、`screenshot`、`ui_dump`、`launch`、`tap`、`swipe`、`input`、`keyevent`、`wait`、`checkpoint`、`hook_attach`、`hook_unload`。启动用明确 `component`，点击用 `x/y`，输入用 `text`，等待用 `seconds`。Hook 使用项目内已审查脚本的绝对路径及明确 `package`；仅附加已运行进程，不自行启动 Frida 服务。
+`device.scene` 接受连续步骤。可用动作：`observe`、`screenshot`、`ui_dump`、`logcat`、`launch`、`tap`、`swipe`、`input`、`keyevent`、`wait`、`checkpoint`、`hook_attach`、`hook_unload`。启动用明确 `component`，点击用 `x/y`，输入用 `text`，等待用 `seconds`。日志步骤用 `lines`、`buffer`、`level` 和可选 `clear`；默认读取 `main` buffer 最近 500 行，`clear:true` 会先清空指定 buffer，因此该场景不是只读。Hook 使用项目内已审查脚本的绝对路径及明确 `package`；仅附加已运行进程，不自行启动 Frida 服务。
+
+`device.info` 是单独的只读操作，采集启动代次、型号/系统/ABI 属性、屏幕分辨率、内存和数据分区容量。存储值来自 `df -k /data`，同时保留实际返回的 filesystem 与 mount；部分 Magisk/ROM 组合可能返回镜像挂载路径，不能把它改写成 `/data`。运行时实验开始前先保存这份证据，便于报告复现；它不能证明 App 行为，语义结论仍要回到截图、日志、文件或状态证据。
 
 检查点示例：
 

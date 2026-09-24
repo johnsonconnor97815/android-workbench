@@ -4,7 +4,7 @@
 
 ## 插件边界
 
-Android Workbench 以插件为产品边界，而不是以单个 Skill 为产品边界。`.claude-plugin/plugin.json` 是唯一维护的插件清单；`.codex-plugin/plugin.json` 是字节相同的 Codex 兼容镜像，由发布校验强制一致。`skills/android-workbench/SKILL.md` 是唯一自动加载入口，静态环境、Frida 与 APK 导出作为该 Skill 的组件分发。
+Android Workbench 以插件为产品边界，而不是以单个 Skill 为产品边界。`.claude-plugin/plugin.json` 是唯一维护的插件清单；`.codex-plugin/plugin.json` 是字节相同的 Codex 兼容镜像，由发布校验强制一致。`skills/android-workbench/SKILL.md` 是唯一自动加载入口，静态环境、分析代理、Frida、APK 导出与 APK 逆向作为该 Skill 的组件分发。
 
 `agents/` 中的 Claude Code 子代理只提供窄域分工：静态分析、设备场景和报告审计。子代理不拥有手机、ADB、Frida 或共享环境，也不能绕过队列；它们必须调用同一 Workbench MCP 服务。这样插件可以提供 Agent 入口，同时保持一个共享调度器和一套资源锁。
 
