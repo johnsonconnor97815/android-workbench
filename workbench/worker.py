@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import resource as resource_module
 import shlex
 import signal
 import subprocess
@@ -36,6 +37,21 @@ class Cancelled(Exception):
 
 class BudgetExceeded(Exception):
     pass
+
+
+def path_bytes(paths):
+    total = 0
+    for value in paths:
+        root = Path(value)
+        candidates = root.rglob("*") if root.is_dir() else [root]
+        for path in candidates:
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 class Device:
@@ -135,13 +151,75 @@ class Device:
                     "mount": columns[-1],
                 }
 
+        airplane_mode_output = self.adb(
+            "shell", "settings", "get", "global", "airplane_mode_on"
+        )
+        connectivity_output = self.adb("shell", "dumpsys", "connectivity")
+        default_network = re.search(
+            r"Active default network:\s*(\d+)", connectivity_output
+        )
+        network_type = re.search(
+            r"Active network type:\s*([A-Z0-9_]+)", connectivity_output
+        )
+        network = {
+            "airplane_mode": airplane_mode_output.strip() == "1",
+            "default_network_id": int(default_network.group(1))
+            if default_network
+            else None,
+            "type": network_type.group(1) if network_type else None,
+            "internet_reachable": None,
+            "internet_probe_performed": False,
+        }
+
+        wifi_output = self.adb("shell", "cmd", "wifi", "status")
+        wifi_enabled = re.search(r"Wi-Fi is (enabled|disabled)", wifi_output)
+        wifi_ssid = re.search(r"SSID:\s*([^,\n]+)", wifi_output)
+        wifi_rssi = re.search(r"RSSI:\s*(-?\d+)", wifi_output)
+        ssid = wifi_ssid.group(1).strip() if wifi_ssid else None
+        connected_ssid = ssid if ssid not in {None, "", "<unknown ssid>"} else None
+        wifi = {
+            "enabled": wifi_enabled.group(1) == "enabled" if wifi_enabled else None,
+            "connected": connected_ssid is not None,
+            "ssid": connected_ssid,
+            "signal_dbm": int(wifi_rssi.group(1)) if wifi_rssi else None,
+        }
+
+        package_output = self.adb(
+            "shell", "pm", "list", "packages", "com.android.vending"
+        )
+        account_output = self.adb("shell", "dumpsys", "account")
+        google_account_present = bool(
+            re.search(r"type=com\.google\b", account_output)
+        )
+        google_play_installed = "package:com.android.vending" in package_output
+        google_play = {
+            "installed": google_play_installed,
+            "google_account_present": google_account_present,
+            "logged_in": google_play_installed and google_account_present,
+        }
+
+        release = properties.get("ro.build.version.release")
+        sdk = properties.get("ro.build.version.sdk")
+        system = {
+            "android_version": release,
+            "sdk_int": int(sdk) if sdk and sdk.isdigit() else None,
+            "security_patch": properties.get("ro.build.version.security_patch"),
+            "build_id": properties.get("ro.build.id"),
+            "model": properties.get("ro.product.model"),
+            "device": properties.get("ro.product.device"),
+        }
+
         return {
-            "schema": 1,
+            "schema": 2,
             "boot_id": self.adb("shell", "cat", "/proc/sys/kernel/random/boot_id"),
             "properties": properties,
+            "system": system,
             "screen": {"size": size},
             "memory": memory,
             "storage": storage,
+            "network": network,
+            "wifi": wifi,
+            "google_play": google_play,
             "observed_at": time.time(),
         }
 
@@ -311,6 +389,7 @@ class Runner:
         self.log_failed = False
         self.recovered_resources = []
         self.reconciled_jobs = []
+        self.last_output_check = time.monotonic()
 
     def call(self, method, **values):
         return rpc(
@@ -381,7 +460,10 @@ class Runner:
     def log_hook(self, message, data):
         try:
             path = self.directory / "hook.jsonl"
-            if path.exists() and path.stat().st_size > 32 * 1024 * 1024:
+            limit = self.spec.get("limits", {}).get(
+                "max_job_log_bytes", 32 * 1024 * 1024
+            )
+            if path.exists() and path.stat().st_size > limit:
                 raise WorkbenchError("Hook log budget exceeded")
             with path.open("a") as stream:
                 stream.write(
@@ -459,6 +541,29 @@ class Runner:
         while time.monotonic() < end:
             self.authorize()
             time.sleep(min(0.1, max(0, end - time.monotonic())))
+
+    def output_bytes(self):
+        return path_bytes(self.spec.get("outputs", []))
+
+    def internal_evidence_bytes(self):
+        return path_bytes([self.directory])
+
+    def resource_usage(self):
+        own = resource_module.getrusage(resource_module.RUSAGE_SELF)
+        children = resource_module.getrusage(resource_module.RUSAGE_CHILDREN)
+        return {
+            "wall_seconds": round(time.monotonic() - self.started, 6),
+            "cpu_seconds": round(
+                own.ru_utime
+                + own.ru_stime
+                + children.ru_utime
+                + children.ru_stime,
+                6,
+            ),
+            "max_rss_bytes": max(own.ru_maxrss, children.ru_maxrss) * 1024,
+            "internal_evidence_bytes": self.internal_evidence_bytes(),
+            "external_output_bytes": self.output_bytes(),
+        }
 
     def checkpoint(self, step, observation):
         self.device.validate_ui("checkpoint-before")
@@ -614,7 +719,14 @@ class Runner:
                     errors="replace",
                 )
             elif action == "launch":
-                self.device.adb("shell", "am", "start", "-W", "-n", step["component"])
+                self.device.adb(
+                    "shell",
+                    "am",
+                    "start",
+                    "-W",
+                    "-n",
+                    shlex.quote(step["component"]),
+                )
             elif action == "tap":
                 self.device.adb("shell", "input", "tap", step["x"], step["y"])
             elif action == "swipe":
@@ -708,8 +820,16 @@ class Runner:
             try:
                 while proc.poll() is None:
                     self.authorize()
-                    if out.stat().st_size + err.stat().st_size > 32 * 1024 * 1024:
+                    limits = self.spec.get("limits", {})
+                    log_limit = limits.get("max_job_log_bytes", 32 * 1024 * 1024)
+                    output_limit = limits.get("max_job_output_bytes", 2 * 1024**3)
+                    if out.stat().st_size + err.stat().st_size > log_limit:
                         raise WorkbenchError("Task log budget exceeded")
+                    now = time.monotonic()
+                    if now - self.last_output_check >= 0.5:
+                        self.last_output_check = now
+                        if self.output_bytes() > output_limit:
+                            raise WorkbenchError("Task output budget exceeded")
                     time.sleep(0.1)
                 code = proc.wait()
             except BaseException:
@@ -837,6 +957,7 @@ class Runner:
                 "quality": result["state"],
                 "files": files,
                 "external_outputs": external,
+                "resource_usage": result.get("resource_usage"),
             },
         )
         atomic_json(self.directory / "result.json", result)
@@ -896,6 +1017,7 @@ class Runner:
             "finished_at": time.time(),
             "reconciled_jobs": self.reconciled_jobs,
             "recovered_resources": self.recovered_resources,
+            "resource_usage": self.resource_usage(),
         }
         try:
             self.publish(result)

@@ -29,7 +29,10 @@
 | `uses_mcp` | 保留共享分析工程，允许受管嵌套调用复用父任务授权 |
 | `nested_sources` | 额外需要固定版本的脚本目录，可使用 `@workbench/` |
 | `outputs` | 输出参数名数组；对应路径参与写入互斥 |
+| `input_flags` | 额外的输入路径参数名数组；路径申请读锁，文件记录输入哈希，例如 `["--source-dir"]` |
+| `positional_inputs` / `value_flags` | 位置参数都是输入文件时启用；`value_flags` 列出需要一个值的长选项，避免把输出路径或参数值当成输入文件。输入文件申请读锁并记录哈希 |
 | `default_outputs` | 缺少输出参数时，使用任务证据目录内的默认子目录，如 `{"--output":"result"}` |
+| `default_paths` | 缺少路径参数时，使用项目内默认路径，如 `{"--cache-dir":"cache/images"}`；路径不能逃逸项目 |
 | `adb_exclusive` | 对明确需要修改 ADB 服务的适配器使用独占锁 |
 | `recovery` / `recovery_for` | 恢复适配器使用；必须登记可修复的 operation 名称列表和 `result_file`。脚本须完成并验证这些操作的实际清理，不可仅清除状态。共享服务拒绝不匹配的故障来源和仍存活的旧进程；本地恢复适配器还必须独占声明它要核验的共享资源（如 `adb_exclusive`） |
 | `resources` | 额外项目路径锁，如 `[{"path":"workspace","mode":"write"}]` |

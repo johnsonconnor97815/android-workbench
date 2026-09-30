@@ -18,9 +18,9 @@ def legacy_record(spec):
 
 
 def confirmed_legacy_cleanup(spec, data):
-    # These maintained adapters explicitly separate functional and cleanup results.
+    # Registered adapters must opt in before their cleanup result is trusted.
     return (
-        spec["operation"] == "frida.probe_native"
+        spec.get("confirms_cleanup") is True
         and data.get("cleanup_status") == "passed"
         and data.get("cleanup_errors") == []
     )

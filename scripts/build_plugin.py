@@ -30,12 +30,15 @@ FILES = (
     "sources.lock.json",
 )
 EXCLUDED = {"__pycache__", ".pytest_cache", ".ruff_cache", ".git", ".venv"}
+GENERATED_FILES = {"docs/android-static-manifest.json", "docs/android-mcp-manifest.json"}
 
 
 def payload():
     paths = [ROOT / name for name in FILES]
     for name in DIRECTORIES:
         for path in (ROOT / name).rglob("*"):
+            if path.relative_to(ROOT).as_posix() in GENERATED_FILES:
+                continue
             if any(part in EXCLUDED for part in path.relative_to(ROOT).parts):
                 continue
             if path.is_symlink():
@@ -62,6 +65,16 @@ def validate():
     package = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     if manifest["version"] != package["version"]:
         raise ValueError("Plugin and package versions differ")
+    version_tree = ast.parse((ROOT / "workbench/__init__.py").read_text())
+    runtime_version = next(
+        node.value.value
+        for node in version_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+        and isinstance(node.value, ast.Constant)
+    )
+    if runtime_version != package["version"]:
+        raise ValueError("Scheduler and package versions differ")
     skill_files = sorted(
         path.relative_to(ROOT).as_posix()
         for path in (ROOT / "skills").rglob("SKILL.md")
@@ -71,7 +84,15 @@ def validate():
     for name in ("workbench-routing.md", "device-analysis.md"):
         if not (ROOT / "skills/android-workbench/references" / name).is_file():
             raise ValueError("Required reference missing: " + name)
-    for name in ("static-env", "frida", "apk-export", "apk-reverse", "analysis-agent"):
+    for name in (
+        "static-env",
+        "frida",
+        "apk-export",
+        "apk-reverse",
+        "analysis-agent",
+        "device-manager",
+        "permission-audit",
+    ):
         component = ROOT / "skills/android-workbench/components" / name
         if not (component / "README.md").is_file():
             raise ValueError("Required component guide missing: " + name)

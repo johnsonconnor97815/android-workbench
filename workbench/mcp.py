@@ -14,7 +14,29 @@ METHODS = {
         ["session"],
     ),
     "devices_list": ("devices.list", {}, []),
+    "devices_discover": ("devices.discover", {}, []),
     "devices_state": ("devices.state", {"device": {"type": "string"}}, ["device"]),
+    "devices_register": (
+        "devices.register",
+        {
+            "id": {"type": "string", "minLength": 1, "maxLength": 100},
+            "serial": {"type": "string", "minLength": 1},
+        },
+        ["id", "serial"],
+    ),
+    "devices_project_assign": (
+        "devices.project_assign",
+        {
+            "device": {"type": "string"},
+            "project": {"type": "string", "minLength": 1},
+        },
+        ["device", "project"],
+    ),
+    "devices_project_release": (
+        "devices.project_release",
+        {"device": {"type": "string"}},
+        ["device"],
+    ),
     "jobs_submit": ("jobs.submit", {"request": {"type": "object"}}, ["request"]),
     "jobs_list": ("jobs.list", {}, []),
     "jobs_status": ("jobs.status", {"id": {"type": "string"}}, ["id"]),
@@ -29,6 +51,13 @@ METHODS = {
         ["id", "priority"],
     ),
     "jobs_artifacts": ("jobs.artifacts", {"id": {"type": "string"}}, ["id"]),
+    "artifacts_list": (
+        "artifacts.list",
+        {"name": {"type": "string"}},
+        [],
+    ),
+    "evidence_state": ("evidence.state", {}, []),
+    "evidence_apply_retention": ("evidence.apply_retention", {}, []),
     "jobs_subscribe": (
         "jobs.subscribe",
         {"id": {"type": "string"}, "after": {"type": "integer"}},
@@ -40,6 +69,19 @@ METHODS = {
         {"request": {"type": "object"}},
         ["request"],
     ),
+    "hooks_subscribe": (
+        "hooks.subscribe",
+        {
+            "scene": {"type": "string"},
+            "device": {"type": "string"},
+            "request_key": {"type": "string"},
+            "app": {"type": "string"},
+            "activity": {"type": "string"},
+            "expected_boot": {"type": "string"},
+        },
+        ["scene", "device", "request_key"],
+    ),
+    "hooks_list": ("hooks.list", {}, []),
     "devices_recover": (
         "devices.recover",
         {"device": {"type": "string"}, "request_key": {"type": "string"}},
@@ -62,8 +104,17 @@ DESCRIPTIONS = {
     "sessions_select": "Select or resume this connection's persistent Session name before submitting/retrying tasks. Use a stable per-conversation ID; do not reuse another conversation's name.",
     "jobs_submit": "Submit a registered Android operation. Requires operation and request_key; device operations also require device. Returns immediately with a job id. Use operations_list for existing script adapters.",
     "scenes_request_observation": "Queue a screenshot for a bound scene: include scene, device, request_key, expected app/activity and accept_hooks when appropriate. Never bypass the current controller.",
+    "hooks_subscribe": "Subscribe a read-only observation to an active managed Hook scene. The parent scene keeps ownership; multiple subscribers can be inserted at its checkpoint.",
     "jobs_subscribe": "Read persisted progress events after a cursor; this does not start or stop capture.",
+    "evidence_state": "Inspect the named artifact index, internal evidence inventory, retention policy, and last retention run.",
+    "evidence_apply_retention": "Apply the configured evidence retention policy now. Referenced and indexed artifacts are preserved.",
     "devices_manual_acquire": "Request a manual handover; only handed_over=true means the device has been released.",
+    "devices_list": "List registered devices; project_occupied and occupying_projects identify active project use or a completed manual handover.",
+    "devices_state": "Inspect one device, including project assignment, active or queued project use, and the latest successful device.info cache. Run device.info to refresh the cached phone condition.",
+    "devices_discover": "List currently visible ADB and fastboot connections without requiring an analysis project.",
+    "devices_register": "Register a visible ADB or fastboot serial as a shared managed device; device registrations are shared, not project-local.",
+    "devices_project_assign": "Reserve a registered device for one registered project; other projects cannot queue device tasks except recovery.",
+    "devices_project_release": "Remove a device's project assignment when it has no active or queued tasks.",
 }
 
 
@@ -127,7 +178,12 @@ def main(project, directory, session=None):
                             raise ValueError("Session name must be 1..200 characters")
                         session = chosen
                         client = Client(project, directory, session)
-                        value = {"client_session": session, "project": client.project}
+                        value = {
+                            "client_session": session,
+                            "project": client.project,
+                            "requested_project": client.requested_project,
+                            "mode": client.mode,
+                        }
                     elif name == "service_capabilities":
                         value = {
                             **rpc(directory, method_name, args),

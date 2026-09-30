@@ -13,7 +13,7 @@
 ## Droid ASC 补充验证（2026-09-23，America/Los_Angeles）
 
 - 固定安装 PyPI `droidasc==0.1.1.post2` 和 `androguard==4.1.4`，独立 venv 与 CLI wrapper 可用。
-- 在授权样本 `apps/com.berylclarity.cleaner.zgien/base.apk` 上实测：`listclass --prefix com.berylclarity` 返回 170 类；`findrefs string firebaseappcheck.googleapis.com` 返回 2 条；完整描述符 `Lcom/berylclarity/cleaner/zgien/MainActivity;` 的 `getclass` 输出 346 行。样本 SHA-256：`68eb72a3e4f8d95c5fc363e3c8cb741394adcd4d3dc54e25b8db94c3e05209ec`。
+- 在一个授权 APK 样本上实测：`listclass` 能按包名前缀列出类；`findrefs` 能定位指定字符串引用；完整类描述符的 `getclass` 能输出反编译结果。样本文件不随插件分发。
 - 生成 DEX 并封装为最小 APK 后：`listclass` 能列出 `Lskill/smoke/Probe;`，`findrefs` 能定位 `marker` 字符串引用，`getclass` 能反编译包含该标记的方法。
 - 结论边界：Droid ASC 是快速定位工具，不是 JADX 替代品；重要命中需用 JADX、Smali、Androguard 或数据流工具复核。
 

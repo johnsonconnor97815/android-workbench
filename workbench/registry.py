@@ -126,6 +126,8 @@ def normalize(request, config, directory):
         "analysis_paths",
         "try_only",
         "ui_expect",
+        "artifact_outputs",
+        "artifact_inputs",
     }
     if config.get("test_mode"):
         allowed.update({"test_readonly", "test_insertable", "test_resources", "hooks"})
@@ -141,11 +143,48 @@ def normalize(request, config, directory):
     spec["queue_timeout"] = bounded(
         spec.get("queue_timeout", 3600), 0.1, 604800, "queue_timeout"
     )
+    spec["limits"] = {
+        "max_job_log_bytes": bounded(
+            config.get("max_job_log_bytes", 32 * 1024 * 1024),
+            1,
+            1024**3,
+            "max_job_log_bytes",
+        ),
+        "max_job_output_bytes": bounded(
+            config.get("max_job_output_bytes", 2 * 1024**3),
+            1,
+            1024**4,
+            "max_job_output_bytes",
+        ),
+    }
     spec["estimate"] = bounded(spec.get("estimate", 30), 0.01, 86400, "estimate")
     spec["priority"] = int(bounded(spec.get("priority", 0), -5, 5, "priority"))
     spec["dependencies"] = spec.get("dependencies", [])
     if not isinstance(spec["dependencies"], list) or len(spec["dependencies"]) > 100:
         raise WorkbenchError("Invalid dependencies")
+    artifact_outputs = spec.get("artifact_outputs", {})
+    artifact_inputs = spec.get("artifact_inputs", {})
+    if not isinstance(artifact_outputs, dict) or not isinstance(artifact_inputs, dict):
+        raise WorkbenchError("Artifact outputs and inputs must be objects")
+    if len(artifact_outputs) > 32 or len(artifact_inputs) > 32:
+        raise WorkbenchError("At most 32 artifact bindings are allowed")
+    for name in (*artifact_outputs, *artifact_inputs):
+        if (
+            not isinstance(name, str)
+            or not 1 <= len(name) <= 100
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name)
+        ):
+            raise WorkbenchError("Invalid artifact name: " + str(name))
+    for value in artifact_outputs.values():
+        if not isinstance(value, str) or not value:
+            raise WorkbenchError("Artifact output path must be a nonempty string")
+    for value in artifact_inputs.values():
+        if (
+            not isinstance(value, str)
+            or not value.startswith("--")
+            or any(character.isspace() for character in value)
+        ):
+            raise WorkbenchError("Artifact input flag must be a simple --flag")
     spec["purpose"] = str(spec.get("purpose", operation))[:2000]
     if "not_before" in spec:
         bounded(spec["not_before"], 0, 1e12, "not_before")
@@ -176,6 +215,13 @@ def normalize(request, config, directory):
     spec["insertable"] = False
     if spec.get("device"):
         ident, entry = device_id(config, spec["device"])
+        assigned_project = entry.get("project")
+        if (
+            assigned_project
+            and spec["project"] != assigned_project
+            and operation != "device.recover"
+        ):
+            raise WorkbenchError("Device is assigned to another project")
         spec["device"], spec["serial"] = ident, entry["serial"]
         spec["adb"] = entry.get("adb", config.get("adb", "adb"))
         spec["resources"] += [
@@ -319,6 +365,8 @@ def normalize(request, config, directory):
             raise WorkbenchError("shared_outputs must be an array of flags")
         if not set(shared_outputs).issubset(entry.get("outputs", [])):
             raise WorkbenchError("shared_outputs must be a subset of outputs")
+        if "confirms_cleanup" in entry and not isinstance(entry["confirms_cleanup"], bool):
+            raise WorkbenchError("confirms_cleanup must be a boolean")
         if "python" in entry:
             if not isinstance(entry["python"], str) or not entry["python"]:
                 raise WorkbenchError("Registered Python must be a nonempty path")
@@ -341,11 +389,18 @@ def normalize(request, config, directory):
             or len(args) > 256
         ):
             raise WorkbenchError("args must be an array of at most 256 strings")
+        default_arguments = []
+        for flag, location in entry.get("default_paths", {}).items():
+            if not any(x == flag or x.startswith(flag + "=") for x in args):
+                default_arguments += [flag, str(within(root, location))]
         for flag, folder in entry.get("default_outputs", {}).items():
             if not any(x == flag or x.startswith(flag + "=") for x in args):
-                args = [*args, flag, str(within(directory, folder))]
-                spec["args"] = args
-        if entry.get("subcommand") and (not args or args[0] != entry["subcommand"]):
+                default_arguments += [flag, str(within(directory, folder))]
+        if default_arguments:
+            index = args.index("--") if "--" in args else len(args)
+            args = [*args[:index], *default_arguments, *args[index:]]
+            spec["args"] = args
+        if entry.get("subcommand") and entry["subcommand"] not in args:
             raise WorkbenchError(
                 "This adapter requires subcommand " + entry["subcommand"]
             )
@@ -387,6 +442,7 @@ def normalize(request, config, directory):
         spec["source_hash"] = file_hash(script)
         spec["snapshot_hashes"][str(copy_path)] = file_hash(copy_path)
         spec["entry"] = entry
+        spec["confirms_cleanup"] = bool(entry.get("confirms_cleanup", False))
         if entry.get("recovery"):
             repairs = entry.get("recovery_for")
             if (not entry.get("result_file")
@@ -432,11 +488,24 @@ def normalize(request, config, directory):
             "--python",
             "--session",
             "--previous-python",
+            "--research",
+            "--factory-zip",
+            "--patched-boot",
+            "--stock-boot",
+            "--magisk-apk",
             "--adb",
             "--aapt2",
             "--apksigner",
             "--keytool",
         }
+        for field in ("input_flags", "value_flags"):
+            values = entry.get(field, [])
+            if not isinstance(values, list) or not all(
+                isinstance(flag, str) and flag.startswith("--") and "=" not in flag
+                for flag in values
+            ):
+                raise WorkbenchError(field + " must be an array of --flags")
+        input_flags.update(entry.get("input_flags", []))
         directory_flags = {
             "--workspace",
             "--cache-dir",
@@ -468,6 +537,27 @@ def normalize(request, config, directory):
                 )
             )
             if path.is_file() and flag in input_flags:
+                spec["input_fingerprints"][str(path)] = file_hash(path)
+        if entry.get("positional_inputs"):
+            # Adapters declare their value-taking options so positional files are
+            # distinguished from output paths, tool names and numeric limits.
+            value_flags = set(entry.get("value_flags", []))
+            skip_value = False
+            after_separator = False
+            for arg in args:
+                if skip_value:
+                    skip_value = False
+                    continue
+                if not after_separator and arg == "--":
+                    after_separator = True
+                    continue
+                if not after_separator and arg.startswith("-"):
+                    skip_value = "=" not in arg and arg in value_flags
+                    continue
+                path = (root / arg).expanduser().resolve()
+                if not path.is_file():
+                    raise WorkbenchError("Input file is missing: " + str(path))
+                spec["resources"].append(resource(path_resource(path), "read"))
                 spec["input_fingerprints"][str(path)] = file_hash(path)
         for path in (Path(spec["python"]), root / ".envrc"):
             if path.is_file():
@@ -503,6 +593,20 @@ def normalize(request, config, directory):
                     spec["outputs"].append(str(target))
                 spec["resources"].append(resource(path_resource(target)))
     # Resource effects come exclusively from the registered adapter.
+    if artifact_outputs:
+        if "entry" not in spec:
+            raise WorkbenchError("Artifact outputs require a registered operation")
+        outputs = set(spec.get("outputs", []))
+        for name, value in artifact_outputs.items():
+            path = (root / value).expanduser().resolve()
+            inside_declared_output = any(
+                path.is_relative_to(Path(output)) for output in outputs
+            )
+            if str(path) not in outputs and not inside_declared_output:
+                raise WorkbenchError(
+                    "Artifact output is not a declared operation output: " + name
+                )
+            spec["artifact_outputs"][name] = str(path)
     spec["resources"] = list(
         {(r["key"], r["mode"]): r for r in spec["resources"]}.values()
     )

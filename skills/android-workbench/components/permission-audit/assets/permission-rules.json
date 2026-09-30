@@ -1,0 +1,443 @@
+{
+  "riskLevels": {
+    "critical": "特殊或高影响系统能力，需要重点说明授权条件和滥用面。",
+    "high": "涉及敏感数据、身份标识、设备控制或安全敏感操作。",
+    "medium": "常见能力，但可用于数据收集、持久化、后台行为或网络传输。",
+    "low": "低影响工具能力，仍需说明用途。",
+    "review": "内置规则未覆盖，需要结合官方文档、自定义权限和组件用途复核。"
+  },
+  "categories": {
+    "storage": {
+      "label": "文件与媒体访问",
+      "patterns": [
+        "MediaStore",
+        "ContentResolver",
+        "openInputStream",
+        "openFileDescriptor",
+        "ExternalStorage",
+        "ACTION_OPEN_DOCUMENT_TREE",
+        "createDeleteRequest",
+        "MANAGE_EXTERNAL_STORAGE"
+      ]
+    },
+    "network": {
+      "label": "网络访问",
+      "patterns": [
+        "HttpURLConnection",
+        "HttpsURLConnection",
+        "URL\\(",
+        "OkHttp",
+        "Socket\\(",
+        "ConnectivityManager",
+        "NetworkCallback"
+      ]
+    },
+    "wifi": {
+      "label": "Wi-Fi 状态",
+      "patterns": ["WifiManager", "WifiInfo", "ConnectivityManager"]
+    },
+    "location": {
+      "label": "位置访问",
+      "patterns": [
+        "LocationManager",
+        "FusedLocationProviderClient",
+        "requestLocationUpdates",
+        "getCurrentLocation",
+        "getLastKnownLocation",
+        "Geocoder"
+      ]
+    },
+    "camera": {
+      "label": "相机",
+      "patterns": ["CameraManager", "CameraDevice", "CameraX", "ImageCapture", "takePicture", "ACTION_IMAGE_CAPTURE"]
+    },
+    "microphone": {
+      "label": "麦克风",
+      "patterns": ["AudioRecord", "MediaRecorder", "SpeechRecognizer"]
+    },
+    "contacts": {
+      "label": "联系人",
+      "patterns": ["ContactsContract", "content://com.android.contacts"]
+    },
+    "sms": {
+      "label": "短信",
+      "patterns": ["SmsManager", "Telephony.Sms", "SMS_RECEIVED", "SMS_DELIVER"]
+    },
+    "call": {
+      "label": "电话与通话记录",
+      "patterns": ["TelephonyManager", "CallLog", "ACTION_CALL", "ACTION_DIAL", "PROCESS_OUTGOING_CALLS"]
+    },
+    "calendar": {
+      "label": "日历",
+      "patterns": ["CalendarContract", "content://com.android.calendar"]
+    },
+    "bluetooth": {
+      "label": "蓝牙与附近设备",
+      "patterns": ["BluetoothAdapter", "BluetoothLeScanner", "BluetoothDevice", "BluetoothGatt", "CompanionDeviceManager", "Nearby"]
+    },
+    "overlay": {
+      "label": "悬浮窗",
+      "patterns": ["canDrawOverlays", "TYPE_APPLICATION_OVERLAY", "WindowManager"]
+    },
+    "install": {
+      "label": "安装应用",
+      "patterns": ["PackageInstaller", "ACTION_INSTALL_PACKAGE", "REQUEST_INSTALL_PACKAGES"]
+    },
+    "packages": {
+      "label": "应用可见性",
+      "patterns": ["getInstalledPackages", "getInstalledApplications", "queryIntentActivities", "PackageManager"]
+    },
+    "usage": {
+      "label": "使用情况统计",
+      "patterns": ["UsageStatsManager", "PACKAGE_USAGE_STATS"]
+    },
+    "accessibility": {
+      "label": "无障碍服务",
+      "patterns": ["AccessibilityService", "AccessibilityEvent", "performGlobalAction"]
+    },
+    "notifications": {
+      "label": "通知",
+      "patterns": ["NotificationManager", "NotificationChannel", "NotificationCompat", "POST_NOTIFICATIONS"]
+    },
+    "boot": {
+      "label": "开机自启动与持久化",
+      "patterns": ["BOOT_COMPLETED", "JobScheduler", "WorkManager", "setPersisted", "AlarmManager"]
+    },
+    "foreground": {
+      "label": "前台服务",
+      "patterns": ["startForegroundService", "startForeground", "ForegroundService"]
+    },
+    "advertising": {
+      "label": "广告与归因",
+      "patterns": ["AdvertisingId", "adid", "Attribution", "registerSource", "registerTrigger", "getTopics", "ad_services"]
+    },
+    "push": {
+      "label": "推送",
+      "patterns": ["FirebaseMessagingService", "FirebaseInstanceId", "c2dm", "RemoteMessage"]
+    },
+    "referrer": {
+      "label": "安装来源",
+      "patterns": ["InstallReferrer", "installreferrer", "BIND_GET_INSTALL_REFERRER_SERVICE"]
+    },
+    "license": {
+      "label": "许可校验",
+      "patterns": ["CHECK_LICENSE", "ILicensingService", "licensecheck", "checkLicense"]
+    },
+    "wake": {
+      "label": "唤醒锁",
+      "patterns": ["newWakeLock", "WakeLock", "PowerManager"]
+    },
+    "vibrate": {
+      "label": "振动",
+      "patterns": ["Vibrator", "VibrationEffect", "VibratorManager"]
+    }
+  },
+  "permissions": {
+    "android.permission.MANAGE_EXTERNAL_STORAGE": {
+      "level": "critical",
+      "impact": "申请所有文件访问能力，可读写应用专属目录以外的大量共享存储。",
+      "abuse": "拿到授权后可读取、修改或删除用户共享文件；需要结合代码确认实际文件范围和删除确认。",
+      "categories": ["storage"]
+    },
+    "android.permission.SYSTEM_ALERT_WINDOW": {
+      "level": "critical",
+      "impact": "可在其他应用上方绘制界面。",
+      "abuse": "可用于遮挡界面、诱导点击或伪造系统提示；需要用户在系统设置中授予特殊访问。",
+      "categories": ["overlay"]
+    },
+    "android.permission.BIND_ACCESSIBILITY_SERVICE": {
+      "level": "critical",
+      "impact": "绑定无障碍服务能力，可接收界面事件并代表用户执行操作。",
+      "abuse": "若服务被滥用，可读取屏幕内容、模拟点击或绕过确认；正常情况下仅供系统或授权服务绑定。",
+      "categories": ["accessibility"]
+    },
+    "android.permission.BIND_DEVICE_ADMIN": {
+      "level": "critical",
+      "impact": "允许设备管理器接收系统管理广播并执行管理策略。",
+      "abuse": "可能用于限制卸载、锁屏或强制策略；需要检查 DeviceAdminReceiver 实现。",
+      "categories": ["accessibility"]
+    },
+    "android.permission.REQUEST_INSTALL_PACKAGES": {
+      "level": "critical",
+      "impact": "允许发起安装其他应用。",
+      "abuse": "可用于分发或更新其他包；需要用户确认，且可能被下载链路滥用。",
+      "categories": ["install"]
+    },
+    "android.permission.QUERY_ALL_PACKAGES": {
+      "level": "critical",
+      "impact": "允许查询设备上大部分已安装应用。",
+      "abuse": "可形成设备指纹或探测安全软件；正常商店、启动器或设备管理类应用可能有合理用途。",
+      "categories": ["packages"]
+    },
+    "android.permission.PACKAGE_USAGE_STATS": {
+      "level": "critical",
+      "impact": "允许读取应用使用统计。",
+      "abuse": "可了解用户使用习惯和敏感应用使用时间；需要用户授予特殊访问。",
+      "categories": ["usage"]
+    },
+    "android.permission.READ_EXTERNAL_STORAGE": {
+      "level": "high",
+      "impact": "在旧 Android 版本上读取共享存储文件。",
+      "abuse": "可能读取用户共享文件；受 `maxSdkVersion`、分区存储和运行时授权限制。",
+      "categories": ["storage"]
+    },
+    "android.permission.WRITE_EXTERNAL_STORAGE": {
+      "level": "high",
+      "impact": "在旧 Android 版本上写入共享存储。",
+      "abuse": "可能修改或覆盖共享文件；受 `maxSdkVersion` 和分区存储限制。",
+      "categories": ["storage"]
+    },
+    "android.permission.READ_MEDIA_IMAGES": {
+      "level": "high",
+      "impact": "读取设备图片。",
+      "abuse": "可访问用户图片元数据和内容；受运行时授权和部分照片选择限制。",
+      "categories": ["storage"]
+    },
+    "android.permission.READ_MEDIA_VIDEO": {
+      "level": "high",
+      "impact": "读取设备视频。",
+      "abuse": "可访问用户视频元数据和内容；受运行时授权和部分照片选择限制。",
+      "categories": ["storage"]
+    },
+    "android.permission.READ_MEDIA_AUDIO": {
+      "level": "high",
+      "impact": "读取设备音频。",
+      "abuse": "可访问用户音频元数据和内容；受运行时授权限制。",
+      "categories": ["storage"]
+    },
+    "android.permission.READ_MEDIA_VISUAL_USER_SELECTED": {
+      "level": "high",
+      "impact": "支持用户仅授权部分图片或视频。",
+      "abuse": "访问范围由用户选择决定；应结合代码确认 App 如何记录部分授权状态。",
+      "categories": ["storage"]
+    },
+    "android.permission.CAMERA": {
+      "level": "high",
+      "impact": "使用设备相机。",
+      "abuse": "可拍摄图像或视频；需要运行时授权，并应确认是否有用户可见指示。",
+      "categories": ["camera"]
+    },
+    "android.permission.RECORD_AUDIO": {
+      "level": "high",
+      "impact": "录制音频。",
+      "abuse": "可捕获附近声音或用户语音；需要运行时授权，并应确认录制触发条件。",
+      "categories": ["microphone"]
+    },
+    "android.permission.ACCESS_FINE_LOCATION": {
+      "level": "high",
+      "impact": "获取较精确位置。",
+      "abuse": "可用于追踪或画像；需要运行时授权，且使用时机影响风险。",
+      "categories": ["location"]
+    },
+    "android.permission.ACCESS_COARSE_LOCATION": {
+      "level": "high",
+      "impact": "获取大致位置。",
+      "abuse": "可用于粗略定位或画像；需要运行时授权。",
+      "categories": ["location"]
+    },
+    "android.permission.ACCESS_BACKGROUND_LOCATION": {
+      "level": "critical",
+      "impact": "在前台之外持续获取位置。",
+      "abuse": "可用于持续追踪；通常需要额外授权和明确用途声明。",
+      "categories": ["location"]
+    },
+    "android.permission.READ_CONTACTS": {
+      "level": "high",
+      "impact": "读取联系人。",
+      "abuse": "可收集社交关系数据；需要运行时授权。",
+      "categories": ["contacts"]
+    },
+    "android.permission.WRITE_CONTACTS": {
+      "level": "high",
+      "impact": "修改联系人。",
+      "abuse": "可篡改联系人数据；需要运行时授权。",
+      "categories": ["contacts"]
+    },
+    "android.permission.READ_SMS": {
+      "level": "high",
+      "impact": "读取短信。",
+      "abuse": "可读取验证码、交易或私人消息；需要运行时授权，且部分系统限制访问。",
+      "categories": ["sms"]
+    },
+    "android.permission.RECEIVE_SMS": {
+      "level": "high",
+      "impact": "接收短信广播。",
+      "abuse": "可用于拦截验证码或消息；需要运行时授权，且部分系统限制访问。",
+      "categories": ["sms"]
+    },
+    "android.permission.SEND_SMS": {
+      "level": "high",
+      "impact": "发送短信。",
+      "abuse": "可能产生费用或泄露数据；需要运行时授权。",
+      "categories": ["sms"]
+    },
+    "android.permission.READ_CALL_LOG": {
+      "level": "high",
+      "impact": "读取通话记录。",
+      "abuse": "可收集通话对象和时间；需要运行时授权。",
+      "categories": ["call"]
+    },
+    "android.permission.WRITE_CALL_LOG": {
+      "level": "high",
+      "impact": "修改通话记录。",
+      "abuse": "可篡改通话数据；需要运行时授权。",
+      "categories": ["call"]
+    },
+    "android.permission.CALL_PHONE": {
+      "level": "high",
+      "impact": "直接发起电话呼叫。",
+      "abuse": "可能拨打电话产生费用或触发欺诈流程；需要运行时授权。",
+      "categories": ["call"]
+    },
+    "android.permission.READ_PHONE_STATE": {
+      "level": "high",
+      "impact": "读取设备与通话状态等电话信息。",
+      "abuse": "可收集设备标识或通话状态；不同 Android 版本返回字段不同。",
+      "categories": ["call"]
+    },
+    "android.permission.READ_PHONE_NUMBERS": {
+      "level": "high",
+      "impact": "读取电话号码。",
+      "abuse": "可收集可联系的用户标识。",
+      "categories": ["call"]
+    },
+    "android.permission.READ_CALENDAR": {
+      "level": "high",
+      "impact": "读取日历。",
+      "abuse": "可收集日程、位置和参与者信息；需要运行时授权。",
+      "categories": ["calendar"]
+    },
+    "android.permission.WRITE_CALENDAR": {
+      "level": "high",
+      "impact": "修改日历。",
+      "abuse": "可创建、修改或删除日程；需要运行时授权。",
+      "categories": ["calendar"]
+    },
+    "android.permission.BLUETOOTH_SCAN": {
+      "level": "high",
+      "impact": "扫描蓝牙设备。",
+      "abuse": "可发现附近设备并形成位置线索；扫描结果与位置权限的关联取决于系统版本。",
+      "categories": ["bluetooth"]
+    },
+    "android.permission.BLUETOOTH_CONNECT": {
+      "level": "high",
+      "impact": "连接蓝牙设备。",
+      "abuse": "可与附近设备交互或收集设备信息；需要运行时授权。",
+      "categories": ["bluetooth"]
+    },
+    "android.permission.NEARBY_WIFI_DEVICES": {
+      "level": "high",
+      "impact": "发现或连接附近 Wi-Fi 设备。",
+      "abuse": "可形成附近设备或位置线索；需要运行时授权。",
+      "categories": ["bluetooth", "wifi"]
+    },
+    "android.permission.INTERNET": {
+      "level": "medium",
+      "impact": "建立网络连接。",
+      "abuse": "是数据上传、远程配置和广告请求的常见通道；本身不证明收集了敏感数据。",
+      "categories": ["network"]
+    },
+    "android.permission.ACCESS_NETWORK_STATE": {
+      "level": "low",
+      "impact": "读取网络连接状态。",
+      "abuse": "可用于判断联网条件或粗略网络信息。",
+      "categories": ["network"]
+    },
+    "android.permission.ACCESS_WIFI_STATE": {
+      "level": "medium",
+      "impact": "读取 Wi-Fi 状态信息。",
+      "abuse": "部分字段可用于设备或环境指纹；不同 Android 版本限制不同。",
+      "categories": ["wifi"]
+    },
+    "android.permission.RECEIVE_BOOT_COMPLETED": {
+      "level": "medium",
+      "impact": "开机完成后可接收广播。",
+      "abuse": "可用于自启动或恢复后台任务；需要检查接收器触发的代码。",
+      "categories": ["boot"]
+    },
+    "android.permission.POST_NOTIFICATIONS": {
+      "level": "medium",
+      "impact": "发送通知。",
+      "abuse": "可用于诱导点击或持续提醒；Android 13 起需要运行时授权。",
+      "categories": ["notifications"]
+    },
+    "android.permission.FOREGROUND_SERVICE": {
+      "level": "medium",
+      "impact": "运行前台服务。",
+      "abuse": "可延长后台任务时间；系统要求可见通知并限制服务类型。",
+      "categories": ["foreground"]
+    },
+    "android.permission.WAKE_LOCK": {
+      "level": "low",
+      "impact": "保持设备唤醒。",
+      "abuse": "可能增加耗电；需要检查申请和释放时机。",
+      "categories": ["wake"]
+    },
+    "android.permission.VIBRATE": {
+      "level": "low",
+      "impact": "控制振动。",
+      "abuse": "通常影响有限，可能用于通知或交互反馈。",
+      "categories": ["vibrate"]
+    },
+    "android.permission.AD_ID": {
+      "level": "medium",
+      "impact": "访问广告 ID。",
+      "abuse": "可用于跨应用追踪或画像；受用户重置和系统限制影响。",
+      "categories": ["advertising"]
+    },
+    "com.google.android.gms.permission.AD_ID": {
+      "level": "medium",
+      "impact": "Google Play services 访问广告 ID。",
+      "abuse": "可用于跨应用追踪或画像；受用户重置和系统限制影响。",
+      "categories": ["advertising"]
+    },
+    "android.permission.ACCESS_ADSERVICES_ATTRIBUTION": {
+      "level": "medium",
+      "impact": "访问广告归因 API。",
+      "abuse": "可用于跨应用归因和测量；需要结合归因注册代码评估数据范围。",
+      "categories": ["advertising"]
+    },
+    "android.permission.ACCESS_ADSERVICES_AD_ID": {
+      "level": "medium",
+      "impact": "访问 Privacy Sandbox 广告 ID。",
+      "abuse": "可用于标识和归因；受系统隐私控制影响。",
+      "categories": ["advertising"]
+    },
+    "android.permission.ACCESS_ADSERVICES_TOPICS": {
+      "level": "medium",
+      "impact": "访问基于兴趣的主题广告 API。",
+      "abuse": "可用于兴趣画像和广告投放；需要结合 `getTopics` 调用确认。",
+      "categories": ["advertising"]
+    },
+    "com.google.android.c2dm.permission.RECEIVE": {
+      "level": "medium",
+      "impact": "接收推送消息。",
+      "abuse": "可触发通知、配置拉取或后台处理；需要检查消息处理代码。",
+      "categories": ["push"]
+    },
+    "android.permission.BIND_GET_INSTALL_REFERRER_SERVICE": {
+      "level": "medium",
+      "impact": "绑定安装来源服务。",
+      "abuse": "可获取安装渠道信息；本身通常不提供敏感数据访问。",
+      "categories": ["referrer"]
+    },
+    "com.google.android.finsky.permission.BIND_GET_INSTALL_REFERRER_SERVICE": {
+      "level": "medium",
+      "impact": "绑定 Play 安装来源服务。",
+      "abuse": "可获取安装渠道信息；本身通常不提供敏感数据访问。",
+      "categories": ["referrer"]
+    },
+    "com.android.vending.CHECK_LICENSE": {
+      "level": "low",
+      "impact": "访问 Play 许可校验服务。",
+      "abuse": "主要用于付费或分发许可检查；不直接提供用户数据访问。",
+      "categories": ["license"]
+    },
+    "com.google.android.providers.gsf.permission.READ_GSERVICES": {
+      "level": "medium",
+      "impact": "读取 Google services 配置。",
+      "abuse": "可读取部分服务配置或标识；实际字段受系统限制。",
+      "categories": ["advertising", "network"]
+    }
+  }
+}

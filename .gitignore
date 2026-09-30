@@ -2,6 +2,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+.agents/
+.cache/
+.tmp/
+.validation/
+.venv-laya/
 build/
 dist/
 *.egg-info/
@@ -13,6 +18,8 @@ dist/
 workbench.project.json
 .codex/
 .android-static/
+docs/android-static-manifest.json
+docs/android-mcp-manifest.json
 .tools/
 apps/
 evidence/

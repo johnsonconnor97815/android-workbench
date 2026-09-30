@@ -24,22 +24,28 @@ def start(directory):
         return rpc(directory, "service.capabilities")
     except WorkbenchError:
         pass
-    with (directory / "service.log").open("ab") as log:
-        env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])}
-        installed = directory / "current-runtime.json"
-        launch = (
-            json.loads(installed.read_text())["command"]
-            if installed.is_file()
-            else [sys.executable, "-m", "workbench.cli"]
-        )
-        proc = subprocess.Popen(
-            [*launch, "--state", str(directory), "serve"],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=log,
-            start_new_session=True,
-            env=env,
-        )
+        with (directory / "service.log").open("ab") as log:
+            env = {
+                **os.environ,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                "ANDROID_WORKBENCH_SOURCE": str(
+                    Path(__file__).resolve().parents[1]
+                ),
+            }
+            installed = directory / "current-runtime.json"
+            launch = (
+                json.loads(installed.read_text())["command"]
+                if installed.is_file()
+                else [sys.executable, "-m", "workbench.cli"]
+            )
+            proc = subprocess.Popen(
+                [*launch, "--state", str(directory), "serve"],
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+                env=env,
+            )
     for _ in range(50):
         try:
             return rpc(directory, "service.capabilities")
@@ -75,6 +81,7 @@ def main(argv=None):
     register = sub.add_parser("register-device")
     register.add_argument("id")
     register.add_argument("serial")
+    sub.add_parser("discover-devices")
     submit = sub.add_parser("submit")
     submit.add_argument("spec", help="JSON file, or - for stdin")
     submit.add_argument("--wait", action="store_true")
@@ -161,6 +168,8 @@ def main(argv=None):
                 result = client.call(
                     "devices.register", {"id": args.id, "serial": args.serial}
                 )
+            elif args.command == "discover-devices":
+                result = client.call("devices.discover")
             elif args.command == "submit":
                 spec = json.loads(
                     sys.stdin.read()

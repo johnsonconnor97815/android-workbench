@@ -62,7 +62,14 @@ def main():
                 "New runtime built, but service is active. Drain and stop it before switching: "
                 + str(target)
             )
-    atomic_json(current, {"fingerprint": fingerprint, "command": command})
+    atomic_json(
+        current,
+        {
+            "fingerprint": fingerprint,
+            "command": command,
+            "source": str(ROOT.resolve()),
+        },
+    )
     print(
         json.dumps(
             {"runtime": str(target), "command": command, "state": str(directory)},

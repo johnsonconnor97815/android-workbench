@@ -50,8 +50,19 @@ def proxy(project, directory, command):
     draining = False
 
     def input_reader():
-        for line in sys.stdin.buffer:
-            messages.put(("input", line))
+        # An idle daemon must not hold a buffered-stdin lock when maintenance
+        # ends the proxy while the client still has its input pipe open.
+        buffered = b""
+        while True:
+            chunk = os.read(sys.stdin.fileno(), 65536)
+            if not chunk:
+                if buffered:
+                    messages.put(("input", buffered))
+                break
+            buffered += chunk
+            while b"\n" in buffered:
+                line, buffered = buffered.split(b"\n", 1)
+                messages.put(("input", line + b"\n"))
         messages.put(("eof", None))
 
     def output_reader():

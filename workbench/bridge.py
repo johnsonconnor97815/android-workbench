@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from .client import Client
 from .common import WorkbenchError, rpc
-from .project import bundle_root, registered_path
+from .project import COMPONENTS, LEGACY_COMPONENTS, SKILL, bundle_root, registered_path
 
 
 def locate_project(script):
@@ -45,6 +45,21 @@ def entry(script, argv=None):
             candidate = canonical / "scripts" / script.name
             if candidate.is_file():
                 script = candidate.resolve()
+    # Pre-consolidation plugins and local copies keep their old folder names.
+    # Resolve only known component aliases, then require a registered adapter below.
+    component = LEGACY_COMPONENTS.get(script.parent.parent.name)
+    if (
+        component is None
+        and script.parent.parent.name in COMPONENTS
+        and script.parent.parent.parent.name == "components"
+        and script.parent.parent.parent.parent.name == SKILL
+    ):
+        component = script.parent.parent.name
+    if component and script.parent.name == "scripts" and SKILL in manifest.get("skills", {}):
+        canonical = registered_path(project, manifest, manifest["skills"][SKILL])
+        candidate = canonical / "components" / component / "scripts" / script.name
+        if candidate.is_file():
+            script = candidate.resolve()
     matches = []
     for name, definition in manifest["operations"].items():
         if registered_path(project, manifest, definition["script"]) == script:

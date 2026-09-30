@@ -14,7 +14,15 @@ LEGACY_SKILLS = (
     "android-static-env",
     "frida-modified",
     "pull-android-apk",
+    "apk-permission-audit",
 )
+LEGACY_COMPONENTS = {
+    "android-static-env": "static-env",
+    "frida-modified": "frida",
+    "pull-android-apk": "apk-export",
+    "apk-reverse": "apk-reverse",
+    "apk-permission-audit": "permission-audit",
+}
 SKILL_SOURCE = BUNDLE_PREFIX + "skills/" + SKILL
 COMPONENTS = {
     "static-env": "components/static-env",
@@ -22,6 +30,8 @@ COMPONENTS = {
     "apk-export": "components/apk-export",
     "apk-reverse": "components/apk-reverse",
     "analysis-agent": "components/analysis-agent",
+    "device-manager": "components/device-manager",
+    "permission-audit": "components/permission-audit",
 }
 
 
@@ -81,6 +91,169 @@ def builtin_operations():
     )
     add("apk.doctor", apk, "apk_pull.py", subcommand="doctor", readonly=True)
     add("apk.devices", apk, "apk_pull.py", subcommand="devices", readonly=True)
+    device_manager = "device-manager"
+    device_manager_definitions = {
+        "preflight": {
+            "subcommand": "preflight",
+            "serial": "--serial",
+            "readonly": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "partition_inspect": {
+            "subcommand": "partition-inspect",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "readonly": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "partition_repair": {
+            "subcommand": "partition-repair",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "recover_partition_repair": {
+            "script": "recover_partition_repair.py",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "recovery": True,
+            "recovery_for": [
+                "device_manager.partition_repair",
+                "device_manager.recover_partition_repair",
+            ],
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
+        "bootloader_state": {
+            "subcommand": "bootloader-state",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "research": {
+            "subcommand": "research",
+            "readonly": False,
+            "outputs": ["--output", "--cache"],
+            "shared_outputs": ["--cache"],
+            "default_outputs": {"--output": "operation-result.json"},
+            "default_paths": {"--cache": "device-manager/research-cache.json"},
+        },
+        "image_download": {
+            "subcommand": "image-download",
+            "readonly": False,
+            "outputs": ["--output", "--cache-dir"],
+            "shared_outputs": ["--cache-dir"],
+            "default_outputs": {"--output": "operation-result.json"},
+            "default_paths": {"--cache-dir": "device-manager/images"},
+        },
+        "recover_image_cache": {
+            "script": "recover_image_cache.py",
+            "readonly": False,
+            "mutates_environment": True,
+            "recovery": True,
+            "recovery_for": [
+                "device_manager.image_download",
+                "device_manager.recover_image_cache",
+            ],
+            "resources": [{"path": "device-manager/images", "mode": "write"}],
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
+        "image_verify": {
+            "subcommand": "image-verify",
+            "readonly": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "flash": {
+            "subcommand": "flash",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "flash_factory": {
+            "subcommand": "flash-factory",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "recover_flash_factory": {
+            "script": "recover_flash_factory.py",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "recovery": True,
+            "recovery_for": [
+                "device_manager.flash_factory",
+                "device_manager.recover_flash_factory",
+            ],
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
+        "install_rom": {
+            "subcommand": "install-rom",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "recover_install_rom": {
+            "script": "recover_install_rom.py",
+            "serial": "--serial",
+            "recovery": True,
+            "recovery_for": [
+                "device_manager.install_rom",
+                "device_manager.recover_install_rom",
+            ],
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
+        "root": {
+            "subcommand": "root",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "root_prepare": {
+            "subcommand": "root-prepare",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "root_collect": {
+            "subcommand": "root-collect",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output", "--destination"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "install_frida": {
+            "subcommand": "install-frida",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+    }
+    for name, entry in device_manager_definitions.items():
+        script = entry.get("script", "device_manager.py")
+        add(
+            "device_manager." + name,
+            device_manager,
+            script,
+            **{key: value for key, value in entry.items() if key != "script"},
+        )
     definitions = {
         "inspect_device": {
             "serial": "--serial",
@@ -118,6 +291,17 @@ def builtin_operations():
             mutates_environment=True,
             **({"uses_mcp": True} if name == "mcp_setup" else {}),
         )
+    operations["environment.recover_host_lease"] = {
+        "script": BUNDLE_PREFIX + "scripts/recover_host_lease.py",
+        "source": BUNDLE_PREFIX + "scripts",
+        "readonly": True,
+        "mutates_environment": True,
+        "recovery": True,
+        "recovery_for": ["host.lease", "project.recover_host_lease", "environment.recover_host_lease"],
+        "outputs": ["--output"],
+        "default_outputs": {"--output": "host-lease-recovery"},
+        "result_file": "result.json",
+    }
     for name in ("smoke", "mcp_smoke", "mcp_probe", "inspect_so"):
         add(
             "static." + name,
@@ -129,6 +313,19 @@ def builtin_operations():
         )
     operations["static.inspect_so"].update(
         python=".android-static/venvs/native-python/bin/python", outputs=["--output"]
+    )
+    add(
+        "static.permission_audit",
+        "permission-audit",
+        "scan_permissions.py",
+        readonly=True,
+        compute=True,
+        outputs=["--output-dir"],
+        default_outputs={"--output-dir": "permission-audit"},
+        result_file="operation-result.json",
+        input_flags=["--source-dir", "--jadx"],
+        positional_inputs=True,
+        value_flags=["--apk", "--output-dir", "--source-dir", "--aapt2", "--jadx", "--max-hits"],
     )
 
     analysis = "analysis-agent"
@@ -624,6 +821,17 @@ def generate(root, checkout, python=None):
                 + entry["script"]
             )
     return doc
+
+
+def device_management_manifest(root, checkout, python=None):
+    """A project-free manifest for shared phone management operations."""
+    document = generate(root, checkout, python)
+    document["operations"] = {
+        name: entry
+        for name, entry in document["operations"].items()
+        if name.startswith("device_manager.")
+    }
+    return document
 
 
 def update(existing, generated, python=None):

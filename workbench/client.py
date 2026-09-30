@@ -9,7 +9,9 @@ from .common import TERMINAL, atomic_json, digest, lock_file, rpc, state_dir
 class Client:
     def __init__(self, project, directory=None, session=None):
         self.directory = state_dir(directory)
-        self.project = str(Path(project).resolve())
+        self.requested_project = str(Path(project).expanduser().resolve())
+        self.project = self.requested_project
+        self.mode = "project"
         self.name = (
             session
             or os.environ.get("ANDROID_WORKBENCH_SESSION")
@@ -27,8 +29,21 @@ class Client:
                 opened = rpc(
                     self.directory,
                     "sessions.open",
-                    {"project": self.project, "name": self.name},
+                    {
+                        "project": self.requested_project,
+                        "name": self.name,
+                        "mode": (
+                            "project"
+                            if (
+                                Path(self.requested_project)
+                                / "workbench.project.json"
+                            ).is_file()
+                            else "device_management"
+                        ),
+                    },
                 )
+                self.project = opened["project"]
+                self.mode = opened["mode"]
                 self.token = opened["token"]
                 atomic_json(self.identity, opened)
         finally:

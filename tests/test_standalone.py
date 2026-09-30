@@ -33,6 +33,21 @@ class ProjectSourceTest(unittest.TestCase):
         self.project = Path(self.temp.name)
         self.manifest = generate(self.project, ROOT, sys.executable)
 
+    def test_generated_environment_manifests_are_not_packaged(self):
+        from scripts import build_plugin
+
+        docs = self.project / "docs"
+        docs.mkdir()
+        for name in ("android-static-manifest.json", "android-mcp-manifest.json"):
+            (docs / name).write_text('{"workspace":"/machine/local/environment"}')
+        guide = docs / "architecture.md"
+        guide.write_text("# Portable architecture\n")
+        with mock.patch.object(build_plugin, "ROOT", self.project):
+            paths = build_plugin.payload()
+        self.assertIn(guide, paths)
+        self.assertNotIn(docs / "android-static-manifest.json", paths)
+        self.assertNotIn(docs / "android-mcp-manifest.json", paths)
+
     def test_registered_roots_reject_escape_and_symlink(self):
         for value in ("../outside.py", "@workbench/../outside.py", "/etc/passwd"):
             with self.subTest(value=value), self.assertRaises(WorkbenchError):
@@ -111,6 +126,64 @@ class ProjectSourceTest(unittest.TestCase):
                 DEFAULTS,
                 directory,
             )
+
+    def test_default_path_remains_inside_project(self):
+        scripts = self.project / "scripts"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "inspect.py").write_text("print('extension')\n")
+        self.manifest["operations"]["custom"] = {
+            "script": "scripts/inspect.py",
+            "source": "scripts",
+            "readonly": True,
+            "outputs": ["--cache"],
+            "default_paths": {"--cache": "cache/state.json"},
+        }
+        target = self.project / "workbench.project.json"
+        target.write_text(json.dumps(self.manifest))
+        directory = self.project / "evidence/job"
+        directory.mkdir(parents=True)
+        spec = normalize(
+            {"project": str(self.project), "operation": "custom"}, DEFAULTS, directory
+        )
+        self.assertEqual(spec["args"], ["--cache", str(self.project / "cache/state.json")])
+        self.manifest["operations"]["custom"]["default_paths"]["--cache"] = "../escape"
+        target.write_text(json.dumps(self.manifest))
+        with self.assertRaises(WorkbenchError):
+            normalize(
+                {"project": str(self.project), "operation": "custom"},
+                DEFAULTS,
+                directory,
+            )
+
+    def test_subcommand_receives_default_arguments_after_subcommand(self):
+        scripts = self.project / "scripts"
+        scripts.mkdir(exist_ok=True)
+        (scripts / "inspect.py").write_text("print('extension')\n")
+        self.manifest["operations"]["custom"] = {
+            "script": "scripts/inspect.py",
+            "source": "scripts",
+            "subcommand": "inspect",
+            "readonly": True,
+            "outputs": ["--cache"],
+            "default_paths": {"--cache": "cache/state.json"},
+        }
+        target = self.project / "workbench.project.json"
+        target.write_text(json.dumps(self.manifest))
+        directory = self.project / "evidence/job"
+        directory.mkdir(parents=True)
+        spec = normalize(
+            {
+                "project": str(self.project),
+                "operation": "custom",
+                "args": ["inspect"],
+            },
+            DEFAULTS,
+            directory,
+        )
+        self.assertEqual(
+            spec["args"],
+            ["inspect", "--cache", str(self.project / "cache/state.json")],
+        )
 
     def test_shared_output_flag_must_be_declared_as_output(self):
         scripts = self.project / "scripts"
@@ -305,7 +378,8 @@ class UpgradeRuntimeTest(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def run_upgrade(self, module, state, configure_side_effect=None):
+    def run_upgrade(self, module, state, configure_side_effect=None, drain_state=None, jobs=None, drain_states=None):
+        responses = iter(drain_states) if drain_states is not None else None
         class FakeClient:
             def __init__(self, project):
                 self.project = project
@@ -314,9 +388,11 @@ class UpgradeRuntimeTest(unittest.TestCase):
             def call(self, method):
                 self.calls.append(method)
                 if method == "service.drain":
-                    return {"can_stop": True, "active": []}
+                    if responses is not None:
+                        return next(responses)
+                    return drain_state if drain_state is not None else {"can_stop": True, "active": []}
                 if method == "jobs.list":
-                    return []
+                    return jobs or []
                 if method == "service.resume":
                     return None
                 raise AssertionError("unexpected client call: " + method)
@@ -340,7 +416,8 @@ class UpgradeRuntimeTest(unittest.TestCase):
             return mock.Mock(returncode=0)
 
         with (
-            mock.patch.object(sys, "argv", ["upgrade_runtime.py", "--project", str(self.project)]),
+            mock.patch.object(sys, "argv", ["upgrade_runtime.py", "--project", str(self.project),
+                                          "--drain-timeout", "1" if responses is not None else "0"]),
             mock.patch.object(module, "Client", return_value=client),
             mock.patch.object(
                 module,
@@ -399,6 +476,40 @@ class UpgradeRuntimeTest(unittest.TestCase):
         self.assertEqual(
             commands[0][0][1], str(ROOT / "scripts/configure_project.py")
         )
+
+
+    def test_idle_upgrade_preserves_queued_work(self):
+        module = self.load_upgrade_module()
+        client, commands = self.run_upgrade(
+            module, self.project / "queued-state",
+            drain_state={"can_stop": False, "active": ["waiting"]},
+            jobs=[{"id": "waiting", "state": "queued"}],
+        )
+        self.assertNotIn("service.resume", client.calls)
+        self.assertEqual(len(commands), 2)
+
+    def test_upgrade_refuses_active_or_unknown_jobs(self):
+        for status in ("running", "needs_recovery", "unknown"):
+            with self.subTest(status=status), self.assertRaisesRegex(SystemExit, "Existing work must finish"):
+                self.run_upgrade(
+                    self.load_upgrade_module(), self.project / status,
+                    drain_state={"can_stop": False, "active": ["work"]},
+                    jobs=[] if status == "unknown" else [{"id": "work", "state": status}],
+                )
+            self.assertIn("service.resume", self.last_client.calls)
+            self.assertEqual(self.last_commands, [])
+
+    def test_upgrade_waits_for_idle_analysis_lease_to_release(self):
+        client, commands = self.run_upgrade(
+            self.load_upgrade_module(), self.project / "drained-state",
+            drain_states=[
+                {"can_stop": False, "active": ["proxy"], "queued": []},
+                {"can_stop": True, "active": [], "queued": []},
+            ],
+        )
+        self.assertEqual(client.calls.count("service.drain"), 2)
+        self.assertNotIn("service.resume", client.calls)
+        self.assertEqual(len(commands), 2)
 
 
 class StandaloneInstallTest(unittest.TestCase):
@@ -474,7 +585,7 @@ class StandaloneInstallTest(unittest.TestCase):
                 )
                 manifest = json.loads((project / "workbench.project.json").read_text())
                 self.assertEqual(manifest["workbench_root"], str(moved))
-                self.assertEqual(len(manifest["operations"]), 92)
+                self.assertEqual(len(manifest["operations"]), 112)
                 self.assertNotIn(str(ROOT), json.dumps(manifest))
                 self.assertFalse((project / "android-workbench").exists())
                 self.assertFalse((project / ".venv").exists())
@@ -559,7 +670,7 @@ class StandaloneInstallTest(unittest.TestCase):
                     messages = [
                         json.loads(line) for line in response.stdout.splitlines()
                     ]
-                    self.assertEqual(len(messages[1]["result"]["tools"]), 18)
+                    self.assertEqual(len(messages[1]["result"]["tools"]), 27)
                     self.assertFalse(messages[2]["result"]["isError"])
                     self.assertIn(
                         "apk.pull", messages[2]["result"]["content"][0]["text"]

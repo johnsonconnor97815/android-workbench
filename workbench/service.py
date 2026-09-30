@@ -24,15 +24,21 @@ from .common import (
     conflict,
     digest,
     encode,
+    file_hash,
+    is_adb_server,
     lock_file,
     overlap,
+    path_resource,
     process_identity,
+    resource,
     same_process,
 )
 from .policy import Policy
+from .project import device_management_manifest
 from .registry import normalize
 from .store import Store
 
+ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = {
     "devices": {},
     "llm": {"backend": "none"},
@@ -44,12 +50,45 @@ DEFAULTS = {
     "candidate_limit": 16,
     "min_free_bytes": 100 * 1024 * 1024,
     "max_job_log_bytes": 32 * 1024 * 1024,
+    "max_job_output_bytes": 2 * 1024 * 1024 * 1024,
+    "evidence_retention_days": 30,
+    "max_internal_evidence_bytes": 2 * 1024 * 1024 * 1024,
+    "retention_interval_seconds": 3600,
     "cleanup_grace": 20,
 }
 ACTIVE = {"running", "paused", "verifying", "cleaning", "needs_recovery"}
+RETENTION_PRESERVED = {
+    "normalized.json",
+    "result.json",
+    "artifacts.json",
+    "retention.json",
+}
 
 
 class Service:
+    def source_root(self):
+        candidates = []
+        if os.environ.get("ANDROID_WORKBENCH_SOURCE"):
+            candidates.append(Path(os.environ["ANDROID_WORKBENCH_SOURCE"]))
+        pointer = self.directory / "current-runtime.json"
+        if pointer.is_file():
+            try:
+                source = json.loads(pointer.read_text()).get("source")
+                if source:
+                    candidates.append(Path(source))
+            except ValueError:
+                pass
+        candidates.append(ROOT)
+        for candidate in candidates:
+            if (
+                candidate
+                / "skills/android-workbench/components/device-manager/scripts/device_manager.py"
+            ).is_file():
+                return candidate.resolve()
+        raise WorkbenchError(
+            "Workbench source is missing; reinstall the shared runtime"
+        )
+
     def __init__(self, directory):
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -59,6 +98,12 @@ class Service:
             **DEFAULTS,
             **json.loads((self.directory / "config.json").read_text()),
         }
+        self.device_management_root = self.directory / "device-management"
+        self.device_management_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        atomic_json(
+            self.device_management_root / "workbench.project.json",
+            device_management_manifest(self.device_management_root, self.source_root()),
+        )
         self.store = Store(self.directory / "queue.sqlite3")
         self.lock = threading.RLock()
         self.policy = Policy(self.config)
@@ -68,6 +113,7 @@ class Service:
         self.selecting = set()
         self.procs = {}
         self.stop_deadlines = {}
+        self.next_retention = time.time()
         self.pool = concurrent.futures.ThreadPoolExecutor(
             max_workers=8, thread_name_prefix="decision"
         )
@@ -83,6 +129,7 @@ class Service:
                     self.store.event(
                         job["id"], "recovery_required", {"reason": "service_restart"}
                     )
+            self.enforce_retention()
         self.thread = threading.Thread(target=self.loop, daemon=True)
 
     def public(self, job):
@@ -97,7 +144,34 @@ class Service:
             "resources": job["spec"]["resources"],
             "directory": job["spec"]["directory"],
             "timeout": job["spec"]["timeout"],
+            "artifact_outputs": job["spec"].get("artifact_outputs", {}),
+            "artifact_inputs": job["spec"].get("artifact_inputs", {}),
         }
+
+    def last_device_info(self, ident):
+        jobs = [
+            job
+            for job in self.store.jobs()
+            if job["state"] == "succeeded"
+            and job["spec"].get("operation") == "device.info"
+            and job["spec"].get("device") == ident
+        ]
+        for job in sorted(jobs, key=lambda value: value["finished"] or 0, reverse=True):
+            path = Path(job["spec"]["directory"]) / "device-info.json"
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            finished = job["finished"] or 0
+            return {
+                "job": job["id"],
+                "finished_at": finished,
+                "age_seconds": max(0, round(time.time() - finished, 3)),
+                "data": data,
+            }
+        return None
 
     def authenticate(self, token):
         if not isinstance(token, str):
@@ -118,6 +192,199 @@ class Service:
         if job["project"] != session["project"]:
             raise WorkbenchError("Task belongs to a different project")
         return job
+
+    def artifact_rows(self, project, name=None):
+        if name is None:
+            return self.store.rows(
+                "SELECT * FROM artifacts WHERE project=? ORDER BY created DESC, id DESC LIMIT 500",
+                (project,),
+            )
+        return self.store.rows(
+            "SELECT * FROM artifacts WHERE project=? AND name=? ORDER BY created DESC, id DESC LIMIT 500",
+            (project, name),
+        )
+
+    def evidence_inventory(self, jobs=None):
+        jobs = jobs or self.store.jobs()
+        files = 0
+        total = 0
+        directories = 0
+        for job in jobs:
+            directory = Path(job["spec"]["directory"])
+            if not directory.is_dir():
+                continue
+            directories += 1
+            for path in directory.rglob("*"):
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    files += 1
+                    total += path.stat().st_size
+                except OSError:
+                    continue
+        return {
+            "jobs": directories,
+            "files": files,
+            "bytes": total,
+            "named_artifacts": len(self.store.rows("SELECT id FROM artifacts")),
+        }
+
+    def evidence_state(self):
+        record_path = self.directory / "retention.json"
+        record = json.loads(record_path.read_text()) if record_path.is_file() else None
+        return {
+            "policy": {
+                "retention_days": self.config["evidence_retention_days"],
+                "max_internal_evidence_bytes": self.config[
+                    "max_internal_evidence_bytes"
+                ],
+                "interval_seconds": self.config["retention_interval_seconds"],
+            },
+            **self.evidence_inventory(),
+            "last_run": record,
+        }
+
+    def enforce_retention(self):
+        jobs = self.store.jobs()
+        referenced = {
+            dependency
+            for job in jobs
+            if job["state"] not in TERMINAL
+            for dependency in job["spec"].get("dependencies", [])
+        }
+        artifact_paths = {row["path"] for row in self.store.rows("SELECT path FROM artifacts")}
+        entries = []
+        inventory = self.evidence_inventory(jobs)
+        total = inventory["bytes"]
+        for job in jobs:
+            if job["state"] not in TERMINAL or job["id"] in referenced:
+                continue
+            directory = Path(job["spec"]["directory"])
+            if not directory.is_dir():
+                continue
+            for path in directory.rglob("*"):
+                try:
+                    if path.is_symlink() or not path.is_file():
+                        continue
+                    stat = path.stat()
+                except OSError:
+                    continue
+                if path.parent == directory and path.name in RETENTION_PRESERVED:
+                    continue
+                if str(path) in artifact_paths:
+                    continue
+                entries.append(
+                    {
+                        "job": job["id"],
+                        "path": str(path),
+                        "mtime": stat.st_mtime,
+                        "bytes": stat.st_size,
+                    }
+                )
+        cutoff = time.time() - self.config["evidence_retention_days"] * 86400
+        deleted = []
+        deleted_bytes = 0
+        deleted_paths = set()
+
+        def remove(entry):
+            nonlocal deleted_bytes
+            try:
+                Path(entry["path"]).unlink()
+            except FileNotFoundError:
+                return
+            deleted.append(entry)
+            deleted_paths.add(entry["path"])
+            deleted_bytes += entry["bytes"]
+
+        for entry in entries:
+            if entry["mtime"] <= cutoff:
+                remove(entry)
+        remaining_budget = total - deleted_bytes
+        if remaining_budget > self.config["max_internal_evidence_bytes"]:
+            for entry in sorted(
+                (entry for entry in entries if entry["path"] not in deleted_paths),
+                key=lambda entry: (entry["mtime"], entry["path"]),
+            ):
+                if remaining_budget <= self.config["max_internal_evidence_bytes"]:
+                    break
+                remove(entry)
+                remaining_budget -= entry["bytes"]
+        by_job = {}
+        for entry in deleted:
+            by_job.setdefault(entry["job"], []).append(
+                {"path": entry["path"], "bytes": entry["bytes"]}
+            )
+        now = time.time()
+        for job, files in by_job.items():
+            directory = Path(
+                next(item["spec"]["directory"] for item in jobs if item["id"] == job)
+            )
+            atomic_json(
+                directory / "retention.json",
+                {
+                    "applied_at": now,
+                    "policy": {
+                        "retention_days": self.config["evidence_retention_days"],
+                        "max_internal_evidence_bytes": self.config[
+                            "max_internal_evidence_bytes"
+                        ],
+                    },
+                    "deleted_files": files,
+                },
+            )
+        result = {
+            "applied_at": now,
+            "policy": {
+                "retention_days": self.config["evidence_retention_days"],
+                "max_internal_evidence_bytes": self.config[
+                    "max_internal_evidence_bytes"
+                ],
+            },
+            "deleted_files": len(deleted),
+            "deleted_bytes": deleted_bytes,
+            **self.evidence_inventory(),
+        }
+        atomic_json(self.directory / "retention.json", result)
+        self.next_retention = (
+            now + self.config["retention_interval_seconds"]
+        )
+        return result
+
+    def resolve_artifact_inputs(self, spec, session):
+        for name, flag in spec.get("artifact_inputs", {}).items():
+            rows = self.artifact_rows(session["project"], name)
+            if not rows:
+                raise WorkbenchError("Artifact is not published: " + name)
+            row = rows[0]
+            producer = self.store.job(row["job"])
+            if producer["state"] != "succeeded":
+                raise WorkbenchError("Artifact producer did not succeed: " + name)
+            path = Path(row["path"])
+            if not path.is_file() or file_hash(path) != row["sha256"]:
+                raise WorkbenchError("Artifact changed or is missing: " + name)
+            spec["args"] = [*spec.get("args", []), flag, str(path)]
+            if row["job"] not in spec["dependencies"]:
+                spec["dependencies"] = [*spec["dependencies"], row["job"]]
+            spec["input_fingerprints"][str(path)] = row["sha256"]
+            spec["resources"].append(resource(path_resource(path), "read"))
+
+    def prepare_artifacts(self, job):
+        records = []
+        for name, value in job["spec"].get("artifact_outputs", {}).items():
+            path = Path(value)
+            if not path.is_file():
+                raise WorkbenchError("Artifact output is missing: " + name)
+            records.append(
+                {
+                    "project": job["project"],
+                    "name": name,
+                    "job": job["id"],
+                    "path": str(path),
+                    "sha256": file_hash(path),
+                    "created": time.time(),
+                }
+            )
+        return records
 
     def request(self, method, p, token):
         if method.startswith("worker."):
@@ -143,9 +410,17 @@ class Service:
                     "runtime_source": str(Path(__file__).resolve().parents[1]),
                 }
             if method == "sessions.open":
-                project = Path(p["project"]).resolve()
+                requested_project = Path(p["project"]).resolve()
+                mode = "project"
+                project = requested_project
                 if not (project / "workbench.project.json").is_file():
-                    raise WorkbenchError("Unregistered project")
+                    if p.get("mode") == "device_management" or (
+                        project / "workbench" / "service.py"
+                    ).is_file():
+                        project = self.device_management_root
+                        mode = "device_management"
+                    else:
+                        raise WorkbenchError("Unregistered project")
                 new_token = secrets.token_urlsafe(32)
                 self.store.db.execute(
                     "INSERT INTO sessions VALUES(?,?,?)",
@@ -155,10 +430,16 @@ class Service:
                         str(project),
                     ),
                 )
-                return {"token": new_token, "project": str(project)}
+                return {
+                    "token": new_token,
+                    "project": str(project),
+                    "requested_project": str(requested_project),
+                    "mode": mode,
+                }
             session = self.authenticate(token)
             if method in ("service.drain", "service.resume"):
                 self.draining = method == "service.drain"
+                queued = [j["id"] for j in self.store.jobs() if j["state"] == "queued"]
                 active = [
                     j["id"]
                     for j in self.store.jobs()
@@ -167,6 +448,7 @@ class Service:
                 return {
                     "draining": self.draining,
                     "active": active,
+                    "queued": queued,
                     "can_stop": not active,
                 }
             if method == "operations.list":
@@ -185,7 +467,11 @@ class Service:
                 }
             if method == "jobs.submit" or method == "scenes.request_observation":
                 if method == "scenes.request_observation":
-                    p = {**p, "operation": "device.screenshot"}
+                    p = {
+                        **p,
+                        "operation": "device.screenshot",
+                        "estimate": p.get("estimate", 2),
+                    }
                 return self.submit(p, session)
             if method in ("jobs.status", "jobs.explain"):
                 job = self.shared(p["id"], session)
@@ -250,6 +536,10 @@ class Service:
                         )
                     spec["lease_released"] = True
                     self.store.update(job["id"], spec=spec)
+                    atomic_json(
+                        Path(spec["directory"]) / "normalized.json",
+                        spec,
+                    )
                     return {"released": True}
                 if method == "leases.track":
                     if not same_process(p["identity"]):
@@ -257,6 +547,10 @@ class Service:
                     spec = job["spec"]
                     spec["lease_process"] = p["identity"]
                     self.store.update(job["id"], spec=spec)
+                    atomic_json(
+                        Path(spec["directory"]) / "normalized.json",
+                        spec,
+                    )
                     return {"tracked": True}
                 pending = any(
                     x["state"] == "queued"
@@ -265,7 +559,8 @@ class Service:
                     for x in self.store.jobs()
                 )
                 return {
-                    "draining": pending
+                    "draining": self.draining
+                    or pending
                     or job["spec"].get("drain_requested", False)
                     or job["state"] != "running",
                     "state": job["state"],
@@ -275,7 +570,7 @@ class Service:
                 if job["state"] != "queued":
                     raise WorkbenchError("Only queued task priority can change")
                 value = p["priority"]
-                if type(value) != int or not -5 <= value <= 5:
+                if type(value) is not int or not -5 <= value <= 5:
                     raise WorkbenchError("priority must be an integer -5..5")
                 self.store.update(
                     job["id"], priority=value, revision=job["revision"] + 1
@@ -300,27 +595,148 @@ class Service:
                     else None,
                     "state": job["state"],
                 }
+            if method == "artifacts.list":
+                return self.artifact_rows(session["project"], p.get("name"))
+            if method == "evidence.state":
+                return self.evidence_state()
+            if method == "evidence.apply_retention":
+                return self.enforce_retention()
+            if method == "hooks.subscribe":
+                scene = self.shared(p["scene"], session)
+                has_hook = any(
+                    step.get("action") == "hook_attach"
+                    for step in scene["spec"].get("steps", [])
+                ) or (
+                    self.config.get("test_mode")
+                    and bool(scene["spec"].get("hooks"))
+                )
+                if not has_hook:
+                    raise WorkbenchError("Scene has no managed Hook")
+                child = self.submit(
+                {
+                    **p,
+                    "operation": "device.observe",
+                    "accept_hooks": True,
+                    "estimate": p.get("estimate", 1),
+                },
+                    session,
+                )
+                spec = scene["spec"]
+                spec["hook_subscribers"] = [
+                    *spec.get("hook_subscribers", []),
+                    {
+                        "job": child["id"],
+                        "session": session["token"],
+                        "requested_at": time.time(),
+                    },
+                ]
+                self.store.update(scene["id"], spec=spec)
+                atomic_json(Path(spec["directory"]) / "normalized.json", spec)
+                return child
+            if method == "hooks.list":
+                rows = []
+                for job in self.store.jobs():
+                    if job["project"] != session["project"]:
+                        continue
+                    has_hook = any(
+                        step.get("action") == "hook_attach"
+                        for step in job["spec"].get("steps", [])
+                    ) or (
+                        self.config.get("test_mode")
+                        and bool(job["spec"].get("hooks"))
+                    )
+                    if not has_hook:
+                        continue
+                    rows.append(
+                        {
+                            "job": job["id"],
+                            "state": job["state"],
+                            "device": job["spec"].get("device"),
+                            "subscribers": job["spec"].get("hook_subscribers", []),
+                        }
+                    )
+                return rows
             if method in ("devices.list", "devices.state"):
                 rows = []
                 for ident, entry in self.config["devices"].items():
-                    users = [
-                        j["id"]
+                    active_jobs = [
+                        j
                         for j in self.store.jobs()
                         if j["state"] in ACTIVE
                         and j["spec"].get("device") == ident
                         and not j["spec"].get("device_released")
                     ]
+                    queued_jobs = [
+                        j
+                        for j in self.store.jobs()
+                        if j["state"] == "queued"
+                        and j["spec"].get("device") == ident
+                    ]
+                    users = [j["id"] for j in active_jobs]
                     health = self.store.rows(
                         "SELECT * FROM resources WHERE key=?", ("device:" + ident,)
+                    )
+                    occupancies = [
+                        {
+                            "source": "job",
+                            "job": job["id"],
+                            "project": job["project"],
+                        }
+                        for job in active_jobs
+                    ]
+                    if health and health[0]["status"] == "manual":
+                        owner = json.loads(health[0]["detail"]).get("owner")
+                        if owner:
+                            owner_sessions = self.store.rows(
+                                "SELECT project FROM sessions WHERE token=?", (owner,)
+                            )
+                            if owner_sessions:
+                                occupancies.append(
+                                    {
+                                        "source": "manual",
+                                        "project": owner_sessions[0]["project"],
+                                    }
+                                )
+                    occupying_projects = sorted(
+                        {item["project"] for item in occupancies}
+                    )
+                    queued = [
+                        {
+                            "source": "job",
+                            "job": job["id"],
+                            "project": job["project"],
+                        }
+                        for job in queued_jobs
+                    ]
+                    assigned_project = entry.get("project")
+                    other_project = next(
+                        (
+                            item["project"]
+                            for item in [*occupancies, *queued]
+                            if assigned_project is not None
+                            and item["project"] != assigned_project
+                        ),
+                        None,
                     )
                     rows.append(
                         {
                             "id": ident,
                             **entry,
                             "jobs": users,
+                            "queued_jobs": [job["id"] for job in queued_jobs],
                             "availability": health[0]["status"]
                             if health
                             else ("occupied" if users else "available"),
+                            "project_occupied": bool(occupying_projects),
+                            "occupying_projects": occupying_projects,
+                            "project": {
+                                "assigned": assigned_project,
+                                "occupancies": occupancies,
+                                "queued": queued,
+                                "conflict": other_project is not None,
+                                "conflicting_project": other_project,
+                            },
+                            "last_device_info": self.last_device_info(ident),
                             "observation": self.contexts.get(ident),
                             "cached": True,
                         }
@@ -330,6 +746,62 @@ class Service:
                     if method == "devices.list"
                     else next((x for x in rows if x["id"] == p["device"]), None)
                 )
+            if method == "devices.discover":
+                def probe(command, label):
+                    try:
+                        completed = subprocess.run(
+                            command,
+                            capture_output=True,
+                            text=True,
+                            errors="replace",
+                            timeout=5,
+                            check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        return {"stdout": "", "error": f"{label}: {error}"}
+                    if completed.returncode != 0:
+                        detail = completed.stderr.strip() or completed.stdout.strip()
+                        return {
+                            "stdout": completed.stdout,
+                            "error": f"{label} failed: {detail}",
+                        }
+                    return {"stdout": completed.stdout, "error": None}
+
+                probes = {
+                    "adb": probe([self.config.get("adb", "adb"), "devices", "-l"], "adb devices"),
+                    "fastboot": probe(
+                        [self.config.get("fastboot", "fastboot"), "devices"],
+                        "fastboot devices",
+                    ),
+                }
+                discovered = []
+                registered = {
+                    entry["serial"]: identifier
+                    for identifier, entry in self.config["devices"].items()
+                }
+                for transport, probe_result in probes.items():
+                    for line in probe_result["stdout"].splitlines():
+                        fields = line.split()
+                        if len(fields) < 2 or fields[0] == "List":
+                            continue
+                        serial, state = fields[:2]
+                        discovered.append(
+                            {
+                                "serial": serial,
+                                "state": state,
+                                "transport": transport,
+                                "description": line,
+                                "registered_id": registered.get(serial),
+                            }
+                        )
+                return {
+                    "devices": discovered,
+                    "errors": {
+                        transport: result["error"]
+                        for transport, result in probes.items()
+                        if result["error"]
+                    },
+                }
             if method == "devices.register":
                 ident = p["id"]
                 serial = p["serial"]
@@ -356,7 +828,63 @@ class Service:
                     raise WorkbenchError(
                         "Connection already registered under another device id"
                     )
-                self.config["devices"][ident] = {"serial": serial}
+                entry = self.config["devices"].get(ident, {})
+                self.config["devices"][ident] = {
+                    **entry,
+                    "serial": serial,
+                }
+                atomic_json(self.directory / "config.json", self.config)
+                return self.config["devices"][ident]
+            if method in ("devices.project_assign", "devices.project_release"):
+                ident = p["device"]
+                if ident not in self.config["devices"]:
+                    raise WorkbenchError("Unknown device")
+                entry = self.config["devices"][ident]
+                jobs = [
+                    job
+                    for job in self.store.jobs()
+                    if (job["state"] in ACTIVE or job["state"] == "queued")
+                    and job["spec"].get("device") == ident
+                    and not job["spec"].get("device_released")
+                ]
+                if method == "devices.project_assign":
+                    project = p.get("project")
+                    if not isinstance(project, str) or not project:
+                        raise WorkbenchError("Project required")
+                    assigned_path = Path(project).expanduser().resolve()
+                    if not (assigned_path / "workbench.project.json").is_file():
+                        raise WorkbenchError("Project is not registered")
+                    assigned = str(assigned_path)
+                    if any(job["project"] != assigned for job in jobs):
+                        raise WorkbenchError(
+                            "Device has queued or active tasks from another project"
+                        )
+                    key = "device:" + ident
+                    health = self.store.rows(
+                        "SELECT * FROM resources WHERE key=?", (key,)
+                    )
+                    if health and health[0]["status"] == "manual":
+                        owner = json.loads(health[0]["detail"]).get("owner")
+                        owner_sessions = self.store.rows(
+                            "SELECT project FROM sessions WHERE token=?", (owner,)
+                        )
+                        if owner_sessions and owner_sessions[0]["project"] != assigned:
+                            raise WorkbenchError(
+                                "Device is manually held by another project"
+                            )
+                    entry["project"] = assigned
+                else:
+                    assigned = entry.get("project")
+                    if not assigned:
+                        raise WorkbenchError("Device is not assigned to a project")
+                    if jobs:
+                        raise WorkbenchError("Device has queued or active tasks")
+                    if session["project"] not in {assigned, str(self.device_management_root)}:
+                        raise WorkbenchError(
+                            "Only the assigned project or device management can release the assignment"
+                        )
+                    entry.pop("project", None)
+                self.config["devices"][ident] = entry
                 atomic_json(self.directory / "config.json", self.config)
                 return self.config["devices"][ident]
             if method == "resources.state":
@@ -469,6 +997,9 @@ class Service:
             >= self.config["max_session_queued"]
         ):
             raise WorkbenchError("Queue capacity exceeded during preparation")
+        if spec.get("artifact_inputs"):
+            self.resolve_artifact_inputs(spec, session)
+            atomic_json(Path(spec["directory"]) / "normalized.json", spec)
         for dep in spec["dependencies"]:
             self.shared(dep if isinstance(dep, str) else dep["id"], session)
         if spec.get("scene"):
@@ -551,6 +1082,33 @@ class Service:
                 return False
         return True
 
+    def adb_lock_recoverable(self, old):
+        if not old or old["spec"].get("entry", {}).get("adb_exclusive") is not True:
+            return False
+        if old.get("worker") and same_process(old["worker"]):
+            return False
+        folder = Path(old["spec"]["directory"])
+        for name in ("active-process.json", "residual-processes.json"):
+            path = folder / name
+            if not path.is_file():
+                continue
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                return False
+            if isinstance(data, list):
+                identities = data
+            elif isinstance(data, dict):
+                identities = [data.get("identity")]
+            else:
+                identities = []
+            if any(
+                identity and not is_adb_server(identity) and same_process(identity)
+                for identity in identities
+            ):
+                return False
+        return True
+
     def available(self, job, parent=None, fairness=True):
         spec = job["spec"]
         repairs = (
@@ -564,6 +1122,15 @@ class Service:
             or not self.dependencies_ready(job)
         ):
             return False, "waiting_dependency_or_cancelled"
+        if spec["operation"] == "host.lease" and not same_process(spec.get("lease_owner")):
+            # No lease has been granted yet, so the abandoned request owns no
+            # resources or upstream process tree and needs no recovery action.
+            self.finish(job, {
+                "state": "cancelled",
+                "cleanup_ok": True,
+                "reason": "lease_owner_exited_before_grant",
+            })
+            return False, "lease_owner_exited_before_grant"
         if spec.get("scene") and (not parent or spec["scene"] != parent["id"]):
             scene = self.store.job(spec["scene"])
             if scene["state"] in TERMINAL or scene["state"] == "needs_recovery":
@@ -588,6 +1155,12 @@ class Service:
                     source = json.loads(h["detail"]).get("job")
                     old = next((x for x in all_jobs if x["id"] == source), None)
                     if (
+                        spec.get("operation") == "device.recover"
+                        and h["key"] == "service:adb"
+                        and self.adb_lock_recoverable(old)
+                    ):
+                        continue
+                    if (
                         old
                         and old["spec"]["operation"] in repairs
                         and not (old.get("worker") and same_process(old["worker"]))
@@ -598,16 +1171,9 @@ class Service:
         for current in active:
             if parent and current["id"] == parent["id"]:
                 continue
-            if (
-                spec.get("recovery")
-                and current["state"] == "needs_recovery"
-            ):
-                if (
-                    current["spec"]["operation"] not in repairs
-                    or (
-                        current.get("worker")
-                        and same_process(current["worker"])
-                    )
+            if spec.get("recovery") and current["state"] == "needs_recovery":
+                if current["spec"]["operation"] not in repairs or (
+                    current.get("worker") and same_process(current["worker"])
                 ):
                     return False, "old_worker_alive"
                 continue
@@ -638,7 +1204,9 @@ class Service:
             >= self.config["max_compute"]
         ):
             return False, "waiting_compute"
-        if fairness:
+        if fairness and not spec.get("recovery"):
+            # A registered repair must pass ordinary writers that cannot run
+            # until this repair clears their resource-health block.
             for earlier in all_jobs:
                 if (
                     earlier["id"] == job["id"]
@@ -674,12 +1242,22 @@ class Service:
             }
             for record in self.store.rows("SELECT * FROM resources"):
                 source = json.loads(record["detail"]).get("job")
-                old = next(
-                    (j for j in self.store.jobs() if j["id"] == source), None
-                )
+                old = next((j for j in self.store.jobs() if j["id"] == source), None)
                 if old and old["spec"]["operation"] in repairs:
                     affected.add(source)
             spec["recovery_targets"] = sorted(affected)
+            if spec.get("operation") == "device.recover":
+                adb_targets = set()
+                for record in self.store.rows("SELECT * FROM resources"):
+                    if record["key"] != "service:adb":
+                        continue
+                    source = json.loads(record["detail"]).get("job")
+                    old = next(
+                        (x for x in self.store.jobs() if x["id"] == source), None
+                    )
+                    if self.adb_lock_recoverable(old):
+                        adb_targets.add(source)
+                spec["adb_recovery_targets"] = sorted(adb_targets)
             self.store.update(job["id"], spec=spec)
         internal = {
             "job": job["id"],
@@ -757,6 +1335,18 @@ class Service:
         if state not in TERMINAL:
             state = "failed"
         cleanup = result.get("cleanup_ok", False)
+        artifact_records = []
+        if state == "succeeded" and job["spec"].get("artifact_outputs"):
+            try:
+                artifact_records = self.prepare_artifacts(job)
+            except WorkbenchError as error:
+                state = "failed"
+                result = {
+                    **result,
+                    "state": "failed",
+                    "reason": "artifact_publication_failed",
+                    "error": str(error),
+                }
         if not cleanup:
             state = "failed"
             for r in job["spec"]["resources"]:
@@ -779,6 +1369,13 @@ class Service:
                         "DELETE FROM resources WHERE key=?", ("device:" + device,)
                     )
                 for row in self.store.rows("SELECT * FROM resources"):
+                    if row["key"] == "service:adb" and json.loads(row["detail"]).get(
+                        "job"
+                    ) in job["spec"].get("adb_recovery_targets", []):
+                        self.store.db.execute(
+                            "DELETE FROM resources WHERE key=?", (row["key"],)
+                        )
+                for row in self.store.rows("SELECT * FROM resources"):
                     if json.loads(row["detail"]).get("job") in result.get(
                         "reconciled_jobs", []
                     ):
@@ -796,6 +1393,18 @@ class Service:
                 finished=time.time(),
                 reason=result.get("reason"),
             )
+            for record in artifact_records:
+                self.store.db.execute(
+                    "INSERT OR REPLACE INTO artifacts(project,name,job,path,sha256,created) VALUES(?,?,?,?,?,?)",
+                    (
+                        record["project"],
+                        record["name"],
+                        record["job"],
+                        record["path"],
+                        record["sha256"],
+                        record["created"],
+                    ),
+                )
             self.store.event(
                 job["id"], "finished", {"state": state, "cleanup_ok": cleanup}
             )
@@ -1188,6 +1797,8 @@ class Service:
                         jobs,
                         self.contexts.get(lane.removeprefix("device:"), {}),
                     )
+            if time.time() >= self.next_retention:
+                self.enforce_retention()
 
     def loop(self):
         while not self.stopping.wait(0.1):

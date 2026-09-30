@@ -1,4 +1,4 @@
 interface:
   display_name: "Android Workbench"
-  short_description: "统一调度 Android 环境准备、静态分析、APK 导出、Frida 与设备场景"
+  short_description: "统一调度 Android 环境准备、静态分析、APK 导出、Frida、设备场景与目标手机管理"
   default_prompt: "使用 $android-workbench 协调本次 Android 分析任务，并通过共享队列占用手机和环境。"

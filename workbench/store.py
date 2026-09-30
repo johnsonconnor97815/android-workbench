@@ -30,13 +30,25 @@ class Store:
             CREATE TABLE IF NOT EXISTS resources(
                 key TEXT PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS outputs(path TEXT PRIMARY KEY, job TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS artifacts(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project TEXT NOT NULL,
+                name TEXT NOT NULL,
+                job TEXT NOT NULL,
+                path TEXT NOT NULL,
+                sha256 TEXT NOT NULL,
+                created REAL NOT NULL,
+                UNIQUE(project, name, job)
+            );
         """)
         row = self.db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
-        if row and row[0] != "1":
+        if row and row[0] not in {"1", "2"}:
             raise RuntimeError(
                 "Unsupported database schema; refusing to migrate live state"
             )
-        self.db.execute("INSERT OR IGNORE INTO meta VALUES('schema','1')")
+        self.db.execute("INSERT OR IGNORE INTO meta VALUES('schema','2')")
+        if row and row[0] == "1":
+            self.db.execute("UPDATE meta SET value='2' WHERE key='schema'")
 
     def rows(self, query, args=()):
         return [dict(row) for row in self.db.execute(query, args)]
