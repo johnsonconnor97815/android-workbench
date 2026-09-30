@@ -382,6 +382,22 @@ def normalize(request, config, directory):
                 resource(path_resource(interpreter.parent.parent), "read")
             )
         script = registered_path(root, project, entry["script"])
+        if (
+            entry["script"] == "@workbench/skills/android-workbench/components/analysis-agent/scripts/analysis.py"
+            and entry.get("subcommand") in {"python", "exec"}
+        ):
+            # Older project registries predate host resource declarations. Enforce
+            # the bundled adapter's current effects without rewriting the project.
+            entry = {
+                **entry,
+                "host_execution": True,
+                "input_flags": list(dict.fromkeys([
+                    *entry.get("input_flags", []), "--read-path",
+                    *(["--script"] if entry["subcommand"] == "python" else []),
+                ])),
+                "outputs": list(dict.fromkeys([*entry.get("outputs", []), "--write-path"])),
+                "shared_outputs": list(dict.fromkeys([*entry.get("shared_outputs", []), "--write-path"])),
+            }
         args = spec.get("args", [])
         if (
             not isinstance(args, list)
@@ -470,6 +486,20 @@ def normalize(request, config, directory):
         for location in project.get("environments", []):
             spec["resources"].append(resource(path_resource(root / location), mode))
         spec["resources"].append(resource(path_resource(source), "read"))
+        if entry.get("host_execution"):
+            # Arbitrary local code can write files without an output flag. Lock the
+            # whole project and its working directory rather than guessing effects
+            # from shell/Python text. Additional external paths must be declared.
+            spec["resources"].append(resource(path_resource(root)))
+            working_directories = [
+                args[i + 1] for i, value in enumerate(args[:-1]) if value == "--cwd"
+            ] + [value.split("=", 1)[1] for value in args if value.startswith("--cwd=")]
+            if len(working_directories) > 1:
+                raise WorkbenchError("Host execution accepts at most one --cwd")
+            if working_directories:
+                spec["resources"].append(
+                    resource(path_resource((root / working_directories[0]).expanduser().resolve()))
+                )
         # Existing script paths and user-selected workspaces also participate in coordination.
         input_flags = {
             "--extension",

@@ -119,17 +119,20 @@ python3 "$COMPONENT_DIR/scripts/analysis.py" exec \
 - `preview` 的 `--extract` 只导出不超过 `--max-bytes` 的条目；更大文件保留哈希和格式信息，但不会完整写出。
 - 未找到工具时结果中标记 `available: false` 和 `uncertain: true`，不会伪造字段。
 - `analysis.knowledge` 默认做本地词法检索；提供 `--embedding-endpoint` 和 `--embedding-model` 后使用 OpenAI 兼容 embeddings 接口做语义检索。向量随 `--index` 持久保存，后续查询只重新计算 query 向量。API key 只从 `--embedding-api-key-env` 指定的环境变量读取，不会写入结果。
-- `analysis.python` 和 `analysis.exec` 直接提供任意计算与宿主执行能力；`analysis.python --prelude` 可先恢复常量、公式和候选值再执行新代码，`--session` 可加载已保存状态，`--save-session` 支持 `replace`/`append`，`--clear-session` 可清空状态，适合长链路逆向。返回值包含代码或命令、退出码、输出、超时和 session 哈希，用于复核逆向结论。
+- `analysis.python` 和 `analysis.exec` 提供通用本地计算与命令执行；受管调用独占项目目录及 `--cwd` 工作目录，避免命令内部写入未显式指定的项目文件时发生冲突。项目/工作目录之外的输入用可重复的 `--read-path` 声明，输出用可重复的 `--write-path` 声明；文件输入会记录哈希。服务不会推断代码的全部副作用，这些声明必须覆盖实际访问。设备操作和共享环境修改使用专门登记操作。`--read-path` / `--write-path` 供服务调度使用，不是文件系统沙箱。
+- `analysis.python --prelude` 可先恢复常量、公式和候选值再执行新代码，`--session` 可加载已保存状态，`--save-session` 支持 `replace`/`append`，`--clear-session` 可清空状态。返回值包含代码或命令、退出码、输出、超时和 session 哈希，用于复核结论。
 - `analysis.scratchpad` 把候选值、脚本结果、未解决偏移和下一步保存在项目文件中；`--mode append` 可持续追加，`--clear` 可在换样本或结论失效时清空。
 
 ## 分析契约
 
-静态快路径必须遵守：
+任务需要求解候选值并验证校验关系时，必须遵守：
 
 1. 不手算十六进制或大整数常量。
 2. 用脚本断言完整的 `encode(candidate) == verifier` 或等价校验。
 3. 完整答案必须包含具体候选值和断言结果。
 4. 不能只留一个脚本让用户自己运行。
+
+普通代码阅读、权限审计、证书摘要和补丁任务不要求候选值。补丁任务验证实际修改的方法或行为；静态交付与安装、运行验证分别报告。
 
 设备运行必须遵守：
 

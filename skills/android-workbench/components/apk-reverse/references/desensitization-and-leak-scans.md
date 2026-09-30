@@ -198,7 +198,7 @@ second is a judgement call a human makes once and writes down.
 ## The entry-point surface
 
 A published skill is not only read by an agent; its **entry files are read as instructions**.
-`SKILL.md`, a `README.md`, and the front-matter of any reference are the parts a host process
+[component guide](../README.md), a `README.md`, and the front-matter of any reference are the parts a host process
 loads *before* it decides anything, and a repository assembled from third-party material — a
 borrowed reference file, a contributed script — carries whatever those files say. This
 repository's convention, observed in its own history: content reproduced from elsewhere is

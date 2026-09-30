@@ -4,6 +4,12 @@ Load this when you are choosing tools, when a tool produces an answer that smell
 something is not installed. It is a map, not a tutorial: each entry says what the tool is *for*, how
 to drive it non-interactively, and the failure mode that wastes time.
 
+Use tools already available when they answer the question. Installation and shared environment changes
+follow the [static environment component](../../static-env/README.md) and registered Workbench operations
+within the user's authorized scope. Commands below describe tool syntax; they do not bypass the queue
+or authorize package installation. Measurements are imported historical evidence, not new validation
+of this checkout or the current device.
+
 **Prefer tools you can drive from a command line.** An agent cannot click. A tool that ships only a
 GUI is not automatically out of reach — check for a headless or MCP path first, which is an
 install-and-set-up step rather than a reason to substitute the tool. When no such route exists, ask
@@ -32,11 +38,11 @@ cross-check with the program headers.
 |---|---|---|
 | `baksmali` / `smali` (jars) | `java -cp <jars> org.jf.baksmali.Main d <dex> -o <dir>` | round-tripping, reading a method precisely |
 | `dexlib2` | small Java program | method-level rewrite, leaves everything else untouched (`dex-patching.md`) |
-| **`rasc`** (Rust ASC) | `rasc findrefs app.apk string <S>` | **the same index, 4–15× faster**, no Python runtime, a Rust DEX decompiler behind `getclass`. Reach for this FIRST when it is built — its one blind spot is documented in `rasc-and-droidsaw.md` |
-| **`droidasc`** (ASC) | `droidasc findrefs app.apk string <S>` | the original Python index, one `pip install` away, and the cross-check for `rasc`. Reach for it FIRST when `rasc` is not built |
-| **`ddc`** | `ddc app.apk -c <Class>` | **fastest read of dex as Java, plus query subcommands** — reach for this SECOND, to *read*. See below |
+| **`rasc`** (Rust ASC) | `rasc findrefs app.apk string <S>` | An available indexer can narrow large-APK reference searches; its historical performance and enum limitation are documented in `rasc-and-droidsaw.md` |
+| **`droidasc`** (ASC) | `droidasc findrefs app.apk string <S>` | Python reference indexer and a possible cross-check for `rasc`; choose it when available and useful |
+| **`ddc`** | `ddc app.apk -c <Class>` | Focused DEX reading and query subcommands; an alternative to existing JADX/source evidence |
 | `apktool` | `java -jar apktool.jar d/b` | whole-app decode including resources |
-| `jadx` | `jadx --no-res -d <out> <apk>` | readable Java for orientation; **not** a source of truth, and **not** a recon entry point (see below) |
+| `jadx` | `jadx --no-res -d <out> <apk>` | Readable Java for orientation or focused analysis; cross-check important findings against DEX or another representation |
 | `aapt2` | `aapt2 dump badging <apk>` | manifest facts, package name, versions |
 | `zipalign`, `apksigner` | from build-tools | alignment and signing |
 
@@ -75,11 +81,8 @@ no bodies. The measurements and the failing class are in `references/rasc-and-dr
 
 ### droidasc (ASC) — ask an APK "who references this?", in one query
 
-Install it in one line. No JVM, no Android SDK, no GUI, no first-run indexing:
-
-```bash
-pip install droidasc          # provides the `droidasc` CLI
-```
+Use an existing `droidasc` installation, or install it through the registered static environment
+operation when needed and authorized. It needs no JVM, Android SDK, GUI or first-run indexing.
 
 It treats the artifact as a **read-only database** instead of exporting a source tree: it probes the
 deflate stream in place and rebuilds only the minimal dex it needs, in memory, for the one class you
@@ -296,14 +299,12 @@ Three caveats learned the hard way:
   toolchain. Telling "install a decompiler" apart from "the decompiler cannot help here" is worth real
   time: the two look identical from the outside, and only the first has a static answer.
 
-## Closing a capability gap — installing the tool IS the task
+## Closing a capability gap within the task's scope
 
-A missing tool for the layer you must work in is not a constraint to design around. It is the next
-step. The measured cost of installation is almost always smaller than the cost of the workaround, and
-the workaround is what produces "we could not determine X" reports on targets where X was decidable.
-
-**The decision is not "can I do without it" — it is "how long does installing it take".** Three real
-numbers, from one Windows box working an R8-flattened Flutter target:
+Identify the capability the question actually needs. Reuse a suitable installed tool; if no equivalent
+exists, install through the registered environment operation within authorization, or report the gap
+and its effect on confidence. Do not expand a feasibility question into a toolchain installation.
+The historical costs below came from one Windows box and are examples, not current estimates:
 
 | Gap | Install cost | What the workaround would have cost |
 |---|---|---|
@@ -344,7 +345,7 @@ clock is how a ten-minute install becomes an hour. **Two grades are used here an
 claims:** `URL verified` means the repository was resolved on the date given; `tool unverified` means
 nobody has run it here. Most rows are `URL verified / tool unverified` — treat them as leads with a
 date on them, not as recommended tools, and check the row's own prerequisites when you install it
-(§Closing a capability gap — installing the tool IS the task). Rows marked `measured` have been used here.
+(§Closing a capability gap within the task's scope). Rows marked `measured` describe imported observations.
 
 | Gap | Source | Grade / what is actually known |
 |---|---|---|
@@ -481,7 +482,7 @@ exact failure class this skill exists to prevent. The cost shows up later, as a 
 effect" or an install refused with a bare numeric code.
 
 **The rule: before writing a script, check whether one here already does it.** The index is in
-`SKILL.md`; the entry points that matter most are `doctor.py` (what can run here),
+[component guide](../README.md); the entry points that matter most are `doctor.py` (what can run here),
 `dex_find_insn.py` (get an exact offset instead of guessing one), `dex_patch_bytes.py` (apply and prove
 an equal-length patch), `apk_diff.py` (prove your own build was surgical), `repack.py` (aligned rebuild)
 and `snap.py` / `coldstart.py` (look at the screen with the evidence attached).

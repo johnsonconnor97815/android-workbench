@@ -149,12 +149,18 @@ class Service:
         }
 
     def last_device_info(self, ident):
+        saved = self.store.device_record(ident, "info")
+        if saved:
+            if saved.get("serial") == self.config["devices"][ident]["serial"]:
+                return self.device_info_condition(ident, saved)
+            return None
         jobs = [
             job
             for job in self.store.jobs()
             if job["state"] == "succeeded"
             and job["spec"].get("operation") == "device.info"
             and job["spec"].get("device") == ident
+            and job["spec"].get("serial") == self.config["devices"][ident]["serial"]
         ]
         for job in sorted(jobs, key=lambda value: value["finished"] or 0, reverse=True):
             path = Path(job["spec"]["directory"]) / "device-info.json"
@@ -165,13 +171,132 @@ class Service:
             except (OSError, json.JSONDecodeError):
                 continue
             finished = job["finished"] or 0
-            return {
-                "job": job["id"],
-                "finished_at": finished,
-                "age_seconds": max(0, round(time.time() - finished, 3)),
-                "data": data,
-            }
+            saved = {"serial": job["spec"]["serial"], "job": job["id"],
+                     "finished_at": finished, "data": data}
+            self.store.save_device_record(ident, "info", saved)
+            return self.device_info_condition(ident, saved)
         return None
+
+    def device_info_condition(self, ident, saved):
+        data = {key: value for key, value in saved.items() if key != "serial"}
+        invalidation = self.store.device_record(ident, "invalidation")
+        stale = bool(
+            invalidation
+            and invalidation.get("serial") == self.config["devices"][ident]["serial"]
+            and invalidation["at"] > saved["finished_at"]
+        )
+        data.update(age_seconds=max(0, round(time.time() - saved["finished_at"], 3)), stale=stale)
+        if stale:
+            data.update(invalidated_at=invalidation["at"],
+                        invalidation_reason=invalidation["reason"])
+        return data
+
+    def device_status(self, ident):
+        data = self.store.device_status(ident)
+        if not data or data.get("serial") != self.config["devices"][ident]["serial"]:
+            return None
+        return {**data, "age_seconds": max(0, round(time.time() - data["updated_at"], 3))}
+
+    def invalidate_device_status(self, ident, reason, job=None, *, invalidate_info=True):
+        if invalidate_info:
+            self.store.save_device_record(ident, "invalidation", {
+                "serial": self.config["devices"][ident]["serial"], "at": time.time(),
+                "reason": reason, "job": job,
+            })
+        data = self.device_status(ident)
+        if data:
+            data.pop("age_seconds", None)
+            data.update(stale=True, invalidated_at=time.time(), invalidation_reason=reason,
+                        invalidating_job=job)
+            self.store.save_device_status(ident, data)
+
+    def record_device_status(self, job):
+        spec = job["spec"]
+        ident = spec.get("device")
+        if not ident or ident not in self.config["devices"] or "--dry-run" in spec.get("args", []):
+            return
+        if spec["operation"] == "device.info":
+            cached = self.device_status(ident)
+            if job["state"] != "succeeded" or spec.get("serial") != self.config["devices"][ident]["serial"]:
+                return
+            path = Path(spec["directory"]) / "device-info.json"
+        elif spec["operation"] == "device_manager.preflight":
+            if job["state"] != "succeeded" and job.get("started") is None:
+                return
+            outputs = spec.get("outputs", [])
+            if not outputs:
+                self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+                return
+            path = Path(outputs[0])
+        else:
+            if job["state"] != "succeeded" and job.get("started") is not None and spec["operation"] == "device_manager.install_frida":
+                self.invalidate_device_status(ident, "root_operation_failed", job["id"])
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            if spec["operation"] == "device_manager.preflight":
+                self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+            return
+        if not isinstance(data, dict):
+            if spec["operation"] == "device_manager.preflight":
+                self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+            return
+        if spec["operation"] == "device.info":
+            self.store.save_device_record(ident, "info", {
+                "serial": self.config["devices"][ident]["serial"], "job": job["id"],
+                "finished_at": job.get("finished") or time.time(), "data": data,
+            })
+            if cached:
+                observations = cached["observations"]
+                current = {"boot_id": data.get("boot_id"),
+                           "build_fingerprint": data.get("properties", {}).get("ro.build.fingerprint")}
+                if any(current[key] and observations.get(key) != current[key] for key in current):
+                    self.invalidate_device_status(ident, "boot_or_build_changed", job["id"], invalidate_info=False)
+            return
+        if data.get("device") != self.config["devices"][ident]["serial"] or data.get("status") not in {"complete", "incomplete"}:
+            self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+            return
+        if job["state"] != "succeeded" and not (
+            job["state"] == "failed" and data["status"] == "incomplete"
+            and job.get("result", {}).get("cleanup_ok") is True
+        ):
+            self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+            return
+        access = data.get("root_access", {"status": "unknown", "reason": "not checked"})
+        observations = data.get("observations", {})
+        unavailable = data.get("unavailable", {})
+        if not all(isinstance(value, dict) for value in (access, observations, unavailable)):
+            self.invalidate_device_status(ident, "preflight_unconfirmed", job["id"])
+            return
+        info = self.last_device_info(ident)
+        if info and not info["stale"]:
+            previous_info = {
+                "boot_id": info["data"].get("boot_id"),
+                "build_fingerprint": info["data"].get("properties", {}).get("ro.build.fingerprint"),
+            }
+            if any(observations.get(key) and previous_info[key]
+                   and observations[key] != previous_info[key] for key in previous_info):
+                self.invalidate_device_status(ident, "boot_or_build_changed", job["id"])
+        cached = self.device_status(ident)
+        if access.get("status") == "not_checked" and cached and not cached["stale"]:
+            previous = cached["root_access"]
+            same_boot = all(observations.get(key) and observations[key] == cached["observations"].get(key)
+                            for key in ("boot_id", "build_fingerprint"))
+            same_caller = all(access.get(key) is not None and access[key] == previous.get(key)
+                              for key in ("caller_uid", "su_path", "su_version"))
+            if previous.get("status") == "granted" and same_boot and same_caller:
+                access = {**previous, "cached": True}
+                observations["root"] = "available"
+                unavailable.pop("root", None)
+        if access.get("status") == "granted" and access.get("cached") is not True:
+            access = {**access, "verified_job": job["id"]}
+        self.store.save_device_status(ident, {
+            "schema": 1, "serial": data["device"], "job": job["id"],
+            "updated_at": job.get("finished") or time.time(), "stale": False,
+            "mode": data.get("mode", "unknown"), "observations": observations,
+            "unavailable": unavailable, "root_access": access,
+        })
 
     def authenticate(self, token):
         if not isinstance(token, str):
@@ -737,6 +862,7 @@ class Service:
                                 "conflicting_project": other_project,
                             },
                             "last_device_info": self.last_device_info(ident),
+                            "device_status": self.device_status(ident),
                             "observation": self.contexts.get(ident),
                             "cached": True,
                         }
@@ -915,6 +1041,7 @@ class Service:
                         for j in self.store.jobs()
                     )
                     status = "manual_pending" if active else "manual"
+                    self.invalidate_device_status(p["device"], "manual_control")
                     self.store.health(key, status, {"owner": session["token"]})
                     return {"status": status, "handed_over": not active}
                 rows = self.store.rows("SELECT * FROM resources WHERE key=?", (key,))
@@ -1232,6 +1359,12 @@ class Service:
     def grant(self, job, parent=None):
         token = secrets.token_urlsafe(32)
         spec = job["spec"]
+        if spec.get("device") and "--dry-run" not in spec.get("args", []) and spec["operation"] in {
+            "device_manager.flash", "device_manager.flash_factory", "device_manager.install_rom",
+            "device_manager.root", "device_manager.root_prepare", "device_manager.partition_repair",
+            "device_manager.bootloader_state",
+        }:
+            self.invalidate_device_status(spec["device"], spec["operation"], job["id"])
         if spec.get("recovery"):
             repairs = set(spec.get("entry", {}).get("recovery_for", []))
             affected = {
@@ -1393,6 +1526,7 @@ class Service:
                 finished=time.time(),
                 reason=result.get("reason"),
             )
+            self.record_device_status(self.store.job(job["id"]))
             for record in artifact_records:
                 self.store.db.execute(
                     "INSERT OR REPLACE INTO artifacts(project,name,job,path,sha256,created) VALUES(?,?,?,?,?,?)",
@@ -1787,6 +1921,7 @@ class Service:
                     for j in self.store.jobs()
                 )
                 if not active:
+                    self.invalidate_device_status(h["key"].removeprefix("device:"), "manual_control")
                     self.store.health(h["key"], "manual", json.loads(h["detail"]))
             for lane, jobs in lanes.items():
                 if lane not in self.selecting:

@@ -16,8 +16,14 @@
 - 截图、设备信息、界面操作、受管 Hook：读取 `references/device-analysis.md`。同设备任务默认连续执行，只有适配后的检查点允许兼容观察。
 - 项目专用能力：仅使用项目清单显式登记的扩展，读取对应项目说明；保留其输入哈希、适用版本和部分完成含义。纯离线操作不申请手机。
 
-已有脚本在登记项目中运行时会转交服务。服务不可用时先检查启动状态，不退回裸 ADB/Frida。CLI 同样可用：`python <插件目录>/scripts/workbench.py --project <项目目录> operations`；执行前用 `start` 启动独立服务。`devices_list` 和 `devices_state` 的 `project_occupied`、`occupying_projects` 标识当前活动任务或已完成后人工交接占用的项目；排队任务和 `manual_pending` 不算占用，但会出现在 `queued_jobs` 与 `project.queued`。`project.assigned` 是长期项目指定，`project.conflict` 表示指定与占用/排队项目不一致。`last_device_info` 只引用最近一次成功 `device.info` 的缓存，带 `finished_at` 和 `age_seconds`；它不是实时读手机，状态过期时需重新提交 `device.info`。
+`analysis.exec` 和 `analysis.python` 是通用本地执行入口，服务不会分析命令或代码的全部副作用。它们独占项目与 `--cwd` 目录；其他输入路径用 `--read-path` 声明，其他写入路径用 `--write-path` 声明。设备操作、共享环境修改仍使用对应登记操作，不能通过通用执行入口替代。`device_manager.root`、`root_prepare` 和 `root_collect` 目前只支持研究档案明确记录 `root_partition: "boot"` 的流程；需要 `init_boot` 或 `recovery` 时报告能力限制。
+
+已有脚本在登记项目中运行时会转交服务。服务不可用时先检查启动状态，不退回裸 ADB/Frida。CLI 同样可用：`python <插件目录>/scripts/workbench.py --project <项目目录> operations`；执行前用 `start` 启动独立服务。`devices_list` 和 `devices_state` 的 `project_occupied`、`occupying_projects` 标识当前活动任务或已完成后人工交接占用的项目；排队任务和 `manual_pending` 不算占用，但会出现在 `queued_jobs` 与 `project.queued`。`project.assigned` 是长期项目指定，`project.conflict` 表示指定与占用/排队项目不一致。`last_device_info` 持久保存最近一次成功 `device.info` 的缓存，带 `finished_at`、`age_seconds` 和 `stale`；它不是实时读手机，失效时需重新提交 `device.info`，不能用新预检替代。
 
 队列中的任务可能因当前页面可复用而重排。LLM 只给排序建议，不能替代前置条件、资源检查或清理。`partial` 表示有可用结果但未全部完成；`needs_recovery` 表示不能继续信任占用或操作结果。取消已受理也不表示设备已经空闲。
+
+刷机、安装或重装 Root 和设备模式切换开始前，先按设备管理文档列出需要按键、触屏或授权的步骤，并提醒用户必须有人在手机旁边；机型是否需要人工操作尚未确认时，也要提前说明。已有 Root 授权不重复提醒：先读 `devices_state` 或 `devices_list` 的 `device_status`，`stale:false` 且 `root_access.status:granted` 可复用最近的执行身份授权记录；失效或命令失败后用受管预检重新核验，确需手机操作时才提示。研究、下载、镜像校验和不接触手机的 `--dry-run` 可以先做。必须人工完成的步骤是后续任务的前置条件：给出当前步骤的操作说明和完成标志，等待用户完成，再通过共享队列验证，不能只凭上一条命令成功就提交下一阶段。人工接管仍遵循 `devices_manual_acquire` / `devices_manual_release`；已有任务未释放或处于 `needs_recovery` 时，按其实际状态处理，不绕过队列。
+
+普通 `preflight` 只读取状态，不执行请求 Root 权限的命令；上下文未变时可复用旧授权，并保留原验证时间。需要 Root 的任务没有可复用授权时才用 `preflight --check-root`；它可能出现手机授权弹窗。不要为刷新型号、电量等信息主动请求 Root，也不要把 `not_checked` 当作已经授权或 Root 失败。
 
 用户要看“当前这一页”时，指定场景、App、Activity 和有限排队时间；过期后说明现场已消失，不用另一页截图代替。需要无 Hook 基线时不得借用活动 Hook 的现场。读取已有不可变证据可直接进行，不重新占用手机。

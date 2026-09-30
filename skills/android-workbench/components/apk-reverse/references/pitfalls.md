@@ -648,7 +648,7 @@ and arrives fast, which reads as competence.
 - **Exercise any fallback path against a case whose answer is already known.** An accuracy claim
   derived only from the tool's own output means nothing.
 - **Name helpers so they cannot shadow a module** (`dart_disasm.py`, not `dis.py`), and keep a
-  timeout on every scan (SKILL.md).
+  timeout on every scan (../README.md).
 
 ---
 

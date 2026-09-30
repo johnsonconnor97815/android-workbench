@@ -336,7 +336,7 @@ Three rules that make the difference:
    standing between you and a loop.
 3. **Two failures of the same shape means the model is wrong, not the
    parameters.** Do not run a third variation. That is the same rule as the
-   two-strike rule in `SKILL.md`, and long-context decay is exactly what makes
+   two-strike rule in [component guide](../README.md), and long-context decay is exactly what makes
    people violate it.
 
 A useful asymmetry: **re-verifying is cheap, re-deciding is not.** Reading a value

@@ -91,11 +91,12 @@ def bounded_text(value: str, limit: int) -> str:
     return value[:limit] + "\n[truncated]"
 
 
-def run_tool(argv: list[str], *, timeout: int = 30) -> dict:
+def run_tool(argv: list[str], *, timeout: int = 30, cwd: Path | None = None) -> dict:
     command = [str(item) for item in argv]
     try:
         result = subprocess.run(
             command,
+            cwd=cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -573,7 +574,7 @@ def python_facts(
             source["prelude_sha256"] = hashlib.sha256(
                 effective_prelude.encode("utf-8")
             ).hexdigest()
-    record = run_tool(command, timeout=timeout)
+    record = run_tool(command, timeout=timeout, cwd=working_directory)
     result = {
         "schema": SCHEMA_VERSION,
         "source": source,
@@ -1716,7 +1717,7 @@ def _affirmative_device_followup(question: str, history: list[dict]) -> bool:
     affirmative = folded in {
         "continue", "yes", "继续", "继续吧", "接着", "接着吧",
         "好", "好的", "可以", "行", "做吧", "跑吧",
-    } or "继续" in folded or "接着" in folded
+    }
     if not affirmative:
         return False
     terms = (
@@ -1724,15 +1725,35 @@ def _affirmative_device_followup(question: str, history: list[dict]) -> bool:
         "screenshot", "ui dump", "logcat", "设备验证", "运行时验证",
         "真机验证", "安装验证", "运行态验证", "截图", "日志",
     )
-    return any(
-        any(term in str(item.get("text", "")).casefold() for term in terms)
-        for item in history[-8:]
-    )
+    latest = next((item for item in reversed(history) if item.get("role") == "assistant"), None)
+    return latest is not None and _contains_any(str(latest.get("text", "")).casefold(), terms)
 
 
 def route_request(question: str, has_package: bool, history: list[dict]) -> dict:
     folded = question.strip().casefold()
     meta_review = _has_meta_review_intent(folded)
+    positive_request = re.sub(
+        r"(?:不要|无需|不用|禁止|不做|不运行|不安装|不启动|不继续)[^，,。.;；\n]*"
+        r"|\b(?:do not|don't|without|no)\s+[^,.；;\n]*",
+        "", folded,
+    )
+    static_only = bool(re.search(
+        r"只(?:看|读|做|分析|检查)(?:源码|代码|静态)|仅(?:做|限于)?(?:静态|源码|代码)"
+        r"|(?:不|不要|无需|不用)(?:做|进行|执行)?(?:设备|真机|运行时|动态)验证"
+        r"|(?:不|不要|无需|不用)(?:操作|运行|连接)(?:设备|手机|真机)"
+        r"|static[- ]only|only (?:inspect|read|analy[sz]e|review) (?:the )?(?:source|code)"
+        r"|(?:do not|don't|without|no) (?:run(?:ning)? (?:on )?(?:a |the )?(?:device|phone)"
+        r"|runtime (?:verification|validation)|device (?:operations?|verification))",
+        folded,
+    ))
+    runtime_action = bool(re.search(
+        r"(?:^|[，,。.;；:\n])\s*(?:(?:请|帮我|先|再|然后|现在|继续|只|please|then|now|just)\s*)*"
+        r"(?:安装|启动|截图|截屏|点击|滑动|install\b|launch\b|screenshot\b|tap\b|swipe\b"
+        r"|(?:读取|采集|查看|观察).{0,12}(?:设备|手机|真机|日志)"
+        r"|(?:在|到)(?:设备|手机|真机).{0,6}(?:运行|安装|验证)"
+        r"|run on (?:the |a )?(?:device|phone))",
+        positive_request,
+    ))
     lightweight = folded in {
         "hi",
         "hello",
@@ -1750,7 +1771,7 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
     } and len(folded) <= 24
     device_runtime = (
         _contains_any(
-            folded,
+            positive_request,
             (
                 "install", "launch", "screenshot", "screen shot", "device",
                 "runtime", "run on device", "run on phone", "logcat",
@@ -1759,7 +1780,7 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
                 "跑通", "日志", "崩溃", "点击", "输入事件", "模拟输入",
             ),
         )
-        or _affirmative_device_followup(question, history)
+        or _affirmative_device_followup(positive_request, history)
     )
     static_fast_path = _contains_any(
         folded,
@@ -1799,6 +1820,10 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
             "method",
             "function",
             "source",
+            "static analysis",
+            "code",
+            "signature",
+            "certificate",
             "disassembly",
             "bytecode",
             "literal",
@@ -1822,6 +1847,12 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
             "方法",
             "函数",
             "源码",
+            "静态分析",
+            "代码",
+            "处理逻辑",
+            "签名",
+            "证书",
+            "摘要",
             "反汇编",
             "字节码",
             "字面量",
@@ -1871,6 +1902,27 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
             "分析这个应用",
         ),
     )
+
+    # A topic word (crash, device, hash, key) is not an execution request.
+    # Explicit constraints in the current request override history suggestions.
+    device_runtime = not static_only and (
+        runtime_action or _affirmative_device_followup(positive_request, history)
+        or (device_runtime and not focused_static and _contains_any(
+            positive_request, (
+                "设备验证", "运行时验证", "真机验证", "设备信息", "设备日志",
+                "安装并截图", "投屏", "模拟输入", "输入事件", "跑通",
+                "device verification", "runtime verification", "device information",
+                "device logs", "ui layout",
+            ),
+        ))
+    )
+    solve_intent = bool(re.search(
+        r"破解|复算|重算|计算|求解|还原|解码|解密|编码|校验(?:关系|逻辑)|ctf"
+        r"|\b(?:crack|solve|decode|decrypt|encode|compute|recompute|recalculate)\b",
+        positive_request,
+    ))
+    patch_intent = bool(re.search(r"补丁|\b(?:patch|no-op|noop)\b", positive_request))
+    static_fast_path = static_fast_path and (solve_intent or patch_intent)
 
     if lightweight:
         mode = "lightweight_chat"
@@ -1991,29 +2043,15 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
                 "analysis.preview",
             ],
         }[mode],
-        "suggested_skills": {
-            "lightweight_chat": [],
-            "package_overview": [
-                "android-workbench:android-analysis",
-            ],
-            "focused_static_analysis": [
-                "android-workbench:android-analysis",
-                "android-workbench:android-static-env",
-            ],
-            "static_fast_path": [
-                "android-workbench:android-analysis",
-            ],
-            "device_runtime": [
-                "android-workbench:android-device",
-                "android-workbench:android-analysis",
-            ],
-            "general_static": [
-                "android-workbench:android-analysis",
-            ],
-        }[mode],
+        "suggested_skills": [] if lightweight else ["android-workbench:android-workbench"],
+        "suggested_references": [] if lightweight else [
+            "references/device-analysis.md" if mode == "device_runtime"
+            else "references/apk-reverse.md" if patch_intent
+            else "components/analysis-agent/README.md"
+        ],
         "meta_review": meta_review,
     }
-    if mode == "static_fast_path":
+    if mode == "static_fast_path" and solve_intent:
         result["required_contract"] = [
             "Do not hand-convert hexadecimal constants.",
             "Run a script that asserts the complete verifier equality.",
@@ -2022,6 +2060,12 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
             "Do not end with only a script for the user to run.",
             "Do not replace a verified candidate with a later unverified guess.",
             "If stopping after static proof, label it static verification only and device verification pending.",
+        ]
+    elif mode == "static_fast_path":
+        result["required_contract"] = [
+            "Preserve the original artifact and verify the exact method or behavior changed by the patch.",
+            "Do not require a secret candidate or verifier equality unless the task contains such a relation.",
+            "Separate static patch validation from installation and runtime verification.",
         ]
     elif mode == "package_overview":
         result["required_contract"] = [
@@ -2050,11 +2094,14 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
         ]
     if meta_review:
         result["required_contract"] = [
-            "Treat the previous candidate and conclusion as unverified.",
+            "Treat the previous candidate and conclusion as unverified." if solve_intent else "Treat the previous conclusion as unverified.",
             "Identify the earliest incorrect assumption with evidence.",
-            "Re-run the complete verifier before stating a new candidate.",
-            "Do not replace a verified candidate with a later unverified guess.",
         ]
+        if solve_intent:
+            result["required_contract"] += [
+                "Re-run the complete verifier before stating a new candidate.",
+                "Do not replace a verified candidate with a later unverified guess.",
+            ]
     if mode == "general_static":
         result.setdefault(
             "required_contract",
@@ -2062,7 +2109,7 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
                 "Device runtime tools are not the default path unless the latest request explicitly asks for runtime verification."
             ],
         )
-    if not has_package and mode != "lightweight_chat":
+    if not has_package and mode not in {"lightweight_chat", "device_runtime"}:
         result.update(
             {
                 "uses_model": False,
@@ -2275,6 +2322,8 @@ def build_parser() -> argparse.ArgumentParser:
     python.add_argument("--cwd", type=Path)
     python.add_argument("--timeout", type=positive_int, default=120)
     python.add_argument("--output", type=Path)
+    python.add_argument("--read-path", action="append", type=Path, default=[], help="Declare an additional input path for Workbench coordination")
+    python.add_argument("--write-path", action="append", type=Path, default=[], help="Declare an additional output path for Workbench coordination")
 
     scratchpad = subparsers.add_parser(
         "scratchpad", help="Read, update, or clear a durable analysis scratchpad"
@@ -2292,6 +2341,8 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--env", action="append", default=[])
     host.add_argument("--timeout", type=positive_int, default=120)
     host.add_argument("--output", type=Path)
+    host.add_argument("--read-path", action="append", type=Path, default=[], help="Declare an additional input path for Workbench coordination")
+    host.add_argument("--write-path", action="append", type=Path, default=[], help="Declare an additional output path for Workbench coordination")
     return parser
 
 

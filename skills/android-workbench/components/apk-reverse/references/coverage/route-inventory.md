@@ -1,6 +1,6 @@
-# Coverage inventory — the per-route list behind `SKILL.md`'s Coverage section
+# Coverage inventory — the per-route list behind [component guide](../../README.md)'s Coverage section
 
-`SKILL.md` states the rule: **do not apply the nearest available procedure to a target it was never
+[component guide](../../README.md) states the rule: **do not apply the nearest available procedure to a target it was never
 written for**, and label every claim `observed` / `inferred` / `unverified`. This file is the list that
 rule needs — which routes are covered, by what, and how strong the evidence actually is.
 

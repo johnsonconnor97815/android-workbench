@@ -1,7 +1,7 @@
 # Hand-off boundaries — where this skill ends and another view begins
 
 Four boundaries that are easy to walk into without noticing. Each names what the other side owns
-rather than restating it, because two copies of the same advice drift apart. `SKILL.md` keeps the
+rather than restating it, because two copies of the same advice drift apart. [component guide](../README.md) keeps the
 one-line version of each so a routing decision can be made without loading this file; this file
 carries the detail.
 
@@ -49,7 +49,7 @@ latter, say so instead of extending those two files into it.
 
 ## 4. When the deliverable stops being an APK, the verification question changes with it
 
-`SKILL.md` §What "done" means is written for a rebuilt, installable artifact, and every word of it
+[component guide](../README.md) §What "done" means is written for a rebuilt, installable artifact, and every word of it
 assumes one. The other three forms in G1 each move the evidence somewhere else, and the failure mode
 is quiet: **a privileged result gets reported in the language of a finished build.**
 

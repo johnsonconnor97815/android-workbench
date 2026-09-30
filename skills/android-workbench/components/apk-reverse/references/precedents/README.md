@@ -8,7 +8,7 @@ second copy in prose.
 
 Read a case when you are **about to do this kind of work again** — not when you are stuck. A case
 answers "what sequence produced a defensible result, and what did it cost"; when you are stuck
-the symptom index in `SKILL.md` is the faster route.
+the symptom index in [component guide](../../README.md) is the faster route.
 
 ## Why this exists at all
 

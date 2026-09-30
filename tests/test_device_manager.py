@@ -11,10 +11,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 SCRIPT = (
     ROOT
     / "skills/android-workbench/components/device-manager/scripts/device_manager.py"
@@ -48,6 +50,95 @@ def load_module():
 class DeviceManagerCommandTest(unittest.TestCase):
     def setUp(self):
         self.module = load_module()
+
+    def test_root_access_distinguishes_grant_denial_missing_su_and_timeout(self):
+        for expected in ("granted", "denied", "su_missing", "unknown"):
+            records = []
+
+            def probe(command, *, label, records, **kwargs):
+                record = {"name": label, "returncode": 0, "stdout": "", "stderr": ""}
+                if label == "root caller uid":
+                    record["stdout"] = "2000"
+                elif label == "su path":
+                    record["stdout"] = "/system/bin/su" if expected != "su_missing" else ""
+                    record["returncode"] = 1 if expected == "su_missing" else 0
+                elif label == "su version":
+                    record["stdout"] = "30.7:MAGISKSU"
+                elif label == "root id":
+                    if expected == "granted":
+                        record["stdout"] = "uid=0(root) gid=0(root)"
+                    elif expected == "denied":
+                        record.update(returncode=1, stderr="Permission denied")
+                    else:
+                        record["returncode"] = 124
+                        records.append(record)
+                        raise RuntimeError("root id timed out")
+                records.append(record)
+                return record
+
+            with self.subTest(status=expected), patch.object(self.module, "run_command", side_effect=probe):
+                access = self.module.inspect_root_access("adb", "fixture", timeout=15,
+                                                         records=records, check_root=True)
+                self.assertEqual(access["status"], expected)
+                self.assertEqual(access["caller_uid"], 2000)
+                self.assertIn("checked_at", access)
+                if expected == "su_missing":
+                    self.assertNotIn("root id", [step["name"] for step in records])
+                elif expected == "unknown":
+                    self.assertIn("unconfirmed", access["reason"])
+
+    def test_default_root_inspection_does_not_request_privileges(self):
+        with patch.object(self.module, "run_command", side_effect=[
+            {"returncode": 0, "stdout": "2000", "stderr": ""},
+            {"returncode": 0, "stdout": "/system/bin/su", "stderr": ""},
+            {"returncode": 0, "stdout": "30.7:MAGISKSU", "stderr": ""},
+        ]) as command:
+            access = self.module.inspect_root_access("adb", "fixture", timeout=15, records=[])
+        self.assertEqual(access["status"], "not_checked")
+        self.assertEqual(access["su_version"], "30.7:MAGISKSU")
+        self.assertEqual(command.call_count, 3)
+        self.assertNotIn("su -c id", [call.args[0][-1] for call in command.call_args_list])
+        parser = self.module.build_parser()
+        self.assertFalse(parser.parse_args(["preflight", "--serial", "fixture"]).check_root)
+        self.assertTrue(parser.parse_args(["preflight", "--serial", "fixture", "--check-root"]).check_root)
+
+    def test_optional_su_version_timeout_does_not_block_root_inspection(self):
+        records = []
+
+        def probe(command, *, label, records, **kwargs):
+            record = {"name": label, "returncode": 0, "stdout": "", "stderr": ""}
+            record["stdout"] = {"root caller uid": "2000", "su path": "/system/bin/su",
+                                "root id": "uid=0(root)"}.get(label, "")
+            if label == "su version":
+                record["returncode"] = 124
+            records.append(record)
+            if label == "su version":
+                raise RuntimeError("su version timed out")
+            return record
+
+        with patch.object(self.module, "run_command", side_effect=probe):
+            access = self.module.inspect_root_access("adb", "fixture", timeout=15,
+                                                     records=records, check_root=True)
+        self.assertEqual(access["status"], "granted")
+        self.assertIsNone(access["su_version"])
+
+    def test_unauthorized_phone_is_incomplete_and_does_not_request_root(self):
+        with patch.object(self.module, "detect_mode", return_value="unauthorized"), patch.object(self.module, "inspect_root_access") as root:
+            result = self.module.preflight(adb_path="adb", fastboot_path="fastboot", serial="fixture",
+                                           fastboot_serial="fixture", timeout=15)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["observations"]["adb_authorization"], "unauthorized")
+        root.assert_not_called()
+
+    def test_adb_failure_is_not_recorded_as_missing_su(self):
+        with patch.object(self.module, "run_command", side_effect=[
+            {"returncode": 0, "stdout": "2000", "stderr": ""},
+            {"returncode": 1, "stdout": "", "stderr": "error: device offline"},
+        ]) as command:
+            access = self.module.inspect_root_access("adb", "fixture", timeout=15, records=[])
+        self.assertEqual(access["status"], "unknown")
+        self.assertIn("offline", access["reason"])
+        self.assertEqual(command.call_count, 2)
 
     def test_global_arguments_are_accepted_before_or_after_subcommand(self):
         parser = self.module.build_parser()
@@ -174,6 +265,7 @@ class DeviceManagerCommandTest(unittest.TestCase):
             "fastboot",
             "serial",
             Path("/images/patched-boot.img"),
+            partition="boot",
             slot="a",
             reboot=False,
         )
@@ -196,6 +288,7 @@ class DeviceManagerCommandTest(unittest.TestCase):
             "fastboot",
             "serial",
             Path("/images/patched-boot.img"),
+            partition="boot",
             slot="both",
             reboot=False,
         )
@@ -203,6 +296,14 @@ class DeviceManagerCommandTest(unittest.TestCase):
             [command[4] for command in commands],
             ["boot_a", "boot_b"],
         )
+
+    def test_root_planner_refuses_other_partitions(self):
+        for partition in ("init_boot", "recovery", "vendor_boot"):
+            with self.subTest(partition=partition), self.assertRaisesRegex(ValueError, "only.*boot"):
+                self.module.root_commands(
+                    "fastboot", "serial", Path("/images/patched.img"),
+                    partition=partition, slot="a", reboot=False,
+                )
 
     def test_install_frida_commands_push_chmod_and_start(self):
         commands = self.module.install_frida_commands(
@@ -423,6 +524,7 @@ class DeviceManagerDryRunTest(unittest.TestCase):
                     "build": "AP4A.250105.002",
                     "bootloader": "unlocked",
                     "method": "fastboot",
+                    "root_partition": "boot",
                     "decisions": {
                         "scope": "boot_only",
                         "root": root_decision,
@@ -483,6 +585,7 @@ class DeviceManagerDryRunTest(unittest.TestCase):
                     "build": "SP1A.210812.016.C2",
                     "bootloader": "unlocked",
                     "method": "Run the official Google factory image flash-all.sh with fastboot pinned to the device serial.",
+                    "root_partition": "boot",
                     "decisions": {
                         "scope": "full_image",
                         "root": "yes",
@@ -1017,6 +1120,39 @@ class DeviceManagerDryRunTest(unittest.TestCase):
                     ]
                 ],
             )
+
+    def test_root_operations_require_researched_boot_partition_before_device_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "patched.img"
+            image.write_bytes(b"offline image")
+            magisk = root / "Magisk.apk"
+            magisk.write_bytes(b"offline manager")
+            research = self.write_research(root, root_decision="yes")
+            original = json.loads(research.read_text())
+            cases = {
+                "root": ["--patched-boot", str(image)],
+                "root-prepare": ["--stock-boot", str(image), "--magisk-apk", str(magisk)],
+                "root-collect": ["--destination", str(root / "collected.img")],
+            }
+            for partition in (None, "init_boot", "recovery"):
+                dossier = {**original, "root_partition": partition}
+                research.write_text(json.dumps(dossier))
+                for command, args in cases.items():
+                    with self.subTest(partition=partition, command=command):
+                        output = root / f"blocked-{command}-{partition}.json"
+                        result = subprocess.run(
+                            [sys.executable, str(SCRIPT), "--serial", "serial",
+                             "--adb", "missing-adb", "--fastboot", "missing-fastboot",
+                             "--output", str(output), command, *args,
+                             "--research", str(research), "--dry-run"],
+                            capture_output=True, text=True, timeout=20,
+                        )
+                        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                        record = json.loads(output.read_text())
+                        self.assertIn("root_partition", record["error"])
+                        self.assertEqual(record["steps"], [])
+            self.assertEqual(load_module().validate_research(original)["root_partition"], "boot")
 
     def test_root_dry_run_accepts_explicit_slot(self):
         with tempfile.TemporaryDirectory() as directory:

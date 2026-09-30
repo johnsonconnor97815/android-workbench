@@ -7,15 +7,17 @@
 | 模式 | 触发例子 | 上下文预算 | 设备工具 |
 | --- | --- | --- | --- |
 | `lightweight_chat` | `hi`、`你好`、`thanks` | 1 条历史，不附加包上下文 | 关闭 |
-| `package_overview` | “当前应用的基本信息”、“分析一下” | 8 条历史，包摘要 8000 字符 | 关闭 |
-| `focused_static_analysis` | “这个字符串如何被使用”、“入口逻辑怎么走” | 4 条历史，包摘要 4000 字符 | 关闭 |
+| `package_overview` | “当前应用的基本信息”、“分析一下” | 2 条历史，不预附加包摘要 | 关闭 |
+| `focused_static_analysis` | “这个字符串如何被使用”、“入口逻辑怎么走” | 4 条历史，包摘要 7000 字符 | 关闭 |
 | `static_fast_path` | “破解这个 secretKey 校验”、“复算这个 hash” | 4 条历史，包摘要 4000 字符 | 关闭 |
-| `device_runtime` | “安装并截图”、“继续设备验证” | 8 条历史，包摘要 8000 字符 | 开启 |
+| `device_runtime` | “安装并截图”、“继续设备验证” | 10 条历史，包摘要 8000 字符 | 开启 |
 | `general_static` | 其他静态问题 | 8 条历史，包摘要 8000 字符 | 关闭 |
 
-没有加载包时，除轻量聊天外返回本地回复 `当前没有加载分析包。`，不调用模型。
+没有加载包时，静态模式返回本地回复 `当前没有加载分析包。`；轻量聊天和设备观察不要求 APK。
 
-修正与复盘类问题不会因为包含 `flag`、`破解`、`密码` 等词而进入静态快路径。`meta_review: true` 时必须把旧候选视为未验证，先用证据定位最早的错误假设，再重跑完整 verifier。
+先识别当前请求中的明确限制和实际动作，再使用关键词辅助分类。“只看源码”“不做设备验证”等限制优先于历史中的设备建议；否定的动作不算执行请求。`crash`、`device`、`hash`、`key` 本身不能开启设备操作或求解校验流程。例如查看证书哈希属于静态分析，复算候选值的 hash 才属于求解。
+
+修正与复盘类问题不会因为包含 `flag`、`破解`、`密码` 等词而进入静态快路径。`meta_review: true` 时先用证据定位最早的错误假设；仅在确有候选值和校验关系的任务中重跑完整 verifier。
 
 ## 上下文预算
 
@@ -34,6 +36,8 @@
 
 `analysis.route` 同时返回 `suggested_operations` 和 `suggested_skills`，但它们是候选顺序，不是自动执行许可：
 
+`suggested_skills` 只推荐唯一入口 `android-workbench:android-workbench`；`suggested_references` 给出相对此 Skill 根目录的模式文档路径，不再推荐已合并的旧 Skill。
+
 - 包概览先取 `analysis.overview`，再按问题补充 `manifest`、`resources`、`signature` 或 `snapshot`。
 - 包概览的答案先用一句话给出功能级结论，再列最相关行为；包名、版本和签名只作为证据。不能用预写摘要代替本轮工具证据，也不能把未知项写成结论。
 - 聚焦静态分析先取 `analysis.knowledge`、`analysis.strings`、`manifest`、`decompile` 和 `code`，再接 `apkrev.dex_strings`、`apkrev.find_refs`。
@@ -41,13 +45,13 @@
 - 设备运行先用 `device.info` 记录设备事实，再使用 `device.scene`、`device.screenshot`、`device.observe` 或对应 `apkrev.*` 操作，并保留语义证据。
 - 未列出的操作仍可按证据需要使用，但不能绕过 Workbench 队列。
 
-`analysis.knowledge` 可以检索本地文档、目录和 URL；配置 embedding 端点后做语义检索。`analysis.python` 执行任意 Python 计算，并可用 `--prelude` 恢复常量、公式和候选值，或用 `--session`/`--save-session` 维护可复用状态；`analysis.scratchpad` 维护持久分析笔记；`analysis.exec` 执行任意宿主命令。计算和执行结果返回命令或代码、退出码、输出和超时，帮助验证逆向结果；不额外限制用途。
+`analysis.knowledge` 可以检索本地文档、目录和 URL；配置 embedding 端点后做语义检索。`analysis.python` 提供本地 Python 计算和可复用状态；`analysis.scratchpad` 维护笔记；`analysis.exec` 提供本地命令执行。受管通用执行锁住项目和工作目录；其他输入/输出分别用 `--read-path` / `--write-path` 声明。设备操作和共享环境修改必须使用对应登记操作。结果记录命令或代码、退出码、输出和超时。
 
 ## 静态快路径契约
 
-触发词包含 `secret`、`encode`、`verifier`、`checksum`、`hash`、`crack`、`key`、`口令`、`密钥`、`校验`、`编码`、`解码`、`破解` 等。
+求解、复算、编码、解码等明确动作可进入静态快路径；补丁请求也可使用该模式，但适用补丁验证契约，不强求候选值。仅提到 `hash`、`key`、证书或签名不能触发候选求解。
 
-必须满足：
+确有候选值及校验关系的任务必须满足：
 
 1. **不手算常量。** 十六进制、大整数、模逆元和字符编码都由脚本计算。
 2. **完整断言。** 脚本必须检查 `encode(candidate) == verifier`、`hash(candidate) == expected` 或等价完整关系。
@@ -59,7 +63,7 @@
 
 ## 设备运行契约
 
-触发词包含 `install`、`launch`、`screenshot`、`device`、`runtime`、`安装`、`启动`、`截图`、`设备`、`真机`、`运行时` 等。历史中刚出现“设备验证/运行时验证”且用户回答“继续/是/可以”时，也路由到设备运行。
+明确安装、启动、截图、采集设备日志等动作进入设备运行；代码中的这些名称不是执行请求。最近一条助手消息提出“设备验证/运行时验证”且用户回答“继续/是/可以”时，也可进入设备运行；更早的设备讨论不能覆盖当前请求中的限制或新的静态任务。
 
 必须满足：
 

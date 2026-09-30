@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workbench.bridge import entry
 from workbench.client import Client
-from workbench.common import WorkbenchError, atomic_json, path_resource, rpc
+from workbench.common import WorkbenchError, atomic_json, conflict, path_resource, rpc
 from workbench.project import generate
 from workbench.registry import normalize
 from workbench.service import DEFAULTS
@@ -71,6 +71,54 @@ class SkillIntegrationTest(unittest.TestCase):
         with patch("workbench.bridge.locate_project", return_value=self.project), patch.dict(os.environ, {"AWB_INTERNAL_GRANT": ""}), patch("workbench.bridge.Client") as client, self.assertRaisesRegex(WorkbenchError, "no unique registered adapter"):
             entry(path, [])
         client.assert_not_called()
+
+    def test_host_execution_locks_implicit_project_writes_and_declared_external_paths(self):
+        working = self.root / "external-workspace"
+        working.mkdir()
+        source = self.root / "input.txt"
+        source.write_text("input")
+        target = self.root / "shared-report.txt"
+        target.write_text("existing report")
+        script = self.root / "analysis-task.py"
+        script.write_text("print('offline')")
+        specs = []
+        for operation, args in (
+            ("analysis.exec", ["exec", "--command", "printf review > shared-report.txt"]),
+            ("analysis.python", ["python", "--script", str(script)]),
+        ):
+            folder = self.root / operation
+            folder.mkdir()
+            spec = normalize({"project": str(self.project), "operation": operation,
+                              "args": [*args, "--cwd", str(working), "--read-path", str(source), "--write-path", str(target)]}, DEFAULTS, folder)
+            for path in (self.project, working, target):
+                self.assertIn({"key": path_resource(path), "mode": "write"}, spec["resources"])
+            self.assertIn({"key": path_resource(source), "mode": "read"}, spec["resources"])
+            self.assertEqual(spec["input_fingerprints"][str(source)], hashlib.sha256(source.read_bytes()).hexdigest())
+            self.assertNotIn("device", spec)
+            self.assertNotIn(str(target), spec["outputs"])
+            specs.append(spec)
+        self.assertTrue(conflict(specs[0]["resources"], specs[1]["resources"]))
+        self.assertIn(str(script), specs[1]["input_fingerprints"])
+        other_project = self.root / "other-project"
+        other_project.mkdir()
+        atomic_json(other_project / "workbench.project.json", generate(other_project, ROOT, sys.executable))
+        other = normalize({"project": str(other_project), "operation": "analysis.scratchpad",
+                           "args": ["scratchpad", "--path", str(target), "--text", "other"]}, DEFAULTS, self.root / "other-job")
+        self.assertTrue(conflict(specs[0]["resources"], other["resources"]))
+
+    def test_old_host_adapter_registry_cannot_omit_current_resource_locks(self):
+        for operation in ("analysis.exec", "analysis.python"):
+            entry = self.manifest["operations"][operation]
+            entry.pop("host_execution")
+            entry.pop("input_flags")
+            entry["outputs"].remove("--write-path")
+            entry["shared_outputs"].remove("--write-path")
+        self.save_manifest()
+        target = self.root / "external-result.txt"
+        spec = normalize({"project": str(self.project), "operation": "analysis.exec",
+                          "args": ["exec", "--command", "printf result", "--write-path", str(target)]}, DEFAULTS, self.root / "old-adapter-job")
+        for path in (self.project, target):
+            self.assertIn({"key": path_resource(path), "mode": "write"}, spec["resources"])
 
     def prepare_collector(self):
         tools = self.project / "tools"

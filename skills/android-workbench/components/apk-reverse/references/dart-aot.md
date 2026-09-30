@@ -349,7 +349,7 @@ Use this to find function boundaries when you need to delimit one.
   equal-length target on a server-driven app is a **data key** — a JSON field name, a slot key, a
   reporting label. Rename it to equal-length noise and the client looks up a key the server never
   sends, so the feature goes quiet while every other request keeps working. This is the cheapest
-  surgical form of the "do not make an API fail" constraint at the top level of `SKILL.md`: the
+  surgical form of the "do not make an API fail" constraint at the top level of [component guide](../README.md): the
   request still succeeds, only the client's interpretation of it changes.
 - **Never replace an API path or URL string.** It looks like the same kind of string and it is not.
   Measured failure, on a real build: replacing the ad-fetch path produced a **404 whose error body is

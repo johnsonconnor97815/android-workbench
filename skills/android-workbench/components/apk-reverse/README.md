@@ -6,6 +6,8 @@
 
 这是从 [newliver666/apk-reverse](https://github.com/newliver666/apk-reverse) 导入的完整组件。它在 Android Workbench 中保留上游的逆向流程、脚本、参考文档和证据记录；设备、Frida 和 ADB 入口通过 Workbench 队列调度。独立 CLI 能力全部登记为操作，只有被入口调用的库和模板保持为源码文件。
 
+本文是唯一入口 Skill 按需读取的组件说明。先按用户目标选择需要的检查点；静态判断不自动扩展成安装、运行或完整重打包。引用中的脚本和路径相对此组件目录，执行时解析为绝对路径并使用已登记操作。设备操作、共享环境修改遵循 Workbench 调度规则；工具安装只在任务所需且已获授权的范围内进行，上游示例中的 `pip`、ADB、Frida 命令不构成直接执行许可。
+
 ## Workbench 操作
 
 本组件登记了 57 个 `apkrev.*` 操作：
@@ -43,16 +45,16 @@ python3 <Workbench目录>/scripts/workbench.py --project /path/to/analysis run a
 Goal: reach a **verified, installable, still-working artifact** fast — and avoid the whole class of
 mistakes that destroy an APK while looking completely healthy.
 
-## Immediate — do these four things before anything else
+## Start with the checks relevant to the requested deliverable
 
-This file is a **procedure with gates**, not background reading, and it is long enough that its middle
-gets skimmed. So the four moves come first; everything below is the explanation for them.
+Use these checks when they change the route or establish a claim the task needs. Reuse existing evidence
+and skip checks unrelated to the requested deliverable; a feasibility question does not start a full patch workflow.
 
-**1. Classify before choosing a route.** Answer the thirteen questions in §Start here. **R4** decides
+**1. Classify before choosing a route.** Answer the relevant questions in §Start here. **R4** decides
 whether you are editing the right layer at all, and a wrong branch does not fail loudly — it produces
 an artifact that builds, runs, and does the wrong thing.
 
-**2. Clear the four gates, in order, with their pass criteria** (§Gates). G1 names the deliverable form
+**2. Use the applicable gates and their pass criteria** (§Gates). G1 names the deliverable form
 in one testable sentence *before* any work; G2 establishes what this machine can really do; G3 locates
 the code; G4 records the baseline and the control. "I understand the idea" is not clearing a gate.
 
@@ -61,14 +63,12 @@ the code; G4 records the baseline and the control. "I understand the idea" is no
 hours — and in several cases the answer was already written down while it was being re-derived.
 
 **4. Two strikes on one shape of attempt sends you back to classification**, not to a third variant
-(§Stop conditions). And **never report done without the six items in §What "done" means.**
+(§Stop conditions). Apply §What "done" means to the verification scope actually requested.
 
-**Two rules about this file itself.** When a failure does not fit your plan, the symptom index is the
-next action, not more reasoning. And when this file and your own reasoning disagree, **this file wins**
-until you have evidence that overrides it: every rule here is the residue of a failure that cost
-hours, and your current intuition is the intuition of someone who has not hit it yet.
+When a failure fits the symptom index, use its evidence as a diagnostic lead. These imported cases
+do not override the user's scope or Workbench's resource rules; check their applicability to the current sample.
 
-## Four rules that override everything else
+## Four checks for patching and verification
 
 **R1 — Write the deliverable as a testable sentence before you touch the target.**
 "It works" is not the goal; "it works under the stated constraint" is. Root-assisted, live-
@@ -84,11 +84,12 @@ will be attributed to the wrong cause. Every "the app rejects X" claim needs its
 patch needs a same-pipeline control that still fails the old way.
 → `references/long-task-discipline.md` §single-variable discipline
 
-**R3 — Never ship or claim an unverified artifact.**
+**R3 — Report the verification actually performed.**
 "It assembles" is not "it works"; "the process started" is not "the feature works"; "no error in the
 log" is not "the check is gone". Install it, launch it, exercise the exact feature you changed, and
 look at the screen. Prove the device is running the build you made — hash it, do not trust the
-filename.
+filename. If the request is for a static patch or no suitable device is available, deliver the requested
+artifact with its static checks and explicitly state that installation/runtime compatibility is unverified.
 → `references/verification.md`
 
 **R4 — Identify the owning layer before patching, and re-classify when reality disagrees.**
@@ -104,22 +105,20 @@ asked of a tool too weak to answer it**: an hour of `grep` over a hand-exported 
 indexed query would do, a manual ELF walk where a decompiler was one `pip install` away. The failure is
 invisible from the inside, because the weak route still produces output.
 
-**Five obligations. These are instructions; a violation is a defect, not a preference.**
+Choose tools by the question, available evidence and authorized environment scope:
 
 | Obligation | Do this | Cost of ignoring it |
 |---|---|---|
-| **Orient with an indexer, not an export** | Build the ability to *ask the artifact questions* before reading code: `droidasc findrefs` / `ddc findrefs` (string/type/method → every reference site, sub-second). A decompile reads a class you have **already located** — it is not how you locate it. `jadx` is a readable viewer of last resort, never the source of truth and never the entry point of a recon | hours of `grep` per question asked, over an export you paid for first |
-| **Install the missing tool; it is part of the task** | A missing arm64 decompiler is the next step, not a constraint to route around. Ask a human only when installation is genuinely impossible | hours re-derived by hand for output a decompiler gives in minutes |
+| **Locate relevant code efficiently** | Prefer an available indexer for large-APK reference searches. Reuse existing source trees or use JADX directly when that answers the question efficiently; verify important findings against DEX or another representation | unnecessary export/index work or unsupported decompiler conclusions |
+| **Resolve a capability gap within scope** | Use an existing suitable tool first. If installation is needed and authorized, use the registered environment operation; otherwise state the gap and what remains unverified | unrelated environment changes or a weaker conclusion presented as proof |
 | **Name the gap before spending against it** | State the capability the blocker requires and whether this machine has it, **out loud**. This is a G2 item | designing around a tool that installs in ten minutes |
 | **Reach for a shipped script before writing one** | Parsing, hashing, alignment and hot-plug probes are already written; a bespoke script in place of `scripts/dex_find_insn.py` is how offsets get **guessed instead of computed** | a wrong offset that decodes cleanly and behaves wrongly |
 | **Pick the instrument for the layer the question lives on** | A dex in memory wants `dex_mem_scan.py` (find and cut) **plus** `dex_dump_validate.py` (judge), not a decompiler pointed at a fragment. An algorithm you only have to *call* wants `emulation-and-rpc.md`. "Does this class ever load at runtime" wants a hook that fires or does not | the heavier tool is not the safer one — it produces a *plausible* answer, which is worse than none |
 
-**Run `python scripts/doctor.py --json` before concluding anything is unavailable.**
-It reports per-capability closure — what is missing, what to install, and roughly how long that takes —
-and a capability you have not checked for is not a capability you lack. **It is deliberately allowed to
-report `BLOCKED`:** a machine with a JVM but no `zipalign`/`apksigner` cannot re-sign, and the report
-says so rather than inferring capability from a tool that is merely present. Detail:
-`references/toolchain.md`; the registry it reads is `scripts/capabilities.py`.
+For host-only capability checks, use `apkrev.capabilities` through Workbench. Use `apkrev.doctor`
+or `apkrev.preflight` only when device checks are relevant, with a registered device and its explicit serial.
+Missing capabilities remain `BLOCKED`; a JVM alone does not establish signing capability.
+See `references/toolchain.md` and the registry in `scripts/capabilities.py`.
 
 ## Coverage — what this skill claims, and what it does not
 
@@ -154,7 +153,7 @@ building and shipping a kernel module. Reasons and evidence boundaries are in
 
 **The fallback, as an instruction — this is a rule, not advice.** If the target does not match the
 covered list, or no symptom-index row matches, then **stop and classify before choosing a branch**:
-answer the thirteen questions (§Start here). If the shape still does not fit — an unknown runtime, a
+answer the relevant questions (§Start here). If the shape still does not fit — an unknown runtime, a
 mechanism you cannot name — **say exactly that and propose the cheapest experiment that would
 identify it.** Do not take the closest documented route and apply it anyway. A wrong branch here does
 not fail loudly: it produces an artifact that builds, runs, and does the wrong thing.
@@ -211,7 +210,7 @@ unread in this repository.
 | Evidence contradicts itself, or a capture looks like two states mixed | `long-task-discipline.md` §keep the observation window clean |
 | You took screenshots but drew the conclusion from logs or from the patch itself | `long-task-discipline.md` §captures you never looked at are not evidence |
 | You are about to re-run an experiment whose result you already recorded | `long-task-discipline.md` §long-context decay |
-| A script will not start, or a tool "is missing" | `scripts/doctor.py`, then `toolchain.md` §"not on PATH" is not "not installed" |
+| A script will not start, or a tool "is missing" | `scripts/capabilities.py` for host checks; registered `apkrev.doctor` only when device checks apply; then `toolchain.md` §"not on PATH" is not "not installed" |
 | A hook or probe reports **no events at all**, and you are about to call it detection | `scripts/anti_detect_probe.js` for the environment self-report first, then `detection-and-anti-analysis.md` §Step 3: locating the check — the order of search from Stage 0 |
 | `attach` hangs and then fails **while the process is still in `ps`** | `detection-and-anti-analysis.md` §Step 3 Stage 0 — check for `D` in `/proc/<pid>/stat`, and attach a *different* pid as a one-line control before blaming the target |
 | The app exits with no tombstone, no crash and no ANR record | `detection-and-anti-analysis.md` §Step 3 — a clean self-exit means the check ran before your hooks existed; the branch conditions there say which Stage |
@@ -242,11 +241,11 @@ unread in this repository.
 | Method bodies are present but decode as **private opcodes**, and you need the mapping rather than an explanation of why VMP is hard | `vmp-differential-analysis.md`, then `advanced-unpacking.md` for the shape diagnosis |
 | A store build arrives as `base.apk` + `split_config.*.apk`, or a rebuilt build is refused **as a set** although every file verifies on its own | `split-apk.md` — one keystore across every member for `pm install-multiple`, and check that a merge is legal before trusting a merged single APK |
 
-## Gates — clear these before you patch, in order
+## Gates — apply the relevant checks before patching
 
-Each gate is an **action with a pass criterion**. Do not proceed past a gate you have not cleared, and
-do not treat "I understand the idea" as clearing it. Skipping a gate is not a shortcut; it is how the
-work gets redone.
+Each applicable gate has a pass criterion. Establish the facts needed for the requested change,
+reuse a matching baseline, and record missing evidence instead of assuming it. Device baselines and
+runtime checks apply when the task actually includes device behavior.
 
 **G1 · Deliverable form — and the cost ceiling on it.** State, in one sentence you could hand to
 someone else, what artifact must exist at the end and under what constraints (rooted or not,
@@ -271,8 +270,8 @@ that point the repack route is not merely expensive — it is blocked, and the d
 should say which form replaced it. **A form chosen here and re-read at every checkpoint is the guard
 against the most expensive drift in this skill** (`references/long-task-discipline.md`).
 
-**G2 · Environment truth and capability inventory.** Run `scripts/doctor.py` (and `scripts/preflight.py`
-if a device is in play). *Pass:* you know which toolchains and scripts can actually run here, you have
+**G2 · Environment truth and capability inventory.** Use `apkrev.capabilities` for host checks and
+registered `apkrev.doctor` / `apkrev.preflight` only if a device is in play. *Pass:* you know which required toolchains and scripts can actually run here, you have
 seen the environment warnings — clock skew, leftover `adb forward`/proxy, a device-side frida process
 already running, a tool installed off-PATH — **and you have written down the capability this target will
 demand against the capability this machine has.** Name the two or three layers the task will almost
@@ -280,7 +279,7 @@ certainly reach (for example "arm64 native decompilation", "Dart AOT snapshot du
 TLS inspection", "dex-wide cross-referencing") and mark each available / missing-but-installable /
 genuinely out of reach. *Fail:* you are about to attribute to the target a failure caused by your own
 setup — or to spend a day routing around a tool that installs in ten minutes. A layer whose tool is
-missing is a **task item**, not a constraint to design around. → `references/toolchain.md` §Closing a
+missing is an explicit gap to resolve within authorization or report as a limitation. → `references/toolchain.md` §Closing a
 capability gap
 
 **G3 · Code location.** From the manifest and dex, answer: is there a packer, where does the app's own
@@ -297,10 +296,9 @@ compare against, and every later measurement is unfalsifiable.
 
 ## Start here: classify the target in thirteen questions
 
-**Answer these before touching a tool — all thirteen, in order. Each one changes the whole plan, and
-a wrong answer here does not fail loudly: it produces an artifact that builds, runs, and does the
-wrong thing.** The answer column names both the action and the file that owns the detail; load that
-file before acting on the question.
+Use the questions relevant to the requested change. Mark unknown answers and gather evidence as needed;
+do not require all thirteen for a single-method patch or a feasibility assessment. The answer column
+names the action and reference to consult when that condition applies.
 
 | # | Question | What the answer changes | Load |
 |---|---|---|---|
@@ -337,7 +335,7 @@ point; it exists for exactly this moment.
 1. **Preflight, then Recon** — `scripts/doctor.py` is the cheapest possible first command: it reports which toolchains and scripts can actually run here, and surfaces the environment facts that poison experiments (clock skew, leftover `adb forward`/proxy, a device-side frida process already running, a tool installed off-PATH). Then `scripts/preflight.py` before anything else if a device is involved (it takes seconds and prevents a whole class of false conclusions), then `references/recon.md`. Manifest, package name, version, ABI, dex count, packer, embedded SDKs, where the app's own code lives. Ten minutes here saves hours. **If it is packed, unpack before anything else** (`references/recon.md` §unpacking): you cannot patch code you cannot read, the encrypted payload lengths tell you which dumped dex is the original, and a memory dump must be de-duplicated by hash and structurally validated before any of it is trusted.
    **If recon says there is no packer but a re-signed build still dies**, you are in the layer `references/code-virtualization-and-custom-linkers.md` covers — do not proceed on the assumption that "no packer" means "editable".
    **If the app already dies on its own** — especially at a roughly constant time after launch, or with a native crash — locate the mechanism *before* planning any patch (`references/native-tamper-and-suicide.md`, `scripts/native_crash.py`). Record the observed time-to-death: it is the baseline every later attempt is measured against, and without it a surviving run cannot be told from a changed schedule.
-   *Skip condition:* never skipped. G2/G3 in §Gates are cleared here or not at all.
+   Reuse an existing capability/code-location baseline when its inputs still match; only redo the checks the task needs.
 2. **Extract strings and endpoints** — build a picture of the app's API surface and SDK inventory from the dex string tables. No decompiler needed for this, and it is fast. Scripts: `scripts/dex_strings.py`.
 3. **Trace to the owning class** — find the class that wraps the behavior (the app almost always wraps third-party SDKs in one helper). Reverse-lookup instructions: `references/dex-patching.md` §finding-the-call-site.
 4. **Decide the patch layer** — client SDK call / client rendering / client data consumption / server contract. See the table in `references/ad-removal.md`.
@@ -354,16 +352,16 @@ point; it exists for exactly this moment.
    fields (**signature first, checksum last**) — `references/byte-level-patching.md`
    §the dex header has two integrity fields.
 6. **Repack and sign** — `references/repack-and-sign.md`. **Do not strip the whole `META-INF/`.** This single mistake destroys otherwise-correct builds.
-6b. **Neutralise the update path — before you call the build done.** If the app checks for updates at all, add the two-layer patch (`references/updates-and-forced-upgrade.md`): no-op the update routine's entry, and force the version comparison to its "no update" side. A build that can be switched off or replaced remotely is not a deliverable, and this costs minutes here versus a rebuild later. Do the same for any **remote-config or hot-update** channel that could restore the behaviour you removed.
+6b. **Handle update paths only when required by the requested behavior.** Inspect `references/updates-and-forced-upgrade.md` when an update gate is the target or can undo the authorized change. Do not disable updates, remote configuration or hot-update channels as an automatic part of unrelated patches.
 6c. **Handle account gates only after classifying them** — if the request mentions sign-in or binding, apply `references/account-gates.md` and state plainly which guarded screens become usable and which stay empty because their content is account-scoped.
 7. **Verify on device** — `references/environment.md` + `references/verification.md`. Check: launches, the changed behavior actually changed, nothing unrelated broke, and **the app reaches its normal UI with no blocking dialog**. First prove the artifact actually changed on the device -- a package manager reporting success does not prove an interposed confirmation was accepted (P18). Capture continuously for the first ~20 seconds after launch, **and look at the captures** — sampling gaps are how a blocking modal goes unseen (P20), and a burst of images that were never inspected is not evidence. If the accessibility tree is empty, the image is the primary evidence rather than a fallback.
-8. **Log what you learned** — if a failure cost you more than thirty minutes, add it to `references/pitfalls.md`. That file is the most valuable artifact in this skill.
+8. **Log what you learned** — preserve task evidence and lessons in the analysis project. Change this plugin's references only when plugin maintenance is part of the user's request.
 
 ## What "done" means — do not claim it earlier
 
-Every item below must be true before you report completion. Anything less is a **checkpoint** and must
-be labelled as one, out loud, with what remains. Premature "done" is the most damaging thing you can
-report, because it ends the investigation while the user believes the problem is solved.
+For a requested runtime-verified deliverable, check the following items. For a static artifact or analysis
+report, complete the requested evidence and state the untested installation/runtime scope. Do not imply
+that static success establishes device compatibility.
 
 1. **The artifact exists and its identity is recorded** — path plus hash, not a filename.
 2. **It was installed and launched on the environment the deliverable sentence names** (G1/R1). If
@@ -417,10 +415,9 @@ These are moments where continuing to push forward is the wrong move. Each has c
 
 ## Reference index and script index
 
-**Both tables live in `references/routing.md`** — one load gets you every reference file with when to
-load it, and every script with what it does. They are deliberately not duplicated here: this file is
-loaded in full every time the skill activates, and those two tables are about 140 rows of lookup data
-that nobody needs until they have already decided what to do.
+Both inventories live in [references/routing.md](references/routing.md). Read the relevant entries
+when a task needs a reference or command detail; the unique Workbench Skill does not load this
+component guide or the complete inventory for ordinary requests.
 
 The symptom index above stays, because **symptom to file has to be one hop**: when something fails you
 are not choosing a file, you are recognising a failure, and a two-hop lookup at that moment is exactly
@@ -431,5 +428,5 @@ inside an installed copy: capability → one-line conclusion → `observed`/`inf
 evidence that ships with the skill. Load it when a claim's strength decides whether you trust it and
 the run record is not in front of you.
 
-`python check_routing.py` checks that this file and `references/routing.md` still agree, that every
-reference file is named there, and that every script is named there. CI runs it.
+Repository validation uses `python3 scripts/check.py` from the Workbench checkout; it covers offline
+scheduler and component regressions. It does not establish real-device Hook or APK compatibility.

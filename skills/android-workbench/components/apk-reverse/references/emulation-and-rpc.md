@@ -55,7 +55,7 @@ Emulation and RPC are for when the code that matters must keep *running*.
 The two-strike rule applies across the table: if a library refuses to run under unidbg after two
 focused rounds of `DalvikVM` patching, stop emulating and move to RPC (or the reverse) instead of a
 third round — a library that checks its own loading path or decrypts itself against device state
-may simply not be worth emulating, and that is a finding, not a failure (`SKILL.md`
+may simply not be worth emulating, and that is a finding, not a failure ([component guide](../README.md)
 §Stop conditions).
 
 ### The environment bill — budget days, not hours

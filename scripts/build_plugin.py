@@ -5,7 +5,9 @@ import argparse
 import ast
 import json
 from pathlib import Path
+import re
 import tomllib
+from urllib.parse import unquote, urlsplit
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +33,16 @@ FILES = (
 )
 EXCLUDED = {"__pycache__", ".pytest_cache", ".ruff_cache", ".git", ".venv"}
 GENERATED_FILES = {"docs/android-static-manifest.json", "docs/android-mcp-manifest.json"}
+
+
+def validate_markdown_links(path):
+    for match in re.finditer(r"\[[^\]]+\]\(([^)\s]+)\)", path.read_text()):
+        target = urlsplit(match.group(1).strip("<>"))
+        if target.scheme or not target.path:
+            continue
+        destination = (path.parent / unquote(target.path)).resolve()
+        if not destination.exists():
+            raise ValueError(f"Broken local documentation link in {path}: {match.group(1)}")
 
 
 def payload():
@@ -114,6 +126,8 @@ def validate():
             ast.parse(path.read_bytes(), filename=str(path))
         elif path.suffix == ".json":
             json.loads(path.read_text())
+        elif path.suffix == ".md":
+            validate_markdown_links(path)
     return paths
 
 

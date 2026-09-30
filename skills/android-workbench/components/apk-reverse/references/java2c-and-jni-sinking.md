@@ -6,7 +6,7 @@ have before you spend anything**, because one of them has no DEX to find at any 
 process lifetime, and the search for it is unbounded.
 
 Two neighbouring routes have historically folded this shape into one: `advanced-unpacking.md`'s
-dump-shape table and the SKILL.md symptom index both point "whole classes are bare `native`
+dump-shape table and the ../README.md symptom index both point "whole classes are bare `native`
 declarations" at `code-virtualization-and-custom-linkers.md`. That file is about protection which
 leaves the code **reachable** — a private container, a loader, a private opcode interpreter, all of
 which you can dump and measure. **Java2C is not reachable, because it was never bytecode.** This

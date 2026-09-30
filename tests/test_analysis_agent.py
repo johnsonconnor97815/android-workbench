@@ -18,6 +18,7 @@ import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 SCRIPT = ROOT / "skills/android-workbench/components/analysis-agent/scripts/analysis.py"
 
 
@@ -87,7 +88,7 @@ class AnalysisAgentTest(unittest.TestCase):
             result["required_contract"],
         )
         self.assertIn(
-            "android-workbench:android-analysis",
+            "android-workbench:android-workbench",
             result["suggested_skills"],
         )
 
@@ -108,6 +109,48 @@ class AnalysisAgentTest(unittest.TestCase):
         self.assertEqual(result["mode"], "static_fast_path")
         self.assertIn("apkrev.dex_method_patch", result["suggested_operations"])
         self.assertIn("apkrev.repack", result["suggested_operations"])
+        self.assertNotIn("The complete answer must include the concrete candidate value.", result["required_contract"])
+
+    def test_route_respects_static_constraints_and_topic_only_words(self):
+        history = [{"role": "assistant", "text": "是否继续设备验证？"}]
+        cases = {
+            "只看源码，分析崩溃处理逻辑，不做设备验证": "focused_static_analysis",
+            "Only inspect source, do not run on the device": "focused_static_analysis",
+            "分析 APK 崩溃处理的代码": "focused_static_analysis",
+            "查看 APK 签名证书的 SHA-256 hash": "focused_static_analysis",
+            "这个 secretKey 如何使用": "focused_static_analysis",
+            "不要安装 APK": "general_static",
+            "不要继续设备验证": "general_static",
+            "继续静态分析": "focused_static_analysis",
+            "continue static analysis": "focused_static_analysis",
+            "不要安装，只截图": "device_runtime",
+            "Install the APK and take a screenshot": "device_runtime",
+        }
+        for question, mode in cases.items():
+            with self.subTest(question=question):
+                result = self.module.route_request(question, True, history)
+                self.assertEqual(result["mode"], mode)
+                self.assertEqual(result["device_runtime_tools_enabled"], mode == "device_runtime")
+                if mode != "static_fast_path":
+                    self.assertNotIn("The complete answer must include the concrete candidate value.", result.get("required_contract", []))
+
+        history.append({"role": "assistant", "text": "接下来继续静态权限审计。"})
+        result = self.module.route_request("继续", True, history)
+        self.assertFalse(result["device_runtime_tools_enabled"])
+
+    def test_route_recommends_only_installed_skill_and_existing_references(self):
+        skill = ROOT / "skills/android-workbench"
+        for question in ("当前应用的基本信息", "这个字符串如何被使用", "破解这个 verifier", "安装并截图", "打补丁", "分析通用结构"):
+            with self.subTest(question=question):
+                result = self.module.route_request(question, True, [])
+                self.assertEqual(result["suggested_skills"], ["android-workbench:android-workbench"])
+                for reference in result["suggested_references"]:
+                    self.assertTrue((skill / reference).is_file(), reference)
+
+    def test_device_observation_does_not_require_loaded_apk(self):
+        result = self.module.route_request("读取设备日志", False, [])
+        self.assertEqual(result["mode"], "device_runtime")
+        self.assertNotIn("local_reply", result)
 
     def test_route_meta_review_does_not_reuse_fast_path(self):
         result = self.module.route_request("为什么破解错了", True, [])
@@ -824,6 +867,18 @@ class AnalysisAgentTest(unittest.TestCase):
         self.assertEqual(parsed["stdout"], "workbench")
         self.assertEqual(json.loads(output.read_text()), parsed)
 
+    def test_python_honors_working_directory_and_writes_there(self):
+        working = self.root / "working with spaces"
+        working.mkdir()
+        (working / "input.txt").write_text("evidence")
+        result = self.module.python_facts(
+            "from pathlib import Path; Path('result.txt').write_text(Path('input.txt').read_text()); print(Path.cwd())",
+            None, [], working, 10,
+        )
+        self.assertEqual(result["returncode"], 0, result["stderr"])
+        self.assertEqual(result["stdout"].strip(), str(working))
+        self.assertEqual((working / "result.txt").read_text(), "evidence")
+
     def test_registered_operations_and_documentation(self):
         from workbench.project import generate
 
@@ -869,8 +924,10 @@ class AnalysisAgentTest(unittest.TestCase):
                     if name == "analysis.decompile"
                     else ["--index", "--output"]
                     if name == "analysis.knowledge"
-                    else ["--output", "--save-session"]
+                    else ["--output", "--save-session", "--write-path"]
                     if name == "analysis.python"
+                    else ["--output", "--write-path"]
+                    if name == "analysis.exec"
                     else ["--output", "--path"]
                     if name == "analysis.scratchpad"
                     else ["--output"],
@@ -879,8 +936,10 @@ class AnalysisAgentTest(unittest.TestCase):
                     entry.get("shared_outputs"),
                     ["--index"]
                     if name == "analysis.knowledge"
-                    else ["--save-session"]
+                    else ["--save-session", "--write-path"]
                     if name == "analysis.python"
+                    else ["--write-path"]
+                    if name == "analysis.exec"
                     else ["--path"]
                     if name == "analysis.scratchpad"
                     else None,
@@ -908,7 +967,7 @@ class AnalysisAgentTest(unittest.TestCase):
         static = (ROOT / "agents/static-analyst.md").read_text()
         device = (ROOT / "agents/device-analyst.md").read_text()
         report = (ROOT / "agents/report-auditor.md").read_text()
-        self.assertIn("Do not hand-convert hexadecimal or large numeric constants.", static)
+        self.assertIn("do not hand-convert hexadecimal or large numeric constants.", static)
         self.assertIn("do not end with only a script for the user to run", static)
         self.assertIn("runtime verification as a closed loop", device)
         self.assertIn("Command success is not business success", device)

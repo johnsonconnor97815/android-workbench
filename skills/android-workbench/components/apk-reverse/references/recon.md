@@ -1,6 +1,6 @@
 # Recon — build the picture before touching anything
 
-Ten minutes here prevents hours of wrong work. Answer the five questions from `SKILL.md` with concrete evidence.
+Ten minutes here prevents hours of wrong work. Use the relevant classification questions from [component guide](../README.md) with concrete evidence.
 
 
 **Load this when:** starting any new sample. It gives identity, packer detection, embedded SDKs, ABI, and where the app's own code lives -- the ten minutes that prevent hours of wrong work.

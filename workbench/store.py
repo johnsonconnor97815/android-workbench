@@ -93,3 +93,19 @@ class Store:
             "INSERT INTO resources VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET status=excluded.status,detail=excluded.detail",
             (key, status, encode(detail)),
         )
+
+    def device_status(self, identifier):
+        return self.device_record(identifier, "status")
+
+    def device_record(self, identifier, kind):
+        rows = self.rows("SELECT value FROM meta WHERE key=?", ("device_" + kind + ":" + identifier,))
+        return json.loads(rows[0]["value"]) if rows else None
+
+    def save_device_status(self, identifier, data):
+        self.save_device_record(identifier, "status", data)
+
+    def save_device_record(self, identifier, kind, data):
+        self.db.execute(
+            "INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ("device_" + kind + ":" + identifier, encode(data)),
+        )

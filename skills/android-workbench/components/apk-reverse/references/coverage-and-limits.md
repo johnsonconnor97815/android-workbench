@@ -1,6 +1,6 @@
 # Coverage and limits — the evidence behind each claim
 
-`SKILL.md` §Coverage states **what this skill covers and what it does not**, because the failure
+[component guide](../README.md) §Coverage states **what this skill covers and what it does not**, because the failure
 worth preventing is not ignorance but *a confident wrong answer produced by applying the nearest
 available procedure to a target it was never written for*. That statement has to stay short: it is
 read on every task, before any routing decision.
@@ -139,7 +139,7 @@ its own strength note at the top.
 
 ## Historical verification record
 
-This is the part that grows every pass, which is why it does not live in `SKILL.md`. Read it before
+This is the part that grows every pass, which is why it does not live in [component guide](../README.md). Read it before
 trusting any "this was measured" statement above.
 
 **The first verification pass measured, against a real target:** a mid-size Flutter AOT application

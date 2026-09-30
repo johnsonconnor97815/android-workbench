@@ -33,6 +33,18 @@ class ProjectSourceTest(unittest.TestCase):
         self.project = Path(self.temp.name)
         self.manifest = generate(self.project, ROOT, sys.executable)
 
+    def test_documentation_links_resolve_after_relocation(self):
+        from scripts.build_plugin import validate_markdown_links
+
+        guide = self.project / "guide.md"
+        reference = self.project / "reference with spaces.md"
+        reference.write_text("# Reference\n")
+        guide.write_text("[Reference](reference%20with%20spaces.md#section)\n[Web](https://example.com)\n")
+        validate_markdown_links(guide)
+        reference.unlink()
+        with self.assertRaisesRegex(ValueError, "Broken local documentation link"):
+            validate_markdown_links(guide)
+
     def test_generated_environment_manifests_are_not_packaged(self):
         from scripts import build_plugin
 

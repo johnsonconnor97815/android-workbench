@@ -17,6 +17,10 @@
 
 调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。内置静态环境安装器要求 Linux x86_64 和 Python 3.12+；使用全部能力时建议以 Python 3.12+ 初始化项目。设备操作另外需要 ADB；刷机和 root 需要 `fastboot` 和已解锁 bootloader；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。
 
+刷机、安装或重装 Root 和部分设备模式切换需要有人在手机旁边，按提示按键、点屏幕或授权。流程开始前会提醒并说明预计的人工步骤；到了必须人工完成的步骤，等待用户操作并验证后再继续。已有 Root 授权记录到共享设备状态，普通 Root 操作和预检不重复提醒；记录失效或命令失败后再核验，确需人工授权时才提示。没人能完成必要人工步骤时，可以先研究、下载和校验文件、演练命令。具体步骤见[设备管理说明](skills/android-workbench/components/device-manager/README.md#operator-presence-and-manual-steps)。
+
+普通预检只读取状态，需要验证 Root 权限时才加 `--check-root`。手机详细信息和 Root 状态分别持久保存、分别标记失效；普通检查复用授权时保留原验证时间。
+
 在本仓库目录执行，分析项目可以放在任意位置：
 
 ```bash

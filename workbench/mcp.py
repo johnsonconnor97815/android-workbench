@@ -110,7 +110,7 @@ DESCRIPTIONS = {
     "evidence_apply_retention": "Apply the configured evidence retention policy now. Referenced and indexed artifacts are preserved.",
     "devices_manual_acquire": "Request a manual handover; only handed_over=true means the device has been released.",
     "devices_list": "List registered devices; project_occupied and occupying_projects identify active project use or a completed manual handover.",
-    "devices_state": "Inspect one device, including project assignment, active or queued project use, and the latest successful device.info cache. Run device.info to refresh the cached phone condition.",
+    "devices_state": "Inspect project use, durable last_device_info and device_status, caller-specific root access, age, and invalidation. Ordinary device_manager.preflight reads passive facts and can reuse a matching grant; add --check-root only to verify privileges (may prompt on the phone). Use device.info to refresh general phone information.",
     "devices_discover": "List currently visible ADB and fastboot connections without requiring an analysis project.",
     "devices_register": "Register a visible ADB or fastboot serial as a shared managed device; device registrations are shared, not project-local.",
     "devices_project_assign": "Reserve a registered device for one registered project; other projects cannot queue device tasks except recovery.",

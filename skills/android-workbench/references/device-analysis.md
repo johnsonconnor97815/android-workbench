@@ -23,6 +23,12 @@
 
 `device.info` 是单独的只读操作，采集启动代次、型号/系统/ABI 属性、屏幕分辨率、内存、数据分区容量、系统版本、网络状态、Wi‑Fi 状态和 Google Play 登录推断。存储值来自 `df -k /data`，同时保留实际返回的 filesystem 与 mount；部分 Magisk/ROM 组合可能返回镜像挂载路径，不能把它改写成 `/data`。网络部分只读系统状态，不发起外网连通性探测；`internet_reachable` 保持 `null` 且 `internet_probe_performed` 为 `false`。Google Play 登录由 Play 包已安装且存在 Google 账户推断，结果不包含账号名、邮箱或其他账号标识。运行时实验开始前先保存这份证据，便于报告复现；它不能证明 App 行为，语义结论仍要回到截图、日志、文件或状态证据。
 
+`devices_state` / `devices_list` 的 `device_status` 持久保存最近的受管预检：手机模式、系统、当前启动槽、开机标识、ADB 授权、电量、存储、Frida 进程和 `root_access`。后者记录 Root 检查结果、执行身份 `caller_uid`、`su_path`、`su_version` 和检查时间。`stale:false` 且 `root_access.status:granted` 表示最近验证过该身份可用 Root，普通操作不用再提醒授权；手机仍会检查当前权限，缓存不能代替命令结果，也不能证明授权永久有效。
+
+普通 `device_manager.preflight` 不请求 Root 权限，只读取执行身份及 `su` 工具的路径、版本。已有有效授权且开机标识、系统、执行身份、工具路径和版本都相同，才复用原结果，并标记 `cached:true`；原验证时间 `checked_at` 和任务 `verified_job` 不会被这次普通检查刷新。没有可复用记录时显示 `not_checked`。任务确需验证 Root 时加 `--check-root`，这才会执行可能触发手机授权的检查。`su_version` 是命令工具报告的版本，不能当作管理 App 的版本或永久授权政策。
+
+刷机、重新 Root、模式检查中的重启、人工接管、已经启动的 Frida 安装失败或未确认的预检会让旧记录失效；预检或 `device.info` 发现开机标识/系统变更时，也会让另一份旧记录失效。`device_status` 和 `last_device_info` 都保留时间与 `stale`；刷新预检不能让旧手机详细信息恢复有效，应分别用 `preflight` 和 `device.info` 刷新。记录绑定登记的手机，位于共享服务的 SQLite 数据库，跨 Session 和服务重启保留；不会因旧任务证据清理而丢失。没有预检记录时返回 `null`，需提交 `device_manager.preflight`，不能凭型号或旧研究档案认定已授权。
+
 检查点示例：
 
 ```json

@@ -366,6 +366,59 @@ class SchedulerTest(unittest.TestCase):
         self.assertFalse(state["project_occupied"])
         self.assertEqual(state["occupying_projects"], [])
 
+    def test_preflight_root_access_is_shared_persistent_and_invalidated_on_handover(self):
+        fake_adb = self.root / "preflight-adb"
+        fake_adb.write_text(
+            "#!" + sys.executable + "\nimport sys\na=sys.argv[3:]\n"
+            "props={'ro.build.version.release':'15','ro.product.model':'Test Phone',"
+            "'ro.product.device':'fixture','ro.build.fingerprint':'build-1'}\n"
+            "if a==['get-state']:print('device')\n"
+            "elif a[:2]==['shell','getprop']:print(props.get(a[2],''))\n"
+            "elif a==['shell','id -u']:print('2000')\n"
+            "elif a==['shell','command -v su']:print('/system/bin/su')\n"
+            "elif a==['shell','su -v']:print('30.7:MAGISKSU')\n"
+            "elif a==['shell','su -c id']:\n"
+            " with open(__file__+'.root-requests','a') as log:log.write('root\\n')\n"
+            " print('uid=0(root) gid=0(root)')\n"
+            "elif a==['shell','cat /proc/sys/kernel/random/boot_id']:print('boot-1')\n"
+        )
+        fake_adb.chmod(0o755)
+        client = Client(self.root / "unregistered-project", self.state, "root-state")
+        args = ["preflight", "--serial", "fake-one", "--adb", str(fake_adb)]
+        job = client.submit(operation="device_manager.preflight", device="one",
+                            args=args)
+        self.assertEqual(client.wait(job["id"], 8)["state"], "succeeded")
+        self.assertEqual(self.b.call("devices.state", {"device": "one"})["device_status"]["root_access"]["status"], "not_checked")
+        requests = Path(str(fake_adb) + ".root-requests")
+        self.assertFalse(requests.exists())
+        job = client.submit(operation="device_manager.preflight", device="one",
+                            args=[*args, "--check-root"])
+        done = client.wait(job["id"], 8)
+        self.assertEqual(done["state"], "succeeded", done)
+        data = self.b.call("devices.state", {"device": "one"})["device_status"]
+        self.assertEqual(data["root_access"]["status"], "granted")
+        self.assertEqual(data["root_access"]["caller_uid"], 2000)
+        self.assertEqual(data["observations"]["adb_authorization"], "authorized")
+        passive = client.submit(operation="device_manager.preflight", device="one", args=args)
+        self.assertEqual(client.wait(passive["id"], 8)["state"], "succeeded")
+        cached = self.b.call("devices.state", {"device": "one"})["device_status"]["root_access"]
+        self.assertEqual(cached["status"], "granted")
+        self.assertEqual(cached["checked_at"], data["root_access"]["checked_at"])
+        self.assertEqual(cached["verified_job"], job["id"])
+        self.assertTrue(cached["cached"])
+        self.assertEqual(requests.read_text(), "root\n")
+        notice = Path(done["directory"]) / "stderr.log"
+        self.assertNotIn("Someone must stay beside", notice.read_text())
+        self.proc.kill()
+        self.proc.wait()
+        self.proc = self.start_service()
+        state = self.a.call("devices.state", {"device": "one"})
+        self.assertEqual(state["device_status"]["job"], passive["id"])
+        self.assertFalse(state["device_status"]["stale"])
+        handover = self.a.call("devices.manual_acquire", {"device": "one"})
+        self.assertTrue(handover["handed_over"])
+        self.assertTrue(self.a.call("devices.state", {"device": "one"})["device_status"]["stale"])
+
     def test_device_project_assignment_blocks_other_projects(self):
         other_project = self.root / "assigned-other-project"
         other_project.mkdir()
@@ -830,6 +883,11 @@ class SchedulerTest(unittest.TestCase):
         self.register_script("broken", "raise RuntimeError('interrupted')\n", serial=0)
         failed = self.a.submit(operation="broken", device="one", args=["fake-one"])
         self.assertFalse(self.a.wait(failed["id"], 8)["result"]["cleanup_ok"])
+        self.register_script("device_manager.preflight", "print('preflight')\n", serial=0, readonly=True)
+        preflight = self.a.submit(operation="device_manager.preflight", device="one", args=["fake-one"])
+        time.sleep(0.1)
+        self.assertEqual(self.a.call("jobs.status", {"id": preflight["id"]})["state"], "queued")
+        self.assertFalse(any(event["kind"] == "started" for event in self.events(preflight)))
         code = "import json,pathlib,sys\nout=pathlib.Path(sys.argv[2]);out.mkdir();(out/'result.json').write_text(json.dumps({'pass':True}))\n"
         self.register_script(
             "repair",
@@ -858,6 +916,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertFalse(
             any(x["key"] == "device:one" for x in self.a.call("resources.state"))
         )
+        self.assertEqual(self.a.wait(preflight["id"], 8)["state"], "succeeded")
 
     def test_device_recovery_releases_dead_adb_exclusive_service_lock(self):
         self.register_script(

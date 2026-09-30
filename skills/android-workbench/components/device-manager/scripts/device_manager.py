@@ -70,6 +70,22 @@ FACTORY_PARTITION_DELETE_ALLOWLIST = {
 }
 FACTORY_DYNAMIC_PARTITION_REPAIR_ORDER = ("product", "odm", "system_ext")
 OUTPUT_LIMIT = 4000
+OPERATOR_PRESENCE_COMMANDS = {
+    "bootloader-state",
+    "partition-repair",
+    "flash",
+    "flash-factory",
+    "install-rom",
+    "root",
+    "root-prepare",
+}
+OPERATOR_NOTICE = (
+    "Someone must stay beside the phone during this operation. Depending on the "
+    "device and stage, manual button presses, recovery menu selections, setup, "
+    "USB debugging authorization, or Magisk installation actions may be required. "
+    "Follow the device-specific instructions at each manual step and verify the "
+    "required state before continuing."
+)
 PARTITION_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 REMOTE_PATH_PATTERN = re.compile(r"^/[A-Za-z0-9_./-]+$")
 RESEARCH_REQUIRED_FIELDS = (
@@ -267,6 +283,8 @@ def detect_mode(
     )
     if transport in {"fastboot", "fastbootd"}:
         return transport
+    if "unauthorized" in command_output(adb_state).lower():
+        return "unauthorized"
     return "unknown"
 
 
@@ -683,6 +701,7 @@ def validate_research(document: dict) -> dict:
         "build": document["build"],
         "bootloader": document["bootloader"],
         "method": document["method"],
+        **({"root_partition": document["root_partition"]} if "root_partition" in document else {}),
         "decisions": decisions,
         "sources": document["sources"],
         "pitfalls": document["pitfalls"],
@@ -747,8 +766,7 @@ def validate_factory_flash_decisions(research: dict, *, no_reboot: bool) -> None
 
 def validate_root_decisions(research: dict, *, no_reboot: bool) -> None:
     decisions = research["decisions"]
-    if decisions["root"] != "yes":
-        raise ValueError("research dossier chose not to root this device")
+    validate_root_intent(research)
     if research["bootloader"] != "unlocked":
         raise ValueError("root requires an unlocked bootloader")
     if decisions["reboot"] == "no" and not no_reboot:
@@ -760,6 +778,12 @@ def validate_root_decisions(research: dict, *, no_reboot: bool) -> None:
 def validate_root_intent(research: dict) -> None:
     if research["decisions"]["root"] != "yes":
         raise ValueError("research dossier chose not to root this device")
+    if research.get("root_partition") != "boot":
+        raise ValueError(
+            "root preparation, collection and flashing support only boot; "
+            "research must explicitly record root_partition: boot. "
+            "init_boot and recovery root flows are not supported"
+        )
 
 
 def validate_frida_decisions(research: dict) -> None:
@@ -1512,9 +1536,12 @@ def root_commands(
     fastboot_serial: str,
     patched_boot: Path,
     *,
+    partition: str,
     slot: str,
     reboot: bool,
 ) -> list[list[str]]:
+    if partition != "boot":
+        raise ValueError("root flashing supports only the researched boot partition")
     if slot == "both":
         partitions = ["boot_a", "boot_b"]
     elif slot in {"a", "b"}:
@@ -1574,6 +1601,59 @@ def install_frida_commands(
     return commands
 
 
+def inspect_root_access(
+    adb_path: str, serial: str, *, timeout: float, records: list[dict], check_root: bool = False
+) -> dict:
+    access = {"status": "unknown", "caller_uid": None, "checked_at": utc()}
+    caller = run_command(
+        adb_command(adb_path, serial, "shell", "id -u"),
+        label="root caller uid", timeout=min(timeout, 15), check=False, records=records,
+    )
+    if caller.get("returncode") == 0 and caller.get("stdout", "").strip().isdigit():
+        access["caller_uid"] = int(caller["stdout"].strip())
+    binary = run_command(
+        adb_command(adb_path, serial, "shell", "command -v su"),
+        label="su path", timeout=min(timeout, 15), check=False, records=records,
+    )
+    access["su_path"] = binary.get("stdout", "").strip() or None
+    if binary.get("returncode") == 1 and not access["su_path"] and not binary.get("stderr", "").strip():
+        access.update(status="su_missing", reason="su was not found in the caller's PATH")
+        return access
+    if binary.get("returncode") != 0:
+        access["reason"] = command_output(binary) or "su presence check failed"
+        return access
+    try:
+        version = run_command(
+            adb_command(adb_path, serial, "shell", "su -v"),
+            label="su version", timeout=min(timeout, 15), check=False, records=records,
+        )
+    except RuntimeError:
+        if not records or records[-1].get("name") != "su version" or records[-1].get("returncode") != 124:
+            raise
+        version = records[-1]
+    access["su_version"] = (version.get("stdout", "").strip() or None) if version.get("returncode") == 0 else None
+    if not check_root:
+        access.update(status="not_checked", reason="root access was not requested")
+        return access
+    try:
+        record = run_command(
+            adb_command(adb_path, serial, "shell", device_shell_command("id", root=True)),
+            label="root id", timeout=min(timeout, 15), check=False, records=records,
+        )
+    except RuntimeError:
+        if not records or records[-1].get("name") != "root id" or records[-1].get("returncode") != 124:
+            raise
+        access["reason"] = "root check timed out; authorization or transport state is unconfirmed"
+        return access
+    if record.get("returncode") == 0 and re.search(r"\buid=0\b", record.get("stdout", "")):
+        access["status"] = "granted"
+    else:
+        detail = command_output(record)
+        access["status"] = "denied" if "permission denied" in detail.lower() else "unknown"
+        access["reason"] = detail or "root command did not confirm uid=0"
+    return access
+
+
 def preflight(
     *,
     adb_path: str,
@@ -1582,6 +1662,7 @@ def preflight(
     fastboot_serial: str,
     timeout: float,
     fastboot_mode: bool = False,
+    check_root: bool = False,
 ) -> dict:
     records: list[dict] = []
     result = {
@@ -1620,6 +1701,7 @@ def preflight(
         mode = "fastboot"
     result["mode"] = mode
     if mode == "android":
+        result["observations"]["adb_authorization"] = "authorized"
         properties = {
             "android": "ro.build.version.release",
             "api": "ro.build.version.sdk",
@@ -1628,6 +1710,7 @@ def preflight(
             "abis": "ro.product.cpu.abilist",
             "slot": "ro.boot.slot_suffix",
             "build_fingerprint": "ro.build.fingerprint",
+            "bootloader_locked": "ro.boot.flash.locked",
         }
         for name, prop in properties.items():
             record = run_command(
@@ -1642,23 +1725,19 @@ def preflight(
                 result["observations"][name] = value
             else:
                 result["unavailable"][name] = "property empty"
-        root_record = run_command(
-            adb_command(
-                adb_path, serial, "shell", device_shell_command("id", root=True)
-            ),
-            label="root id",
-            timeout=min(timeout, 15),
-            check=False,
-            records=records,
+        boot = run_command(
+            adb_command(adb_path, serial, "shell", "cat /proc/sys/kernel/random/boot_id"),
+            label="boot id", timeout=min(timeout, 15), check=False, records=records,
         )
-        if "uid=0" in root_record.get("stdout", ""):
+        if boot.get("returncode") == 0 and boot.get("stdout", "").strip():
+            result["observations"]["boot_id"] = boot["stdout"].strip()
+        result["root_access"] = inspect_root_access(
+            adb_path, serial, timeout=timeout, records=records, check_root=check_root,
+        )
+        if result["root_access"]["status"] == "granted":
             result["observations"]["root"] = "available"
         else:
-            result["unavailable"]["root"] = (
-                root_record.get("stderr", "").strip()
-                or root_record.get("stdout", "").strip()
-                or "su unavailable"
-            )
+            result["unavailable"]["root"] = result["root_access"]["reason"]
         frida_record = run_command(
             adb_command(adb_path, serial, "shell", "pidof", "frida-server"),
             label="frida-server pid",
@@ -1709,6 +1788,9 @@ def preflight(
             else:
                 result["unavailable"][f"fastboot_{variable.replace('-', '_')}"] = "empty"
     else:
+        result["observations"]["adb_authorization"] = (
+            "unauthorized" if mode == "unauthorized" else "unknown"
+        )
         result["unavailable"]["mode"] = "device not online in Android or fastboot"
     if fastboot_mode and mode == "fastboot":
         result["inspected_mode"] = "fastboot"
@@ -1730,7 +1812,7 @@ def preflight(
         required = {"fastboot_product", "fastboot_current_slot"}
     else:
         required = set()
-    result["status"] = "complete" if required.issubset(result["observations"]) else "incomplete"
+    result["status"] = "complete" if required and required.issubset(result["observations"]) else "incomplete"
     return result
 
 
@@ -1947,10 +2029,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, parents=[before_subcommand])
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    subparsers.add_parser(
+    preflight_parser = subparsers.add_parser(
         "preflight",
         parents=[after_subcommand],
         help="inspect Android, fastboot, root, and Frida state",
+    )
+    preflight_parser.add_argument(
+        "--check-root", action="store_true",
+        help="verify root with su -c id; this may show a phone-side authorization prompt",
     )
 
     bootloader_parser = subparsers.add_parser(
@@ -2161,6 +2247,10 @@ def main() -> int:
         "command": arguments.command,
         "steps": records,
     }
+    if arguments.command in OPERATOR_PRESENCE_COMMANDS:
+        result["operator_notice"] = OPERATOR_NOTICE
+        prefix = "For a real run: " if getattr(arguments, "dry_run", False) else ""
+        print(prefix + OPERATOR_NOTICE, file=sys.stderr, flush=True)
     try:
         if arguments.command == "preflight":
             result.update(
@@ -2170,8 +2260,9 @@ def main() -> int:
                     serial=arguments.serial,
                     fastboot_serial=fastboot_serial,
                     timeout=arguments.timeout,
+                    check_root=arguments.check_root,
                 )
-                )
+            )
         elif arguments.command == "partition-inspect":
             partitions = list(
                 arguments.partition or DEFAULT_PARTITION_INSPECT_PARTITIONS
@@ -2551,7 +2642,8 @@ def main() -> int:
                         records=records,
                     )
                 result["next_action"] = (
-                    "Let the phone boot to the setup wizard, complete setup, enable "
+                    "Stay beside the phone. Let it boot to the setup wizard, "
+                    "complete setup, enable "
                     "USB debugging, and authorize this computer before running ADB "
                     "commands."
                 )
@@ -2599,7 +2691,7 @@ def main() -> int:
                     records=records,
                 )
                 result["next_action"] = (
-                    "On the phone, use the fastboot menu to choose Recovery mode. "
+                    "Stay beside the phone. Use the fastboot menu to choose Recovery mode. "
                     "Then choose Factory reset, followed by Format data / factory "
                     "reset. Return to the main menu, choose Apply update, then "
                     "Apply from ADB. Run the install-rom sideload stage when the "
@@ -2673,7 +2765,8 @@ def main() -> int:
             )
             result["remote_boot"] = arguments.remote_boot
             result["next_action"] = (
-                "Open Magisk, choose Install, then Select and Patch a File, and "
+                "Stay beside the phone. Open Magisk, choose Install, then "
+                "Select and Patch a File, and "
                 "select boot.img in Download. Run root-collect after Magisk writes "
                 "magisk_patched_*.img."
             )
@@ -2823,6 +2916,7 @@ def main() -> int:
                 arguments.fastboot,
                 fastboot_serial,
                 patched_boot,
+                partition=research["root_partition"],
                 slot=slot,
                 reboot=not arguments.no_reboot,
             )

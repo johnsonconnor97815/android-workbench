@@ -7,7 +7,7 @@
 | Cost | three attribution corrections; two of them were written down as findings before being refuted |
 | Outcome | the drift is attributed to the sample's own environment check, and the operational rule that falls out of it ("configure root hiding, then re-baseline") |
 | Evidence | `references/evidence-summary.md` §The capability matrix (the pid-drift section and the frida-dexdump section); `references/evidence-summary.md` §The capability matrix (the root-hiding layer) |
-| Related | `SKILL.md` §Stop conditions (last bullet); `pitfalls.md` P9, P18; `references/detection-and-anti-analysis.md` |
+| Related | [component guide](../../README.md) §Stop conditions (last bullet); `pitfalls.md` P9, P18; `references/detection-and-anti-analysis.md` |
 
 ## Assertions and grade
 | # | Assertion | Grade | Evidence |
@@ -58,7 +58,7 @@
 - **Refute the cheapest alternative first, with a control that removes it entirely.** Stopping the
   instrumentation is one command; it eliminated the leading hypothesis in a single run.
 - **When a measurement disagrees with a recorded conclusion, reopen the conclusion.** That rule
-  (`SKILL.md` §Stop conditions) was applied twice to this pass's own record, and both times the
+  ([component guide](../../README.md) §Stop conditions) was applied twice to this pass's own record, and both times the
   record was the thing in the wrong.
 - **Record the device's framework state next to any dynamic result.** This device could restart
   the target without the target being involved.
