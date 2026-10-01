@@ -58,7 +58,9 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
   pull --serial YOUR_ADB_SERIAL --package com.example.app --output /path/to/analysis/apps/export
 ```
 
-`operations` 列出 112 个内置脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、官方整包回刷、刷分区、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 112 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+`operations` 列出 116 个内置脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、官方整包回刷、刷分区、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 116 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+
+Google Play 应用通过 `apk.play_install` 安装，支持紧凑详情卡。未知布局输出 `needs_llm` 和证据，由当前 LLM 离线复现、修复通用解析规则并受管重试；账号、支付或设备政策门槛才交给用户。安装后使用 `apk.pull` 导出全部已安装 split。见 [Google Play 安装与 LLM 修复](skills/android-workbench/components/play-install/README.md)。
 
 初始化后，可以用静态环境组件安装工具，例如：
 
