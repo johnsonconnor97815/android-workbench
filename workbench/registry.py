@@ -482,6 +482,9 @@ def normalize(request, config, directory):
         if entry.get("uses_mcp"):
             spec["resources"].append(resource("analysis:" + str(root)))
         spec["readonly"] = bool(entry.get("readonly"))
+        from .results import readonly_package_query
+
+        spec["readonly"] = spec["readonly"] or readonly_package_query(spec)
         mode = "write" if entry.get("mutates_environment") else "read"
         for location in project.get("environments", []):
             spec["resources"].append(resource(path_resource(root / location), mode))
@@ -536,6 +539,40 @@ def normalize(request, config, directory):
             ):
                 raise WorkbenchError(field + " must be an array of --flags")
         input_flags.update(entry.get("input_flags", []))
+        if entry.get("analysis_plan"):
+            # Plans reference samples and prior evidence outside the plan file.
+            # Reserve those exact files too, including newly submitted reviews.
+            documents = [
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).resolve()
+                for i, arg in enumerate(args)
+                if arg.split("=", 1)[0] in {"--plan", "--evidence", "--recon"}
+                and ("=" in arg or i + 1 < len(args))
+            ]
+            references = set()
+            for document in documents:
+                if not document.is_file() or document.suffix != ".json":
+                    continue
+                try:
+                    data = json.loads(document.read_text())
+                except (ValueError, UnicodeError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                records = [*data.get("samples", []), *data.get("recon", {}).get("samples", [])]
+                for step in data.get("steps", []):
+                    records.extend(step.get("evidence", []))
+                records.extend(data.get("observations", []))
+                for claim in data.get("claims", []):
+                    records.extend({"path": p} for p in claim.get("evidence", []))
+                for record in records:
+                    if isinstance(record, dict) and isinstance(record.get("path"), str):
+                        references.add((document.parent / record["path"]).resolve())
+            if len(references) > 256:
+                raise WorkbenchError("Analysis plan has too many evidence paths")
+            for path in references:
+                spec["resources"].append(resource(path_resource(path), "read"))
+                if path.is_file():
+                    spec["input_fingerprints"][str(path)] = file_hash(path)
         directory_flags = {
             "--workspace",
             "--cache-dir",

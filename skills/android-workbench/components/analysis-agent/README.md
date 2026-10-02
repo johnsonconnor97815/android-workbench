@@ -6,6 +6,8 @@
 
 这个组件吸收 ReArk 的非 HarmonyOS 交互模式，把它变成可排队、可审计的 Workbench 操作：
 
+- 样本识别：跨 base/split 保存哈希、DEX/原生库、框架和加固候选，明确结构线索不能证明完整覆盖。
+- 分析计划：保存样本确认、结构识别、静态取证、按任务要求加入的运行验证、审阅和报告；检查阶段顺序和变化证据。
 - 请求路由：把问题分成轻量聊天、包概览、聚焦静态分析、静态快路径、设备运行和通用静态分析，并返回上下文预算。
 - 包概览：读取 APK/AAB 的 ZIP 结构、DEX、原生库、资源、签名入口和哈希。
 - 文件列表：按名称过滤包内条目，返回大小、压缩大小和 CRC32。
@@ -92,7 +94,11 @@ python3 "$COMPONENT_DIR/scripts/analysis.py" exec \
 
 | Operation | 用途 |
 | --- | --- |
-| `analysis.route` | 分类请求并返回上下文预算 |
+| `analysis.route` | 结合问题和 `--recon` 样本事实分类请求 |
+| `analysis.recon` | 跨 base/split 的结构识别与适用方法 |
+| `analysis.plan` | 创建可保存的分析阶段清单 |
+| `analysis.plan_update` | 记录阶段证据、完成状态或阻塞原因 |
+| `analysis.plan_check` | 检查必需阶段、审阅、报告及变化文件 |
 | `analysis.overview` | APK/AAB 包级概览 |
 | `analysis.files` | 包内文件导航 |
 | `analysis.entry_points` | 启动入口提取 |
@@ -141,3 +147,5 @@ python3 "$COMPONENT_DIR/scripts/analysis.py" exec \
 3. 结论必须绑定到语义 UI、日志、文件或状态证据。
 
 详见 [请求路由与证据契约](references/agent-routing.md)。
+
+新 App 的通用流程和审阅、运行证据格式见 [样本识别与完成检查](../../references/sample-analysis.md)。`analysis.plan_check` 未完成时退出码为 `2`；阶段完成检查不会自动解释代码或批准设备操作。

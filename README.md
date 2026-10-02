@@ -58,7 +58,7 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
   pull --serial YOUR_ADB_SERIAL --package com.example.app --output /path/to/analysis/apps/export
 ```
 
-`operations` 列出 112 个内置脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、官方整包回刷、刷分区、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 112 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+`operations` 列出 116 个内置脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖样本识别、分析阶段与完成检查、请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、官方整包回刷、刷分区、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 116 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
 
 初始化后，可以用静态环境组件安装工具，例如：
 
@@ -132,6 +132,21 @@ python3 scripts/upgrade_runtime.py --project /path/to/analysis
 ```
 
 更新本地插件时，将验证过的 ZIP 解压到临时目录，备份并整体替换插件市场登记的源目录，再执行 `codex plugin add android-workbench@<市场名称>`。不要直接修改插件缓存。重复发布相同版本号时，安装器可能复用旧缓存，应先确认安装结果的版本与内容；项目环境里的旧独立 Skill 可以备份到 Skill 搜索目录外。新会话才会加载更新后的入口。
+
+每次内容变化使用新版本号。发布包的 `release-manifest.json` 保存版本和每个文件的 SHA-256，安装后执行下面的内容校验；它同时检查旧文件残留、源码与缓存差异，以及运行中服务的指纹，不能只看版本号。
+
+```bash
+python3 scripts/check_installation.py --installed /path/to/installed/plugin --runtime
+```
+
+新 App 先运行 `analysis.recon`，再把结果交给 `analysis.route --recon`；通过 `analysis.plan`、`analysis.plan_update` 和 `analysis.plan_check` 保存阶段和完成证据。具体步骤和审阅记录格式见 [样本识别与完成检查](skills/android-workbench/references/sample-analysis.md)。权限采集任务的结果会保留 `analysis_status.collection_only` / `review_required`，不能把采集成功作为最终审阅通过。
+
+下面的验收通过共享队列覆盖结构识别、流程选择、证据、审阅、报告及完成检查。默认生成的包仅用于结构测试，不能安装到手机；提供实际 APK 和已知断言时另外验证权限与反编译采集。两种验收均不证明真机或 Hook 兼容性。
+
+```bash
+python3 scripts/analysis_acceptance.py --project /path/to/analysis --output-dir /path/to/analysis/evidence/acceptance-new
+python3 scripts/analysis_acceptance.py --project /path/to/analysis --output-dir /path/to/analysis/evidence/apk-acceptance-new --apk /path/to/fixture.apk --expected-permission android.permission.CAMERA --expected-code checkSelfPermission
+```
 
 ZIP 包包含相同源码、入口 Skill、组件与测试，可解压到其他目录使用。`pyproject.toml` 提供可选的调度器 Python 包；完整插件交付使用仓库或 ZIP，而不是仅安装调度器 wheel。
 

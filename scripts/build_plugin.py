@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -131,6 +132,15 @@ def validate():
     return paths
 
 
+def release_manifest(paths):
+    files = {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
+    return {
+        "version": json.loads((ROOT / ".claude-plugin/plugin.json").read_text())["version"],
+        "fingerprint": hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest(),
+        "files": files,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -156,6 +166,10 @@ def main():
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (path.stat().st_mode & 0xFFFF) << 16
             archive.writestr(info, path.read_bytes())
+        info = zipfile.ZipInfo("android-workbench/release-manifest.json", (2026, 1, 1, 0, 0, 0))
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o100644 << 16
+        archive.writestr(info, json.dumps(release_manifest(paths), sort_keys=True, indent=2) + "\n")
     print(args.output.resolve())
 
 

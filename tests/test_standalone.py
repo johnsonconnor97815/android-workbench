@@ -597,7 +597,7 @@ class StandaloneInstallTest(unittest.TestCase):
                 )
                 manifest = json.loads((project / "workbench.project.json").read_text())
                 self.assertEqual(manifest["workbench_root"], str(moved))
-                self.assertEqual(len(manifest["operations"]), 112)
+                self.assertEqual(len(manifest["operations"]), 116)
                 self.assertNotIn(str(ROOT), json.dumps(manifest))
                 self.assertFalse((project / "android-workbench").exists())
                 self.assertFalse((project / ".venv").exists())

@@ -390,6 +390,7 @@ class Runner:
         self.recovered_resources = []
         self.reconciled_jobs = []
         self.last_output_check = time.monotonic()
+        self.analysis_status = {}
 
     def call(self, method, **values):
         return rpc(
@@ -643,13 +644,13 @@ class Runner:
                 result = folder / "result.json"
                 outcome = json.loads(result.read_text()) if result.is_file() else {}
                 if not outcome.get("cleanup_ok") and not old.get("readonly", False):
-                    from .results import verify_native_probe_recovery
+                    from .results import verify_native_probe_recovery, verify_package_query_recovery
 
-                    if old[
+                    if (old[
                         "operation"
                     ] == "frida.probe_native" and verify_native_probe_recovery(
                         self, folder, old
-                    ):
+                    )) or verify_package_query_recovery(self, folder, old):
                         self.recovered_resources.extend(old.get("resources", []))
                         self.reconciled_jobs.append(folder.name)
                     else:
@@ -861,6 +862,10 @@ class Runner:
                 data = json.loads(record.read_text())
                 if not isinstance(data, dict):
                     raise ValueError("Result must be an object")
+                self.analysis_status = {
+                    name: data[name] for name in ("collection_only", "review_required")
+                    if isinstance(data.get(name), bool)
+                }
             except (ValueError, OSError):
                 self.uncertain = True
                 raise WorkbenchError("Adapter result record cannot be verified")
@@ -1018,6 +1023,7 @@ class Runner:
             "reconciled_jobs": self.reconciled_jobs,
             "recovered_resources": self.recovered_resources,
             "resource_usage": self.resource_usage(),
+            **({"analysis_status": self.analysis_status} if self.analysis_status else {}),
         }
         try:
             self.publish(result)

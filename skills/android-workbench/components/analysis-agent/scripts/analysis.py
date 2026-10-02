@@ -45,6 +45,12 @@ import urllib.request
 from pathlib import Path
 from collections import Counter
 
+# Sibling helpers are included in the same pinned component snapshot.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from analysis_workflow import (
+    reconnaissance, load_recon, create_plan, update_plan, check_plan,
+)
+
 
 VERSION = "0.1.0"
 SCHEMA_VERSION = "1"
@@ -1729,7 +1735,7 @@ def _affirmative_device_followup(question: str, history: list[dict]) -> bool:
     return latest is not None and _contains_any(str(latest.get("text", "")).casefold(), terms)
 
 
-def route_request(question: str, has_package: bool, history: list[dict]) -> dict:
+def route_request(question: str, has_package: bool, history: list[dict], recon: dict | None = None) -> dict:
     folded = question.strip().casefold()
     meta_review = _has_meta_review_intent(folded)
     positive_request = re.sub(
@@ -1748,7 +1754,7 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
     ))
     runtime_action = bool(re.search(
         r"(?:^|[，,。.;；:\n])\s*(?:(?:请|帮我|先|再|然后|现在|继续|只|please|then|now|just)\s*)*"
-        r"(?:安装|启动|截图|截屏|点击|滑动|install\b|launch\b|screenshot\b|tap\b|swipe\b"
+        r"(?:安装|启动|截图|截屏|截当前|截页面|点击|滑动|install\b|launch\b|screenshot\b|capture (?:the )?screen\b|tap\b|swipe\b"
         r"|(?:读取|采集|查看|观察).{0,12}(?:设备|手机|真机|日志)"
         r"|(?:在|到)(?:设备|手机|真机).{0,6}(?:运行|安装|验证)"
         r"|run on (?:the |a )?(?:device|phone))",
@@ -2116,6 +2122,54 @@ def route_request(question: str, has_package: bool, history: list[dict]) -> dict
                 "local_reply": "当前没有加载分析包。",
             }
         )
+    permission_task = bool(re.search(r"权限|permission", positive_request))
+    privacy_task = bool(re.search(r"隐私|收集|上传|泄露|privacy|exfiltrat|collect.{0,20}data|upload.{0,20}data", positive_request))
+    result["task_type"] = (
+        "runtime" if mode == "device_runtime" else "patch" if patch_intent
+        else "permissions" if permission_task else "privacy" if privacy_task else mode
+    )
+    result["specialist_required"] = False
+    if (permission_task or privacy_task) and mode != "device_runtime" and not patch_intent:
+        result["suggested_operations"] = [
+            "analysis.recon", "static.permission_audit", "analysis.manifest",
+            "analysis.decompile", "analysis.code", "apkrev.find_refs",
+        ]
+        result["suggested_references"].append("components/permission-audit/README.md")
+        result.setdefault("required_contract", []).extend([
+            "Separate declared permissions, actual code use, and assessed impact.",
+            "Trace collection, transformations and sinks before claiming data upload.",
+            "A collector result requires contextual review; no static hit is not proof of non-use.",
+        ])
+    if mode == "static_fast_path" and not patch_intent:
+        result["suggested_operations"] = [op for op in result["suggested_operations"] if op not in {"apkrev.dex_method_patch", "apkrev.repack"}]
+    if mode == "device_runtime":
+        result["suggested_operations"] = ["device.info", "device.scene", "device.screenshot", "device.observe"]
+        if re.search(r"安装|\binstall\b", positive_request):
+            result["suggested_operations"].insert(1, "apkrev.install_test")
+        if re.search(r"抓包|代理|\bproxy\b", positive_request):
+            result["suggested_operations"].append("apkrev.usb_net_proxy")
+        if re.search(r"\b(?:hook|frida)\b|跟踪函数", positive_request):
+            result["suggested_operations"].append("apkrev.run_probe")
+    layers = set((recon or {}).get("layers", []))
+    framework_topic = bool(re.search(r"flutter|unity|react.native|hermes|dart|il2cpp", positive_request))
+    protection_topic = bool(re.search(r"加固|脱壳|代码虚拟化|\b(?:packer|packed|unpack)\b", positive_request))
+    if framework_topic or layers & {"flutter", "unity", "react_native"}:
+        result["specialist_required"] = True
+        result["suggested_references"].append("components/apk-reverse/references/framework-runtimes.md")
+        result.setdefault("required_contract", []).append("Identify the runtime version and owning code layer; JADX alone cannot establish full framework coverage.")
+    if "native" in layers:
+        result["suggested_references"].append("components/apk-reverse/references/native-and-so.md")
+    if protection_topic or (recon or {}).get("protection", {}).get("status") == "suspected":
+        result["specialist_required"] = True
+        result["suggested_references"].append("components/apk-reverse/references/recon.md")
+        result.setdefault("required_contract", []).append("Verify access to real code before drawing code-coverage conclusions; shell feature matches are only leads.")
+    if mode != "lightweight_chat" and has_package:
+        if "analysis.recon" not in result["suggested_operations"]:
+            result["suggested_operations"].insert(0, "analysis.recon")
+        result["suggested_references"].append("references/sample-analysis.md")
+    result["suggested_references"] = list(dict.fromkeys(result["suggested_references"]))
+    if recon is not None:
+        result["sample_layers"] = sorted(layers)
     return result
 
 
@@ -2169,10 +2223,12 @@ def write_output(path: Path | None, value: dict) -> None:
     if path is None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    temporary = path.with_name(path.name + ".tmp-" + str(os.getpid()))
+    temporary.write_text(
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(path)
 
 
 def parse_history(value: str | None) -> list[dict]:
@@ -2199,7 +2255,32 @@ def build_parser() -> argparse.ArgumentParser:
     route.add_argument("--question", required=True)
     route.add_argument("--has-package", action="store_true")
     route.add_argument("--history", help="JSON array of {role,text} messages")
+    route.add_argument("--apk", type=Path, action="append", default=[])
+    route.add_argument("--recon", type=Path, help="Previously saved, hash-verified reconnaissance")
     route.add_argument("--output", type=Path)
+
+    recon = subparsers.add_parser("recon", help="Identify code layers across base and split packages")
+    recon.add_argument("--apk", type=Path, action="append", required=True)
+    recon.add_argument("--aapt2")
+    recon.add_argument("--output", type=Path)
+
+    plan = subparsers.add_parser("plan", help="Create an evidence-backed analysis checklist")
+    plan.add_argument("--question", required=True)
+    plan.add_argument("--apk", type=Path, action="append", default=[])
+    plan.add_argument("--recon", type=Path)
+    plan.add_argument("--output", type=Path, required=True)
+
+    plan_update = subparsers.add_parser("plan-update", help="Record a completed, pending or blocked stage")
+    plan_update.add_argument("--plan", type=Path, required=True)
+    plan_update.add_argument("--step", choices=("static", "runtime", "review", "report"), required=True)
+    plan_update.add_argument("--status", choices=("pending", "blocked", "completed"), required=True)
+    plan_update.add_argument("--evidence", type=Path, action="append", default=[])
+    plan_update.add_argument("--note", required=True)
+    plan_update.add_argument("--output", type=Path)
+
+    plan_check = subparsers.add_parser("plan-check", help="Verify stage completion and unchanged evidence")
+    plan_check.add_argument("--plan", type=Path, required=True)
+    plan_check.add_argument("--output", type=Path)
 
     overview = subparsers.add_parser("overview", help="Summarize an APK or AAB")
     overview.add_argument("--apk", type=Path, required=True)
@@ -2350,11 +2431,30 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if args.command == "route":
+            if args.apk and args.recon:
+                raise ValueError("Use --apk or --recon, not both")
+            recon = load_recon(args.recon) if args.recon else (reconnaissance(args.apk) if args.apk else None)
             result = route_request(
                 args.question,
-                args.has_package,
+                args.has_package or bool(recon and recon["samples"]),
                 parse_history(args.history),
+                recon,
             )
+        elif args.command == "recon":
+            result = reconnaissance(args.apk)
+            result["manifests"] = [aapt2_facts(Path(s["path"]), resolve_tool("aapt2", args.aapt2)) for s in result["samples"]]
+        elif args.command == "plan":
+            if args.output.exists():
+                raise ValueError("Analysis plan already exists; update it or choose a new path")
+            if args.apk and args.recon:
+                raise ValueError("Use --apk or --recon, not both")
+            recon = load_recon(args.recon) if args.recon else reconnaissance(args.apk)
+            result = create_plan(args.question, recon, route_request(args.question, bool(recon["samples"]), [], recon))
+        elif args.command == "plan-update":
+            result = update_plan(json.loads(args.plan.read_text()), args.step, args.status, args.evidence, args.note)
+            write_output(args.plan, result)
+        elif args.command == "plan-check":
+            result = check_plan(json.loads(args.plan.read_text()))
         elif args.command == "code":
             result = {
                 "schema": SCHEMA_VERSION,
@@ -2515,7 +2615,7 @@ def main() -> int:
                 )
         write_output(args.output, result)
         emit(result)
-        return 0
+        return 2 if args.command == "plan-check" and not result["complete"] else 0
     except Exception as exc:
         emit(
             {

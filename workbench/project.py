@@ -333,6 +333,29 @@ def builtin_operations():
         "route": {
             "subcommand": "route",
             "readonly": True,
+            "analysis_plan": True,
+            "input_flags": ["--recon"],
+            "outputs": ["--output"],
+        },
+        "recon": {
+            "subcommand": "recon", "readonly": True, "compute": True,
+            "outputs": ["--output"],
+        },
+        "plan": {
+            "subcommand": "plan", "readonly": True,
+            "analysis_plan": True,
+            "input_flags": ["--recon"], "outputs": ["--output"],
+            "shared_outputs": ["--output"],
+        },
+        "plan_update": {
+            "subcommand": "plan-update", "readonly": False,
+            "analysis_plan": True, "input_flags": ["--evidence"],
+            "outputs": ["--plan", "--output"],
+            "shared_outputs": ["--plan"],
+        },
+        "plan_check": {
+            "subcommand": "plan-check", "readonly": True,
+            "analysis_plan": True, "input_flags": ["--plan"],
             "outputs": ["--output"],
         },
         "overview": {

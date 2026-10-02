@@ -4,12 +4,14 @@ description: 统一组织 Android 环境准备、APK 导出、静态分析、Fri
 license: MIT
 metadata:
   author: johnsonconnor97815
-  version: "0.2.3"
+  version: "0.2.6"
 ---
 
 # Android Workbench
 
 这是 Android 分析插件的唯一入口 Skill。先读取 [共享调度与路由规则](references/workbench-routing.md)，再按任务读取一个必要的模式文档；不要为了普通请求加载全部组件。
+
+新 App 分析先按 [样本识别与完成检查](references/sample-analysis.md) 保存 `analysis.recon`，结合实际样本调用 `analysis.route`，创建 `analysis.plan`。按证据推进静态、按需运行、审阅和报告阶段；交付前执行 `analysis.plan_check`。采集成功不代表审阅或整个分析完成，受阻时保存原因。简单设备观察可不提供 APK。
 
 | 任务 | 读取 |
 | --- | --- |

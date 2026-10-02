@@ -40,3 +40,5 @@
 请求复用某场景时，在截图请求中传入该任务的 `scene`。只有接受该 Hook 环境才能设置 `accept_hooks:true`。场景结束或不满足条件时返回过期/失败，不悄悄另开页面。
 
 用 `jobs_cancel` 请求停止；清理完成才释放。人工操作先用 `devices_manual_acquire`，等 `handed_over:true`；交还用 `devices_manual_release`。`devices_recover` 可核实只读故障与人工交还；未知修改、残留 Hook 或子进程仍需相应恢复步骤，不能把恢复接口当作清空锁。
+
+内置 `apkrev.devsh` 的明确 `sh` / `shell`、`pm path <包名>` 和匹配的 `--serial` 参数组合按只读查询处理；不存在的包仍保留实际失败返回码，但不会被当成未知修改而阻塞手机。附加 shell 命令、重定向、自定义包装器和其他设备命令不适用。旧版本误标的这类查询可用 `devices_recover` 核验恢复；包装器、辅助文件及原快照必须保持一致，旧进程仍存活时不能恢复。

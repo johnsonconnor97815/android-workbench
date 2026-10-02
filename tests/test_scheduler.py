@@ -963,6 +963,30 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(done["state"], "succeeded", done.get("result"))
         self.assertEqual(self.a.call("resources.state"), [])
 
+    def test_missing_package_query_does_not_block_the_device(self):
+        from workbench.project import generate
+
+        manifest = generate(self.project, ROOT, Path(sys.executable))
+        atomic_json(self.project / "workbench.project.json", manifest)
+        adb = self.root / "missing-package-adb"
+        adb.write_text("#!" + sys.executable + "\nraise SystemExit(1)\n")
+        adb.chmod(0o755)
+        config = json.loads((self.state / "config.json").read_text())
+        config["devices"]["one"]["adb"] = str(adb)
+        atomic_json(self.state / "config.json", config)
+        self.proc.terminate()
+        self.proc.wait()
+        self.proc = self.start_service()
+        job = self.a.submit(operation="apkrev.devsh", device="one",
+                            args=["sh", "pm path com.example.fixture", "--serial", "fake-one"])
+        done = self.a.wait(job["id"], 8)
+        self.assertEqual(done["state"], "failed")
+        self.assertTrue(done["result"]["cleanup_ok"])
+        normalized = json.loads((self.state / "jobs" / job["id"] / "normalized.json").read_text())
+        self.assertTrue(normalized["readonly"])
+        self.assertFalse(any(r["status"] == "needs_recovery" for r in self.a.call("resources.state")))
+        self.assertEqual(self.a.wait(self.submit()["id"], 8)["state"], "succeeded")
+
     def test_local_recovery_repairs_declared_shared_resources(self):
         old_code = (
             "import json,pathlib,sys\n"

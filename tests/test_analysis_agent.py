@@ -208,7 +208,7 @@ class AnalysisAgentTest(unittest.TestCase):
         self.assertEqual(result["mode"], "device_runtime")
         self.assertTrue(result["device_runtime_tools_enabled"])
         self.assertIn("device.info", result["suggested_operations"])
-        self.assertIn("apkrev.usb_net_proxy", result["suggested_operations"])
+        self.assertNotIn("apkrev.usb_net_proxy", result["suggested_operations"])
         self.assertIn(
             "Runtime verification is a closed loop.",
             result["required_contract"],

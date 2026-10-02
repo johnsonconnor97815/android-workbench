@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import re
 from .common import WorkbenchError, file_hash
 
 
@@ -24,6 +25,37 @@ def confirmed_legacy_cleanup(spec, data):
         and data.get("cleanup_status") == "passed"
         and data.get("cleanup_errors") == []
     )
+
+
+def readonly_package_query(spec):
+    """Recognize only the bundled wrapper's exact, serial-bound pm path query."""
+    entry = spec.get("entry", {})
+    if (spec.get("operation") != "apkrev.devsh"
+            or entry.get("script") != "@workbench/skills/android-workbench/components/apk-reverse/scripts/devsh.py"
+            or entry.get("source") != "@workbench/skills/android-workbench/components/apk-reverse"):
+        return False
+    args = spec.get("args", [])
+    return (len(args) == 4 and args[0] in {"sh", "shell"}
+            and args[2:] == ["--serial", spec.get("serial")]
+            and re.fullmatch(r"pm path [A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", args[1]) is not None)
+
+
+def verify_package_query_recovery(runner, folder, spec):
+    if not readonly_package_query(spec):
+        return False
+    # Older runtimes labelled all wrapper requests as mutations. Only recover
+    # this bounded query when its reviewed wrapper and helper are unchanged.
+    for name in ("scripts/devsh.py", "scripts/device_shell.py"):
+        expected = spec.get("source_manifest", {}).get(name)
+        current = Path(spec["source"]) / name
+        snapshot = folder / "source" / name
+        if (not expected or not current.is_file() or not snapshot.is_file()
+                or file_hash(current) != expected or file_hash(snapshot) != expected):
+            raise WorkbenchError("Package query recovery source changed")
+    runner.call("event", kind="recovery_verified", data={
+        "job": folder.name, "checks": ["bounded_readonly_package_query", "unchanged_wrapper_and_helper"],
+    })
+    return True
 
 
 def verify_native_probe_recovery(runner, folder, spec):

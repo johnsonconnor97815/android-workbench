@@ -6,6 +6,8 @@
 
 能力路由：
 
+- 新 App 分析：先读 `references/sample-analysis.md`。对 base 和全部已提供 split 执行 `analysis.recon`，保存结构线索和限制，再用 `analysis.route --recon` 结合样本选择流程。通过 `analysis.plan`、`analysis.plan_update` 和 `analysis.plan_check` 保存阶段与证据；最终 `complete:true` 只表示声明的任务范围完成，静态任务不因此成为真机验证。重新打开阶段或输入变化会使后续完成状态失效。
+
 - 环境安装及分析 MCP：读取 `components/static-env/README.md`。修改环境要等实际使用者收尾。只读宿主访问因已退出进程留下故障占用时，使用 `environment.recover_host_lease` 核验并恢复；仍存活或未知的进程不能清锁。
 - APK 权限与代码用途审计：读取 `components/permission-audit/README.md`，通过 `static.permission_audit` 提交 base APK 和全部 split APK；可以用 `--source-dir` 复用已有反编译源码。输出权限清单、代码证据和报告草稿后继续人工或模型审阅，草稿不能直接当作最终报告。输入文件哈希、源码目录、工具环境和输出目录参与队列检查，纯静态操作不申请手机。
 - 分析请求路由、包概览、Manifest 组件、资源、包内预览、JADX 反编译、源码导航、签名、字符串、知识检索、Python 计算/session 状态、持久 scratchpad 和宿主执行：读取 `components/analysis-agent/README.md`。先用 `analysis.route` 获得模式、上下文预算和候选操作，再按需执行 `analysis.overview`、`analysis.files`、`analysis.entry_points`、`analysis.manifest`、`analysis.resources`、`analysis.preview`、`analysis.decompile`、`analysis.code`、`analysis.signature`、`analysis.strings`、`analysis.snapshot`、`analysis.knowledge`、`analysis.python`、`analysis.scratchpad` 或 `analysis.exec`。
