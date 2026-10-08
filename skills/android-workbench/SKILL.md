@@ -1,6 +1,6 @@
 ---
 name: android-workbench
-description: 统一组织 Android 环境准备、APK 导出、静态分析、Frida 定制、设备场景和目标手机管理，并通过共享服务协调多个 Session 的手机与工具环境占用。用于需要组合这些能力、查询队列或解决设备操作冲突的分析任务。
+description: 统一组织 Android 环境准备、APK 导出、源码索引、保活/拉起/弹窗与 DEX-Native 分析、Frida 定制、设备场景和目标手机管理，并通过共享服务协调多个 Session 的手机与工具环境占用。用于组合这些能力、分析 APK 行为或解决设备操作冲突的任务。
 license: MIT
 metadata:
   author: johnsonconnor97815
@@ -17,6 +17,7 @@ metadata:
 | 设备信息、截图、页面操作、状态观测、受管 Hook | `references/device-analysis.md` |
 | 静态环境、分析 MCP、工具链版本 | `components/static-env/README.md` |
 | APK 权限清单、风险分诊与代码用途报告 | `components/permission-audit/README.md` |
+| 整包代码对账、保活/守护/强停复活、拉起/弹窗、DEX↔Native 调用链与证据报告 | `references/code-first-behavior.md` |
 | 分析请求路由、包概览、Manifest/资源/预览、JADX 反编译、源码导航、签名、字符串、知识检索、Python 计算/session 状态、持久 scratchpad 与宿主执行 | `components/analysis-agent/README.md` |
 | APK 逆向流程、方法级 DEX 补丁、USB 联网代理、重打包、能力矩阵与 `apkrev.*` 操作索引 | `references/apk-reverse.md` |
 | Frida 选版、修改、构建、部署 | `components/frida/README.md` |

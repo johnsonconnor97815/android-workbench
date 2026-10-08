@@ -25,6 +25,8 @@
 
 设计来源说明：交互模式参考了 [ReArk](https://github.com/lkimuk/ReArk) 的请求路由、上下文预算和证据接口；本组件没有复制 ReArk 源码，也不依赖 `hyle`、Qt 或 HarmonyOS 工具链。
 
+整包代码对账、保活/拉起/弹窗与 DEX↔Native 分析读取 [代码索引与行为流程](../../references/code-first-behavior.md)。仓库的 `scripts/apk_code_index.py` 提供原字节索引及有界 Native→JNI→Java 导航，可通过已有 `analysis.exec` 执行；它没有新增 MCP operation，索引结果不自动形成语义完成判断。
+
 ## 使用
 
 `COMPONENT_DIR` 指实际包含本文件的目录。所有命令输出 JSON；`--output` 可把同一 JSON 保存为证据文件。
