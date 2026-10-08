@@ -28,6 +28,7 @@ COMPONENTS = {
     "static-env": "components/static-env",
     "frida": "components/frida",
     "apk-export": "components/apk-export",
+    "play-install": "components/play-install",
     "apk-reverse": "components/apk-reverse",
     "analysis-agent": "components/analysis-agent",
     "device-manager": "components/device-manager",
@@ -91,6 +92,24 @@ def builtin_operations():
     )
     add("apk.doctor", apk, "apk_pull.py", subcommand="doctor", readonly=True)
     add("apk.devices", apk, "apk_pull.py", subcommand="devices", readonly=True)
+    for name, subcommand in (("play_install", "install"), ("play_inspect", "inspect"),
+                             ("play_recover", "recover")):
+        add(
+            "apk." + name, "play-install", "play_install.py",
+            serial="--serial", subcommand=subcommand,
+            readonly=name != "play_install", outputs=["--output"],
+            default_outputs={"--output": "play-evidence"},
+            result_file="operation-result.json", confirms_cleanup=True,
+            **({"recovery": True, "recovery_for": ["apk.play_install", "apk.play_recover"]}
+               if name == "play_recover" else {}),
+        )
+    add(
+        "apk.play_analyze_ui", "play-install", "play_install.py",
+        subcommand="analyze-ui", readonly=True,
+        input_flags=["--xml", "--identity", "--activity"], outputs=["--output"],
+        default_outputs={"--output": "play-ui-analysis"},
+        result_file="operation-result.json", confirms_cleanup=True,
+    )
     device_manager = "device-manager"
     device_manager_definitions = {
         "preflight": {

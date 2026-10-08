@@ -101,6 +101,7 @@ def validate():
         "static-env",
         "frida",
         "apk-export",
+        "play-install",
         "apk-reverse",
         "analysis-agent",
         "device-manager",
