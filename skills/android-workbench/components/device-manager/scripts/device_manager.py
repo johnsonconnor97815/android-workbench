@@ -38,6 +38,13 @@ import shutil
 import shlex
 import subprocess
 import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from flash_support import (
+    prepare_backup, verify_backup, validate_backup_reference, ota_metadata,
+    validate_health_record, remote_backup_path, tree_files,
+    validate_installation_steps, require_prepared_record,
+    validate_device_review, reviewed_partition_writes, review_binding, image_write_size,
+)
 import tempfile
 import time
 from urllib.parse import urlparse
@@ -70,12 +77,15 @@ FACTORY_PARTITION_DELETE_ALLOWLIST = {
 }
 FACTORY_DYNAMIC_PARTITION_REPAIR_ORDER = ("product", "odm", "system_ext")
 OUTPUT_LIMIT = 4000
+FACTORY_OUTPUT_LIMIT = 1024 * 1024
+FLASH_PROGRESS = None
 OPERATOR_PRESENCE_COMMANDS = {
     "bootloader-state",
     "partition-repair",
     "flash",
     "flash-factory",
     "install-rom",
+    "install-ota",
     "root",
     "root-prepare",
 }
@@ -100,7 +110,7 @@ RESEARCH_REQUIRED_FIELDS = (
     "rollback",
 )
 DECISION_FIELDS = {
-    "scope": {"boot_only", "system_only", "full_image", "custom"},
+    "scope": {"boot_only", "system_only", "full_image", "custom", "ota"},
     "root": {"yes", "no"},
     "data": {"keep", "wipe"},
     "reboot": {"yes", "no"},
@@ -124,12 +134,16 @@ def utc() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def bounded_text(value: str | bytes) -> str:
+def bounded_text(value: str | bytes, *, limit: int = OUTPUT_LIMIT, preserve_tail: bool = False) -> str:
     if isinstance(value, bytes):
         value = value.decode(errors="replace")
-    if len(value) <= OUTPUT_LIMIT:
+    if len(value) <= limit:
         return value
-    return value[:OUTPUT_LIMIT] + "\n[truncated]"
+    if preserve_tail:
+        head = limit // 2
+        tail = limit - head
+        return value[:head] + f"\n[truncated: {len(value) - limit} characters omitted]\n" + value[-tail:]
+    return value[:limit] + "\n[truncated]"
 
 
 def command_output(record: dict) -> str:
@@ -149,6 +163,8 @@ def run_command(
     records: list[dict] | None = None,
     cwd: Path | None = None,
     env: dict[str, str] | None = None,
+    output_limit: int = OUTPUT_LIMIT,
+    preserve_output_tail: bool = False,
 ) -> dict:
     record = {
         "name": label,
@@ -160,6 +176,8 @@ def run_command(
         if records is not None:
             records.append(record)
         return record
+    if FLASH_PROGRESS is not None:
+        FLASH_PROGRESS({**record, "state": "running"})
     try:
         completed = subprocess.run(
             command,
@@ -175,13 +193,15 @@ def run_command(
         record.update(
             {
                 "returncode": 124,
-                "stdout": bounded_text(error.stdout or ""),
-                "stderr": bounded_text(error.stderr or ""),
+                "stdout": bounded_text(error.stdout or "", limit=output_limit, preserve_tail=preserve_output_tail),
+                "stderr": bounded_text(error.stderr or "", limit=output_limit, preserve_tail=preserve_output_tail),
                 "error": f"{label} timed out after {timeout} seconds",
             }
         )
         if records is not None:
             records.append(record)
+        if FLASH_PROGRESS is not None:
+            FLASH_PROGRESS({**record, "state": "failed"})
         raise RuntimeError(record["error"]) from error
     except OSError as error:
         record.update(
@@ -194,20 +214,27 @@ def run_command(
         )
         if records is not None:
             records.append(record)
+        if FLASH_PROGRESS is not None:
+            FLASH_PROGRESS({**record, "state": "failed"})
         raise RuntimeError(record["error"]) from error
     record.update(
         {
             "returncode": completed.returncode,
-            "stdout": bounded_text(completed.stdout),
-            "stderr": bounded_text(completed.stderr),
+            "stdout": bounded_text(completed.stdout, limit=output_limit, preserve_tail=preserve_output_tail),
+            "stderr": bounded_text(completed.stderr, limit=output_limit, preserve_tail=preserve_output_tail),
         }
     )
     if records is not None:
         records.append(record)
+    if FLASH_PROGRESS is not None:
+        FLASH_PROGRESS({**record, "state": "finished"})
     if check and completed.returncode != 0:
+        failure_output = completed.stderr.strip() or completed.stdout.strip()
+        if preserve_output_tail:
+            failure_output = bounded_text(failure_output, limit=output_limit, preserve_tail=True)
         raise RuntimeError(
             f"{label} failed with exit code {completed.returncode}: "
-            f"{completed.stderr.strip() or completed.stdout.strip()}"
+            f"{failure_output}"
         )
     return record
 
@@ -282,11 +309,19 @@ def detect_mode(
         fastboot_devices.get("stdout", ""), fastboot_serial
     )
     if transport in {"fastboot", "fastbootd"}:
-        return transport
+        return read_fastboot_mode(fastboot_path, fastboot_serial, timeout=timeout, records=records)
     if "unauthorized" in command_output(adb_state).lower():
         return "unauthorized"
     return "unknown"
 
+
+
+def read_fastboot_mode(fastboot_path, serial, *, timeout, records):
+    record = run_command(fastboot_command(fastboot_path, serial, "getvar", "is-userspace"),
+                         label="read fastboot mode", timeout=min(timeout, 10), check=False, records=records)
+    if record.get("returncode") != 0:
+        return "unknown"
+    return {"yes": "fastbootd", "no": "fastboot"}.get(fastboot_getvar_value(record, "is-userspace"), "unknown")
 
 def wait_for_fastboot(
     fastboot_path: str,
@@ -318,7 +353,9 @@ def wait_for_fastboot(
             check=False,
         )
         last_output = completed.stdout
-        if fastboot_transport(completed.stdout, fastboot_serial) == transport:
+        if (fastboot_transport(completed.stdout, fastboot_serial) in {"fastboot", "fastbootd"}
+                and read_fastboot_mode(fastboot_path, fastboot_serial,
+                                      timeout=max(1, deadline - time.monotonic()), records=records) == transport):
             records.append(
                 {
                     "name": "wait for fastboot",
@@ -701,6 +738,7 @@ def validate_research(document: dict) -> dict:
         "build": document["build"],
         "bootloader": document["bootloader"],
         "method": document["method"],
+        **({"flash_plan": document["flash_plan"]} if "flash_plan" in document else {}),
         **({"root_partition": document["root_partition"]} if "root_partition" in document else {}),
         "decisions": decisions,
         "sources": document["sources"],
@@ -716,7 +754,19 @@ def validate_flash_decisions(
     *,
     no_reboot: bool,
 ) -> None:
+    if research["bootloader"] != "unlocked":
+        raise ValueError("partition flashing requires an unlocked bootloader")
     decisions = research["decisions"]
+    partitions = [partition for partition, _ in images]
+    if len(set(partitions)) != len(partitions):
+        raise ValueError("duplicate flash partitions are not allowed")
+    if decisions["data"] == "keep" and any(
+        partition.removesuffix("_a").removesuffix("_b") in {"userdata", "metadata"}
+        for partition in partitions
+    ):
+        raise ValueError("keep data forbids writing userdata or metadata")
+    if decisions["data"] == "wipe":
+        raise ValueError("generic flash does not perform a data wipe; use a documented factory or ROM installation")
     if decisions["reboot"] == "no" and not no_reboot:
         raise ValueError("research dossier chose no reboot; pass --no-reboot")
     if decisions["reboot"] == "yes" and no_reboot:
@@ -1084,6 +1134,265 @@ def download_image(
     }
 
 
+def validate_flash_plan(research, images, *, serial, fastboot_serial, dry_run, ota=False):
+    """Bind reviewed device facts and image digests before any mode transition."""
+    plan = research.get("flash_plan")
+    if plan is None and dry_run:
+        return {"offline_checks": "incomplete", "missing": ["flash_plan"],
+                "device_checks": "pending", "execution_ready": False}
+    if not isinstance(plan, dict):
+        raise ValueError("real flashing requires a reviewed flash_plan; run an offline dry-run first")
+    fields = ("serial", "bootloader_version", "target_fingerprint")
+    if not ota:
+        fields += ("fastboot_serial",)
+    for field in fields:
+        if not isinstance(plan.get(field), str) or not plan[field].strip():
+            raise ValueError("flash_plan requires " + field)
+    if plan["serial"] != serial or (not ota and plan["fastboot_serial"] != fastboot_serial):
+        raise ValueError("flash_plan serial does not match the selected phone")
+    if plan.get("slot") not in {"a", "b", "none"}:
+        raise ValueError("flash_plan slot must be a, b, or none")
+    if plan.get("target_slot") not in {"a", "b", "none"}:
+        raise ValueError("flash_plan target_slot must be a, b, or none")
+    if (plan["slot"] == "none") != (plan["target_slot"] == "none"):
+        raise ValueError("source and target slot layouts disagree")
+    if plan["slot"] == "none" and plan.get("activate_slot") is not None:
+        raise ValueError("non-A/B devices cannot activate a slot")
+    if plan.get("mode") not in ({"recovery"} if ota else {"fastboot", "fastbootd"}):
+        raise ValueError("flash_plan mode does not match the installation transport")
+    acceptance = plan.get("acceptance_checks")
+    if not dry_run and (not isinstance(acceptance, list) or not acceptance
+            or not all(isinstance(name, str) and name.strip() for name in acceptance)):
+        raise ValueError("real installation requires device-specific acceptance_checks")
+    anti_rollback = plan.get("anti_rollback")
+    if (not isinstance(anti_rollback, dict)
+            or anti_rollback.get("compatible") is not True
+            or not isinstance(anti_rollback.get("source"), str)
+            or not anti_rollback["source"].startswith("https://")):
+        raise ValueError("flash_plan requires a sourced anti_rollback compatibility review")
+    expected = plan.get("images")
+    if not isinstance(expected, dict) or not expected:
+        raise ValueError("flash_plan requires image SHA-256 values by partition or role")
+    checked = {}
+    for role, path in images:
+        digest = expected.get(role)
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise ValueError("flash_plan is missing a valid SHA-256 for " + role)
+        actual = sha256_file(path)
+        if actual != digest.lower():
+            raise ValueError("flash image SHA-256 mismatch for " + role)
+        checked[role] = {"path": str(path), "sha256": actual}
+    backup = validate_backup_reference(research, dry_run=dry_run)
+    if not dry_run:
+        backup.update(validate_device_review(research))
+    return {"offline_checks": "passed", "images": checked, **backup,
+            "device_checks": "pending", "execution_ready": False}
+
+
+def check_flash_device(arguments, research, *, fastboot_serial, records):
+    """Re-read the selected bootloader immediately before writing."""
+    plan = research["flash_plan"]
+    ensure = ensure_fastbootd if plan["mode"] == "fastbootd" else ensure_bootloader
+    ensure(arguments.adb, arguments.fastboot, arguments.serial, fastboot_serial,
+           timeout=arguments.timeout, dry_run=False, records=records)
+    expected = {"is-userspace": "yes" if plan["mode"] == "fastbootd" else "no",
+                "product": research["device"], "unlocked": "yes",
+                "version-bootloader": plan["bootloader_version"]}
+    expected["current-slot" if plan["slot"] != "none" else "has-slot:boot"] = (
+        plan["slot"] if plan["slot"] != "none" else "no")
+    if plan["slot"] != "none":
+        expected["slot-count"] = "2"
+    hardware = plan.get("hardware_checks", {}).get("fastboot", {})
+    if any(key in expected and expected[key] != value for key, value in hardware.items()):
+        raise ValueError("hardware_checks conflicts with required device facts")
+    expected.update(hardware)
+    for key, value in expected.items():
+        record = run_command(
+            fastboot_command(arguments.fastboot, fastboot_serial, "getvar", key),
+            label="pre-write " + key, timeout=min(arguments.timeout, 30), records=records)
+        actual = fastboot_getvar_value(record, key)
+        if key == "unlocked" and actual == "true":
+            actual = "yes"
+        if actual != value:
+            raise ValueError(f"pre-write {key} mismatch: expected {value!r}, got {actual!r}")
+
+
+
+def reviewed_write_command(fastboot, serial, rule, path):
+    options = [] if rule["slot"] == "none" else ["--slot", rule["slot"]]
+    return fastboot_command(fastboot, serial, *options, "flash", rule["partition"], str(path))
+
+
+def check_partition_slot(arguments, serial, rule, records, *, image):
+    partition = rule["partition"]
+    base = partition[:-2] if partition.endswith(("_a", "_b")) else partition
+    key = "has-slot:" + base
+    record = run_command(fastboot_command(arguments.fastboot, serial, "getvar", key),
+                         label="pre-write partition slots", timeout=min(arguments.timeout, 30), records=records)
+    expected = "yes" if rule["slot"] != "none" or base != partition else "no"
+    if fastboot_getvar_value(record, key) != expected:
+        raise ValueError("partition slot layout differs from the device-specific write rule")
+    targets = ([partition + "_a", partition + "_b"] if rule["slot"] == "all" else
+               [partition + "_" + rule["slot"]] if rule["slot"] in {"a", "b"} else [partition])
+    required = image_write_size(image)
+    for target in targets:
+        variable = "partition-size:" + target
+        record = run_command(fastboot_command(arguments.fastboot, serial, "getvar", variable),
+                             label="pre-write partition capacity", timeout=min(arguments.timeout, 30), records=records)
+        capacity = parse_partition_size(fastboot_getvar_value(record, variable))
+        if capacity < required:
+            raise ValueError(f"image requires {required} bytes but {target} has {capacity}; "
+                             "partition growth requires a separately supported, researched flow")
+
+
+def parse_partition_size(value):
+    # fastboot partition-size is hexadecimal, including responses without 0x.
+    if not isinstance(value, str) or not re.fullmatch(r"(?:0[xX])?[0-9a-fA-F]+", value):
+        raise ValueError("partition size is unavailable or invalid")
+    size = int(value, 16)
+    if size <= 0:
+        raise ValueError("partition does not exist or has no usable capacity")
+    return size
+
+def record_flash_stage(result, research, phase):
+    result.update(flash_plan=research.get("flash_plan"), flash_phase=phase,
+                  workflow_complete=False)
+
+
+def verify_flashed_system(arguments, records):
+    previous = load_research(arguments.flash_record)
+    if (previous.get("device") != arguments.serial or previous.get("status") != "complete"
+            or previous.get("command") not in {"flash", "flash-factory", "install-rom", "install-ota"}
+            or previous.get("flash_phase") != "awaiting_verification"):
+        raise ValueError("flash verification requires a completed write record for this phone")
+    plan = previous.get("flash_plan")
+    research = previous.get("research", {})
+    if not isinstance(plan, dict) or not plan.get("target_fingerprint") or not research.get("device"):
+        raise ValueError("flash record does not contain a verifiable target")
+    if plan.get("target_slot") not in {"a", "b", "none"}:
+        raise ValueError("flash record does not identify the target boot slot")
+    health = validate_health_record(getattr(arguments, "health_record", None), plan, arguments.serial,
+                                    flash_record_sha256=sha256_file(arguments.flash_record))
+    wait_for_boot(arguments.adb, arguments.serial, timeout=arguments.timeout,
+                  dry_run=False, records=records)
+    observed = {}
+    for key, expected in {"ro.product.device": research["device"],
+                          "ro.build.fingerprint": plan["target_fingerprint"],
+                          "ro.boot.slot_suffix": "" if plan["target_slot"] == "none"
+                          else "_" + plan["target_slot"]}.items():
+        record = run_command(adb_command(arguments.adb, arguments.serial, "shell", "getprop", key),
+                             label="verify " + key, timeout=min(arguments.timeout, 30), records=records)
+        observed[key] = record["stdout"].strip()
+        if observed[key] != expected:
+            raise ValueError("flashed system does not match the expected " + key)
+    accepted = health["health_checks"] == "passed"
+    return {"flash_phase": "verified" if accepted else "awaiting_acceptance", "workflow_complete": accepted,
+            "observed": observed, "flash_record": str(arguments.flash_record.resolve()),
+            "flash_record_sha256": sha256_file(arguments.flash_record), **health}
+
+
+def battery_observations(output):
+    """Keep health separate from charge level and temperature; missing means unknown."""
+    observed = {}
+    for field, name in (("level", "battery_level"), ("health", "battery_health"),
+                        ("status", "battery_status"), ("temperature", "battery_temperature_tenths_c")):
+        match = re.search(r"^\s*" + field + r":\s*(-?\d+)\s*$", output, re.MULTILINE)
+        if match:
+            observed[name] = int(match.group(1))
+    if "Current Battery Service state:" in output:
+        observed["battery_updates_stopped"] = "UPDATES STOPPED" in output
+    return observed
+
+
+def check_android_source(arguments, research, records, *, require_baseline=False):
+    """Read the selected Android device without rebooting or changing settings."""
+    plan = research["flash_plan"]
+    if not isinstance(plan, dict) or plan.get("serial") != arguments.serial:
+        raise ValueError("source check requires a flash_plan bound to the selected phone")
+    if plan.get("slot") not in {"a", "b", "none"}:
+        raise ValueError("source check requires the observed slot")
+    source = plan.get("source_fingerprint")
+    minimum = plan.get("minimum_battery")
+    if require_baseline and (not isinstance(source, str) or not source.strip()):
+        raise ValueError("installation requires the reviewed source_fingerprint (firmware baseline)")
+    if require_baseline and (type(minimum) is not int or not 1 <= minimum <= 100):
+        raise ValueError("installation requires a guide-based minimum_battery from 1 to 100")
+    if minimum is not None and (type(minimum) is not int or not 1 <= minimum <= 100):
+        raise ValueError("minimum_battery must be an integer from 1 to 100")
+    observed = {}
+    expected_values = {"ro.product.device": research["device"],
+                          "ro.build.fingerprint": source,
+                          "ro.bootloader": plan.get("bootloader_version"),
+                          "ro.boot.slot_suffix": "" if plan["slot"] == "none" else "_" + plan["slot"]}
+    hardware = plan.get("hardware_checks", {}).get("android", {})
+    if any(key in expected_values and expected_values[key] != value for key, value in hardware.items()):
+        raise ValueError("hardware_checks conflicts with required Android facts")
+    expected_values.update(hardware)
+    for key, expected in expected_values.items():
+        if expected is None:
+            continue
+        record = run_command(adb_command(arguments.adb, arguments.serial, "shell", "getprop", key),
+                             label="pre-install " + key, timeout=min(arguments.timeout, 30), records=records)
+        actual = record["stdout"].strip()
+        if actual != expected:
+            raise ValueError("source firmware/device mismatch for " + key)
+        observed[key] = actual
+    if minimum is not None:
+        record = run_command(adb_command(arguments.adb, arguments.serial, "shell", "dumpsys", "battery"),
+                             label="pre-install battery", timeout=min(arguments.timeout, 30), records=records)
+        level = re.search(r"^\s*level:\s*(\d+)\s*$", record["stdout"], re.MULTILINE)
+        if not level or not minimum <= int(level.group(1)) <= 100:
+            raise ValueError("battery is unknown or below the reviewed minimum_battery")
+        battery = battery_observations(record["stdout"])
+        if battery.get("battery_health") != 2:
+            raise ValueError("battery health is unknown or abnormal; resolve before installation")
+        if battery.get("battery_updates_stopped") is not False:
+            raise ValueError("battery live updates are stopped or unconfirmed; resolve before installation")
+        observed.update(battery)
+        observed["battery_percent"] = int(level.group(1))
+    return observed
+
+
+def install_ota(arguments, result, records):
+    if not arguments.confirm and not arguments.dry_run:
+        raise ValueError("install-ota requires --confirm")
+    research = load_research(arguments.research)
+    validate_research(research)
+    if research["decisions"]["scope"] != "ota" or research["decisions"]["data"] != "keep":
+        raise ValueError("full OTA requires scope ota and data keep")
+    image = validate_local_file(arguments.ota, "full OTA package")
+    result.update(research=research, stage=arguments.stage)
+    result["flash_checks"] = validate_flash_plan(
+        research, [("ota", image)], serial=arguments.serial,
+        fastboot_serial=None, dry_run=arguments.dry_run, ota=True)
+    result["ota_metadata"] = ota_metadata(image, research)
+    if arguments.stage == "prepare":
+        commands = [adb_command(arguments.adb, arguments.serial, "reboot", "recovery")]
+        if not arguments.dry_run:
+            result["source_checks"] = check_android_source(arguments, research, records, require_baseline=True)
+        phase = "awaiting_sideload"
+        next_action = "Stay beside the phone. In stock recovery, choose Apply update from ADB, then run install-ota sideload with this prepared record."
+    else:
+        if not arguments.dry_run:
+            result["prepared_record_sha256"] = require_prepared_record(
+                arguments.prepared_record, research, arguments.serial,
+                command="install-ota", phase="awaiting_sideload")
+        commands = [adb_command(arguments.adb, arguments.serial, "sideload", str(image))]
+        phase = "awaiting_verification"
+        next_action = "Confirm recovery reports installation success, reboot from its menu, authorize USB debugging, then run flash-verify."
+        if research["decisions"]["reboot"] == "no":
+            next_action = "Confirm recovery reports installation success. Leave the phone in recovery as reviewed; final verification requires a later authorized boot."
+        wait_for_adb_state(arguments.adb, arguments.serial, "sideload", timeout=arguments.timeout,
+                           dry_run=arguments.dry_run, records=records)
+    result["plan"] = commands
+    record_flash_stage(result, research, phase)
+    if not arguments.dry_run:
+        validate_flash_plan(research, [("ota", image)], serial=arguments.serial,
+                            fastboot_serial=None, dry_run=False, ota=True)
+    execute_plan(commands, timeout=arguments.timeout, dry_run=arguments.dry_run, records=records)
+    result.update(next_action=next_action, status="dry_run" if arguments.dry_run else "complete")
+
+
 def flash_commands(
     fastboot_path: str,
     fastboot_serial: str,
@@ -1104,10 +1413,14 @@ def install_rom_prepare_commands(
     fastboot_path: str,
     fastboot_serial: str,
     recovery_boot: Path,
+    *,
+    partition: str = "boot",
 ) -> list[list[str]]:
+    if partition not in {"boot", "vendor_boot", "recovery"}:
+        raise ValueError("unsupported recovery image partition")
     return [
         fastboot_command(
-            fastboot_path, fastboot_serial, "flash", "boot", str(recovery_boot)
+            fastboot_path, fastboot_serial, "flash", partition, str(recovery_boot)
         )
     ]
 
@@ -1283,12 +1596,15 @@ def prepare_factory_flash(
     wrapper_directory = directory / "android-workbench-fastboot"
     wrapper_directory.mkdir()
     wrapper = wrapper_directory / "fastboot"
+    marker = shlex.quote(str(wrapper_directory / "fastboot-failed"))
     wrapper.write_text(
-        "#!/bin/sh\nexec "
-        + shlex.quote(resolved_fastboot)
-        + " -s "
-        + shlex.quote(fastboot_serial)
-        + " \"$@\"\n"
+        "#!/bin/sh\n"
+        + "if [ -e " + marker + " ]; then echo 'Previous fastboot command failed; stopping' >&2; exit 1; fi\n"
+        + "for arg in \"$@\"; do case \"$arg\" in -s|--serial|--serial=*|-s?*) "
+          "echo 'Factory script may not override selected device' >&2; "
+        + "touch " + marker + "; exit 1;; esac; done\n"
+        + shlex.quote(resolved_fastboot) + " -s " + shlex.quote(fastboot_serial) + " \"$@\"\n"
+        + "status=$?\nif [ \"$status\" -ne 0 ]; then printf '%s\\n' \"$status\" > " + marker + "; fi\nexit \"$status\"\n"
     )
     wrapper.chmod(0o700)
     super_empty = None
@@ -1501,14 +1817,18 @@ def run_factory_flash(
         str(wrapper_directory) + os.pathsep + environment.get("PATH", "")
     )
     run_command(
-        [str(script)],
+        ["/bin/sh", "-e", str(script)],
         label="official flash-all.sh",
         timeout=timeout,
         dry_run=dry_run,
         records=records,
         cwd=working_directory,
         env=environment,
+        output_limit=FACTORY_OUTPUT_LIMIT,
+        preserve_output_tail=True,
     )
+    if not dry_run and (wrapper_directory / "fastboot-failed").exists():
+        raise RuntimeError("factory script hid a failed fastboot command; installation is incomplete")
 
 
 def wait_for_adb_state(
@@ -1757,11 +2077,10 @@ def preflight(
             check=False,
             records=records,
         )
-        battery_match = re.search(
-            r"level:\s*(\d+)", battery_record.get("stdout", "")
-        )
-        if battery_match:
-            result["observations"]["battery_level"] = int(battery_match.group(1))
+        if battery_record.get("returncode") == 0:
+            result["observations"].update(battery_observations(battery_record.get("stdout", "")))
+        else:
+            result["unavailable"]["battery"] = "battery query failed"
         storage_record = run_command(
             adb_command(adb_path, serial, "shell", "df", "-k", "/data"),
             label="storage",
@@ -1946,6 +2265,9 @@ def partition_repair(
     dry_run: bool,
     records: list[dict],
 ) -> dict:
+    if (not delete_partitions or len(delete_partitions) != len(set(delete_partitions))
+            or any(part not in FACTORY_PARTITION_DELETE_ALLOWLIST for part in delete_partitions)):
+        raise ValueError("duplicate or unsupported logical partition deletion")
     ensure_fastbootd(
         adb_path,
         fastboot_path,
@@ -1955,6 +2277,15 @@ def partition_repair(
         dry_run=dry_run,
         records=records,
     )
+    if not dry_run:
+        inspection = partition_inspect(adb_path=adb_path, fastboot_path=fastboot_path, serial=serial,
+                                       fastboot_serial=fastboot_serial, partitions=delete_partitions,
+                                       timeout=timeout, dry_run=False, records=records)
+        for partition in delete_partitions:
+            observed = inspection["partitions"][partition]
+            if observed.get("is_logical") is not True:
+                raise ValueError("refusing to delete an unverified logical partition: " + partition)
+            parse_partition_size(observed.get("partition_size"))
     for partition in delete_partitions:
         run_command(
             fastboot_command(
@@ -1990,7 +2321,15 @@ def execute_plan(
 
 def write_result(output: Path, result: dict) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    with tempfile.NamedTemporaryFile(mode="w", dir=output.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, output)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2039,6 +2378,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="verify root with su -c id; this may show a phone-side authorization prompt",
     )
 
+    verify_parser = subparsers.add_parser(
+        "flash-verify", parents=[after_subcommand],
+        help="verify the booted device and target build after a completed flash",
+    )
+    verify_parser.add_argument("--flash-record", type=Path, required=True)
+    verify_parser.add_argument("--health-record", type=Path)
+
+    for name in ("backup-prepare", "backup-verify", "backup-data"):
+        backup_parser = subparsers.add_parser(name, parents=[after_subcommand],
+                                              help="create or check file-backed backup evidence")
+        backup_parser.add_argument("--research", type=Path, required=True)
+        if name == "backup-verify":
+            backup_parser.add_argument("--backup-record", type=Path, required=True)
+        else:
+            backup_parser.add_argument("--backup-dir", type=Path, required=True)
+            if name == "backup-prepare":
+                backup_parser.add_argument("--image", action="append", required=True, metavar="PARTITION=PATH")
+                backup_parser.add_argument("--data-record", type=Path)
+                backup_parser.add_argument("--discard-data-reason")
+            else:
+                backup_parser.add_argument("--remote-path", action="append", required=True)
+
+    ota_parser = subparsers.add_parser("install-ota", parents=[after_subcommand],
+                                      help="prepare stock recovery and sideload a reviewed full OTA")
+    ota_parser.add_argument("--stage", choices=("prepare", "sideload"), required=True)
+    ota_parser.add_argument("--ota", type=Path, required=True)
+    ota_parser.add_argument("--prepared-record", type=Path)
+    ota_parser.add_argument("--research", type=Path, required=True)
+    ota_parser.add_argument("--confirm", action="store_true")
+    ota_parser.add_argument("--dry-run", action="store_true")
+    ota_parser.set_defaults(timeout=1800.0)
+
     bootloader_parser = subparsers.add_parser(
         "bootloader-state",
         parents=[after_subcommand],
@@ -2083,6 +2454,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install_rom_parser.add_argument("--recovery-boot", type=Path)
     install_rom_parser.add_argument("--rom", type=Path)
+    install_rom_parser.add_argument("--prepared-record", type=Path)
+    install_rom_parser.add_argument("--prepare-image", action="append", default=[], metavar="PARTITION=PATH")
+    install_rom_parser.add_argument("--addon", type=Path, action="append", default=[])
+    install_rom_parser.add_argument("--package-index", type=int, default=0)
     install_rom_parser.add_argument("--research", type=Path)
     install_rom_parser.add_argument("--no-reboot", action="store_true")
     install_rom_parser.add_argument("--confirm", action="store_true")
@@ -2213,6 +2588,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    global FLASH_PROGRESS
+    FLASH_PROGRESS = None
     parser = build_parser()
     arguments = parser.parse_args()
     if arguments.output is None:
@@ -2221,6 +2598,9 @@ def main() -> int:
         arguments.command
         in {
             "preflight",
+            "flash-verify",
+            "backup-data",
+            "install-ota",
             "bootloader-state",
             "partition-inspect",
             "partition-repair",
@@ -2247,6 +2627,10 @@ def main() -> int:
         "command": arguments.command,
         "steps": records,
     }
+    if arguments.command in {"flash", "flash-factory", "install-rom", "install-ota", "partition-repair"}:
+        FLASH_PROGRESS = lambda step: write_result(
+            arguments.output, {**result, "status": "in_progress", "active_step": step,
+                               "workflow_complete": False})
     if arguments.command in OPERATOR_PRESENCE_COMMANDS:
         result["operator_notice"] = OPERATOR_NOTICE
         prefix = "For a real run: " if getattr(arguments, "dry_run", False) else ""
@@ -2263,6 +2647,45 @@ def main() -> int:
                     check_root=arguments.check_root,
                 )
             )
+        elif arguments.command == "flash-verify":
+            result.update(verify_flashed_system(arguments, records))
+            result["status"] = "complete"
+        elif arguments.command in {"backup-prepare", "backup-verify", "backup-data"}:
+            research = load_research(arguments.research)
+            validate_research(research)
+            if arguments.command == "backup-verify":
+                result["backup"] = verify_backup(arguments.backup_record, research)
+                result["restore_requires_fresh_plan"] = True
+            elif arguments.command == "backup-prepare":
+                images = parse_images(arguments.image)
+                result.update(prepare_backup(research, images, arguments.backup_dir,
+                    data_record=arguments.data_record, discard_reason=arguments.discard_data_reason))
+            else:
+                plan = research.get("flash_plan", {})
+                if plan.get("serial") != arguments.serial:
+                    raise ValueError("data backup serial does not match the selected phone")
+                paths = [remote_backup_path(path) for path in arguments.remote_path]
+                if len(paths) != len(set(paths)):
+                    raise ValueError("duplicate data backup paths")
+                directory = arguments.backup_dir.expanduser().resolve()
+                if directory.exists():
+                    raise ValueError("Use a new backup directory; existing files are retained")
+                result["observed"] = check_android_source(arguments, research, records, require_baseline=True)
+                directory.mkdir(parents=True)
+                for index, path in enumerate(paths):
+                    target = directory / str(index)
+                    target.mkdir()
+                    run_command(adb_command(arguments.adb, arguments.serial, "pull", "-a", path, str(target)),
+                                label="backup shared storage " + path, timeout=arguments.timeout, records=records)
+                result.update(serial=arguments.serial, source_fingerprint=plan["source_fingerprint"],
+                              coverage="user_selected_shared_storage", remote_paths=paths,
+                              files=tree_files(directory), includes_private_app_data=False)
+                manifest = directory / "data-manifest.json"
+                write_result(manifest, {**result, "status": "complete"})
+                result.update(data_manifest=str(manifest), data_manifest_sha256=sha256_file(manifest))
+            result["status"] = "complete"
+        elif arguments.command == "install-ota":
+            install_ota(arguments, result, records)
         elif arguments.command == "partition-inspect":
             partitions = list(
                 arguments.partition or DEFAULT_PARTITION_INSPECT_PARTITIONS
@@ -2297,7 +2720,18 @@ def main() -> int:
             research = load_research(arguments.research)
             validate_research(research)
             validate_factory_flash_decisions(research, no_reboot=False)
+            result["flash_checks"] = validate_flash_plan(
+                research, [], serial=arguments.serial,
+                fastboot_serial=fastboot_serial, dry_run=arguments.dry_run)
             delete_partitions = list(arguments.delete_partition or [])
+            if not delete_partitions:
+                raise ValueError("partition-repair requires at least one --delete-partition")
+            if not arguments.dry_run:
+                if research["flash_plan"].get("delete_partitions") != delete_partitions:
+                    raise ValueError("delete_partitions differ from the researched repair plan")
+                if research["flash_plan"]["mode"] != "fastbootd":
+                    raise ValueError("partition repair requires flash_plan mode fastbootd")
+                check_flash_device(arguments, research, fastboot_serial=fastboot_serial, records=records)
             commands = [
                 fastboot_command(
                     arguments.fastboot,
@@ -2307,8 +2741,6 @@ def main() -> int:
                 )
                 for partition in delete_partitions
             ]
-            if not delete_partitions:
-                raise ValueError("partition-repair requires at least one --delete-partition")
             result.update(
                 {
                     "research": research,
@@ -2445,22 +2877,40 @@ def main() -> int:
                 no_reboot=arguments.no_reboot,
             )
             result["research"] = research
+            result["flash_checks"] = validate_flash_plan(
+                research, images, serial=arguments.serial,
+                fastboot_serial=fastboot_serial, dry_run=arguments.dry_run)
+            record_flash_stage(result, research, "awaiting_verification")
             commands = flash_commands(
                 arguments.fastboot,
                 fastboot_serial,
                 images,
                 reboot=not arguments.no_reboot,
             )
+            if not arguments.dry_run or (research.get("flash_plan") or {}).get("partition_writes"):
+                writes = reviewed_partition_writes(research["flash_plan"], images)
+                plan = research["flash_plan"]
+                activate = plan.get("activate_slot")
+                if activate not in {None, "a", "b"} or plan["target_slot"] != (activate or plan["slot"]):
+                    raise ValueError("target_slot requires an explicit reviewed activate_slot or must remain unchanged")
+                if any(rule["mode"] != plan["mode"] for rule, _ in writes):
+                    raise ValueError("generic flash requires a single reviewed mode")
+                validate_flash_decisions(research, [(rule["partition"], path) for rule, path in writes],
+                                         no_reboot=arguments.no_reboot)
+                commands = [reviewed_write_command(arguments.fastboot, fastboot_serial, rule, path)
+                            for rule, path in writes]
+                if activate:
+                    commands.append(fastboot_command(arguments.fastboot, fastboot_serial, "set_active", activate))
+                if not arguments.no_reboot:
+                    commands.append(fastboot_command(arguments.fastboot, fastboot_serial, "reboot"))
             result["plan"] = [list(command) for command in commands]
-            ensure_fastboot(
-                arguments.adb,
-                arguments.fastboot,
-                arguments.serial,
-                fastboot_serial,
-                timeout=arguments.timeout,
-                dry_run=arguments.dry_run,
-                records=records,
-            )
+            if not arguments.dry_run:
+                check_flash_device(arguments, research, fastboot_serial=fastboot_serial, records=records)
+                for rule, path in writes:
+                    check_partition_slot(arguments, fastboot_serial, rule, records, image=path)
+                validate_flash_plan(research, images, serial=arguments.serial,
+                                    fastboot_serial=fastboot_serial, dry_run=False)
+                result["flash_checks"].update(device_checks="passed", execution_ready=True)
             execute_plan(
                 commands,
                 timeout=arguments.timeout,
@@ -2496,7 +2946,21 @@ def main() -> int:
                 factory_zip, require_super_empty=arguments.reset_super
             )
             model_consistency = validate_factory_model_consistency(research, layout)
+            result["flash_checks"] = validate_flash_plan(
+                research, [("factory", factory_zip)], serial=arguments.serial,
+                fastboot_serial=fastboot_serial, dry_run=arguments.dry_run)
+            record_flash_stage(result, research, "awaiting_verification")
+            if research.get("flash_plan", {}).get("mode", "fastboot") != "fastboot":
+                raise ValueError("factory installation must start in fastboot bootloader mode")
             if not arguments.dry_run:
+                if research["flash_plan"].get("factory_options") != {
+                        "reset_super": arguments.reset_super,
+                        "repair_dynamic_partitions": arguments.repair_dynamic_partitions}:
+                    raise ValueError("factory_options differ from the researched installation")
+                check_flash_device(arguments, research, fastboot_serial=fastboot_serial, records=records)
+                validate_flash_plan(research, [("factory", factory_zip)], serial=arguments.serial,
+                                    fastboot_serial=fastboot_serial, dry_run=False)
+                result["flash_checks"].update(device_checks="passed", execution_ready=True)
                 actual_product = read_device_product(
                     arguments.adb,
                     arguments.fastboot,
@@ -2661,44 +3125,95 @@ def main() -> int:
             validate_research(research)
             validate_install_rom_decisions(
                 research,
-                no_reboot=arguments.no_reboot,
+                no_reboot=(research["decisions"]["reboot"] == "no") if arguments.stage == "prepare"
+                          or (arguments.addon and arguments.package_index < len(arguments.addon)) else arguments.no_reboot,
             )
             result["research"] = research
             result["stage"] = arguments.stage
+            selected_image = validate_local_file(
+                arguments.recovery_boot if arguments.stage == "prepare" else arguments.rom,
+                "ROM installation image")
+            role = "recovery" if arguments.stage == "prepare" else "rom"
+            selected_images = [(role, selected_image)]
+            extra_images = parse_images(arguments.prepare_image) if arguments.prepare_image else []
+            if arguments.stage == "sideload" and extra_images:
+                raise ValueError("--prepare-image is only allowed in the prepare stage")
+            selected_images += extra_images
+            addons = [validate_local_file(path, "ROM add-on") for path in arguments.addon]
+            selected_images += [("addon:" + str(index), path) for index, path in enumerate(addons, 1)]
+            reviewed_addons = {key for key in research.get("flash_plan", {}).get("images", {})
+                               if key.startswith("addon:")}
+            if reviewed_addons != {"addon:" + str(index) for index in range(1, len(addons) + 1)}:
+                raise ValueError("supplied add-ons must match every reviewed add-on in order")
+            if not 0 <= arguments.package_index <= len(addons):
+                raise ValueError("package-index must select the ROM (0) or a supplied add-on (1..N)")
+            if arguments.stage == "prepare" and arguments.package_index != 0:
+                raise ValueError("prepare does not select an add-on")
+            if arguments.stage == "sideload" and addons and arguments.package_index < len(addons) and not arguments.no_reboot:
+                raise ValueError("do not reboot before all add-ons are installed; pass --no-reboot")
+            result["flash_checks"] = validate_flash_plan(
+                research, selected_images, serial=arguments.serial,
+                fastboot_serial=fastboot_serial, dry_run=arguments.dry_run)
+            record_flash_stage(result, research, "awaiting_sideload" if arguments.stage == "prepare"
+                               else "awaiting_addon" if arguments.package_index < len(addons)
+                               else "awaiting_verification")
+            result["package_index"] = arguments.package_index
             if arguments.stage == "prepare":
+                partition = research.get("flash_plan", {}).get("recovery_partition")
+                if partition is None and not arguments.dry_run:
+                    raise ValueError("flash_plan requires the device-specific recovery_partition")
+                manual = research.get("flash_plan", {}).get("recovery_steps")
+                if not arguments.dry_run and (not isinstance(manual, list) or not manual
+                        or not all(isinstance(step, str) and step.strip() for step in manual)):
+                    raise ValueError("flash_plan requires sourced device-specific recovery_steps")
                 recovery_boot = validate_local_file(
                     arguments.recovery_boot, "recovery boot image"
                 )
-                commands = install_rom_prepare_commands(
-                    arguments.fastboot,
-                    fastboot_serial,
-                    recovery_boot,
-                )
+                steps = validate_installation_steps(research.get("flash_plan", {}),
+                    [(partition or "boot", recovery_boot), *extra_images], recovery_partition=partition or "boot")
+                commands = [fastboot_command(arguments.fastboot, fastboot_serial, "flash", part, str(path))
+                            for part, path, mode in steps]
+                writes = []
+                if not arguments.dry_run or (research.get("flash_plan") or {}).get("partition_writes"):
+                    ordered_images = [("recovery" if part == partition else part, path) for part, path, mode in steps]
+                    writes = reviewed_partition_writes(research["flash_plan"], ordered_images, recovery_partition=partition)
+                    if any(rule["partition"] != part or rule["mode"] != mode
+                           for (rule, _), (part, _, mode) in zip(writes, steps)):
+                        raise ValueError("preparation commands differ from reviewed partition_writes")
+                    commands = [reviewed_write_command(arguments.fastboot, fastboot_serial, rule, path)
+                                for rule, path in writes]
+                result["prepare_steps"] = [{"partition": part, "mode": mode} for part, path, mode in steps]
                 result["plan"] = [list(command) for command in commands]
-                ensure_fastboot(
-                    arguments.adb,
-                    arguments.fastboot,
-                    arguments.serial,
-                    fastboot_serial,
-                    timeout=arguments.timeout,
-                    dry_run=arguments.dry_run,
-                    records=records,
-                )
-                execute_plan(
-                    commands,
-                    timeout=arguments.timeout,
-                    dry_run=arguments.dry_run,
-                    records=records,
-                )
-                result["next_action"] = (
-                    "Stay beside the phone. Use the fastboot menu to choose Recovery mode. "
-                    "Then choose Factory reset, followed by Format data / factory "
-                    "reset. Return to the main menu, choose Apply update, then "
-                    "Apply from ADB. Run the install-rom sideload stage when the "
-                    "phone is waiting in sideload mode."
-                )
+                if not arguments.dry_run:
+                    result["source_checks"] = check_android_source(arguments, research, records, require_baseline=True)
+                    validate_flash_plan(research, selected_images, serial=arguments.serial,
+                                        fastboot_serial=fastboot_serial, dry_run=False)
+                for index, ((part, path, mode), command) in enumerate(zip(steps, commands)):
+                    if not arguments.dry_run:
+                        step_research = {**research, "flash_plan": {**research["flash_plan"], "mode": mode}}
+                        check_flash_device(arguments, step_research, fastboot_serial=fastboot_serial, records=records)
+                        # Check every target available in this transport before the first
+                        # write in the group, then recheck each immediate write target.
+                        end = index + 1
+                        if index == 0 or steps[index - 1][2] != mode:
+                            while end < len(steps) and steps[end][2] == mode:
+                                end += 1
+                        for checked_index in range(index, end):
+                            check_partition_slot(arguments, fastboot_serial, writes[checked_index][0], records,
+                                                 image=writes[checked_index][1])
+                        validate_flash_plan(research, selected_images, serial=arguments.serial,
+                                            fastboot_serial=fastboot_serial, dry_run=False)
+                        result["flash_checks"].update(device_checks="passed", execution_ready=True)
+                    execute_plan([command], timeout=arguments.timeout, dry_run=arguments.dry_run, records=records)
+                result["next_action"] = manual or ["Follow the device-specific guide to reset data and enter ADB sideload."]
             else:
-                rom = validate_local_file(arguments.rom, "custom ROM package")
+                if not arguments.dry_run:
+                    result["prepared_record_sha256"] = require_prepared_record(
+                        arguments.prepared_record, research, arguments.serial, command="install-rom",
+                        phase="awaiting_sideload" if arguments.package_index == 0 else "awaiting_addon",
+                        package_index=None if arguments.package_index == 0 else arguments.package_index - 1)
+                    result["flash_checks"]["preparation_checks"] = "passed"
+                rom = selected_image if arguments.package_index == 0 else addons[arguments.package_index - 1]
                 commands = install_rom_sideload_commands(
                     arguments.adb,
                     arguments.serial,
@@ -2714,6 +3229,10 @@ def main() -> int:
                     dry_run=arguments.dry_run,
                     records=records,
                 )
+                if not arguments.dry_run:
+                    validate_flash_plan(research, selected_images, serial=arguments.serial,
+                                        fastboot_serial=fastboot_serial, dry_run=False)
+                    result["flash_checks"].update(device_checks="sideload_transport_confirmed", execution_ready=True)
                 execute_plan(
                     commands,
                     timeout=arguments.timeout,
@@ -2728,6 +3247,8 @@ def main() -> int:
                         dry_run=arguments.dry_run,
                         records=records,
                     )
+                if arguments.package_index < len(addons):
+                    result["next_action"] = "Follow the guide to re-enter ADB sideload; submit the next package-index with this record as --prepared-record."
             result["status"] = "dry_run" if arguments.dry_run else "complete"
         elif arguments.command == "root-prepare":
             if not arguments.confirm and not arguments.dry_run:

@@ -111,6 +111,80 @@ class AnalysisAgentTest(unittest.TestCase):
         self.assertIn("apkrev.repack", result["suggested_operations"])
         self.assertNotIn("The complete answer must include the concrete candidate value.", result["required_contract"])
 
+    def test_route_rea_requires_explicit_local_inputs(self):
+        for question, operation in (
+            ("查询原字节索引 index/code.sqlite 中的方法调用者", "analysis.query"),
+            ("分析本地 app.js 的 bridge", "analysis.offline_js"),
+            ("读取 capture.har 的请求日志", "analysis.offline_har"),
+            ("查看 app.js.map 的 source map 位置", "analysis.offline_source_map"),
+            ("比较 old.har 和 new.har", "analysis.offline_compare"),
+            ("比较 old.js 和 new.js", "analysis.offline_compare"),
+            ("记录未解决问题 unknowns.json", "analysis.unknown_record"),
+            ("解决未知问题 unknowns.json", "analysis.unknown_update"),
+            ("检查未知问题 unknowns.json", "analysis.unknown_check"),
+        ):
+            with self.subTest(question=question):
+                result = self.module.route_request(question, False, [])
+                self.assertIn(operation, result["suggested_operations"])
+                self.assertTrue(result["uses_model"])
+                self.assertNotIn("local_reply", result)
+                self.assertFalse(result["device_runtime_tools_enabled"])
+                self.assertNotIn("analysis.recon", result["suggested_operations"])
+                self.assertIn("components/analysis-agent/README.md", result["suggested_references"])
+
+    def test_route_rea_missing_inputs_negation_and_runtime_boundary(self):
+        history = [{"role": "user", "text": "分析 app.js 和 capture.har"}]
+        for question in ("查询原字节索引", "分析 HAR", "比较 old.har", "记录未知问题", "分析 https://example.com/app.js"):
+            with self.subTest(question=question):
+                result = self.module.route_request(question, False, history)
+                self.assertTrue(result["required_inputs"])
+                self.assertFalse(any(op.startswith(("analysis.offline_", "analysis.unknown_")) or op == "analysis.query" for op in result["suggested_operations"]))
+        for question in ("不要分析 app.js，查看 APK 基本信息", "不要记录未知问题 unknowns.json"):
+            result = self.module.route_request(question, True, [])
+            self.assertFalse(any(op.startswith(("analysis.offline_", "analysis.unknown_")) for op in result["suggested_operations"]))
+        result = self.module.route_request("分析 capture.har，然后截图", True, [])
+        self.assertTrue(result["device_runtime_tools_enabled"])
+        self.assertIn("device.screenshot", result["suggested_operations"])
+        self.assertIn("analysis.offline_har", result["suggested_operations"])
+        self.assertTrue(any("not live runtime" in rule for rule in result["required_contract"]))
+
+    def test_route_tools_by_question_and_local_artifact(self):
+        for question, operation in (
+            ("列出工具清单", "tools.inventory"),
+            ("检查 Babel 工具", "tools.check"),
+            ("安装 Babel 工具", "tools.install"),
+            ("读取 app.ts 的 AST", "tools.js_ast"),
+            ("解混淆 app.js", "tools.js_deobfuscate"),
+            ("查看 libdemo.so 的 ELF 布局", "tools.binary_layout"),
+            ("扫描 firmware.img 固件，使用 binwalk", "tools.firmware_scan"),
+        ):
+            with self.subTest(question=question):
+                result = self.module.route_request(question, False, [])
+                self.assertIn(operation, result["suggested_operations"])
+                self.assertFalse(result["device_runtime_tools_enabled"])
+                self.assertNotIn("local_reply", result)
+                if operation != "tools.install":
+                    self.assertNotIn("tools.install", result["suggested_operations"])
+        for question in ("读取 AST", "解混淆 app.ts", "分析 https://example.com/app.js 的 AST", "查看 ELF 布局", "扫描固件，使用 binwalk"):
+            with self.subTest(question=question):
+                result = self.module.route_request(question, False, [])
+                self.assertTrue(result["required_inputs"])
+                self.assertFalse(any(op.startswith("tools.") for op in result["suggested_operations"]))
+        result = self.module.route_request("安装 Babel 工具，然后截图", False, [])
+        self.assertTrue(result["device_runtime_tools_enabled"])
+        self.assertIn("device.screenshot", result["suggested_operations"])
+        self.assertIn("tools.install", result["suggested_operations"])
+
+    def test_route_runtime_verifier_is_mcp_and_requires_job_evidence(self):
+        for question in ("核对运行记录", "verify managed job", "截图"):
+            result = self.module.route_request(question, False, [])
+            self.assertEqual(result["suggested_mcp_tools"], ["jobs_verify_runtime"])
+            self.assertNotIn("jobs_verify_runtime", result["suggested_operations"])
+            self.assertNotIn("local_reply", result)
+            self.assertTrue(any("exact job.started/result.finished_at" in rule for rule in result["required_contract"]))
+        result = self.module.route_request("只看源码，不做设备验证", True, [])
+        self.assertNotIn("suggested_mcp_tools", result)
+
     def test_route_respects_static_constraints_and_topic_only_words(self):
         history = [{"role": "assistant", "text": "是否继续设备验证？"}]
         cases = {
@@ -926,7 +1000,7 @@ class AnalysisAgentTest(unittest.TestCase):
                     if name == "analysis.knowledge"
                     else ["--output", "--save-session", "--write-path"]
                     if name == "analysis.python"
-                    else ["--output", "--write-path"]
+                    else ["--output", "--write-path", "--publish-path"]
                     if name == "analysis.exec"
                     else ["--output", "--path"]
                     if name == "analysis.scratchpad"

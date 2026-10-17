@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "dotnet": {
+    "version": "10.0.401",
+    "url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.401/dotnet-sdk-10.0.401-linux-x64.tar.gz",
+    "algorithm": "sha512",
+    "hash": "51c8b999af9e8dd9998c9edc5944e19a90788862068acd38694e098889054ce8c23d4f0c5cccfa16bf187d044562359e5ee69a9f8ad0bbe913ba90311fbce25b",
+    "metadata": "https://builds.dotnet.microsoft.com/dotnet/release-metadata/10.0/releases.json"
+  },
+  "gdb-pwndbg": {
+    "version": "2026.09.15",
+    "url": "https://github.com/pwndbg/pwndbg/releases/download/2026.09.15/pwndbg_2026.09.15_x86_64-portable.tar.xz",
+    "hash": "7ba64666ee595885ba4b0e073f85e423829103e9fdbe921ba4eef1acd9150803",
+    "metadata": "https://api.github.com/repos/pwndbg/pwndbg/releases/tags/2026.09.15"
+  },
+  "cfr": {
+    "version": "0.152",
+    "url": "https://repo.maven.apache.org/maven2/org/benf/cfr/0.152/cfr-0.152.jar",
+    "hash": "f686e8f3ded377d7bc87d216a90e9e9512df4156e75b06c655a16648ae8765b2",
+    "verification": "first-official-download-sha256-only",
+    "upstream_sha1": "48ef4892cfe8feffddbbd0ff077735140557db74"
+  },
+  "jd-gui": {
+    "version": "1.6.6",
+    "url": "https://github.com/java-decompiler/jd-gui/releases/download/v1.6.6/jd-gui-1.6.6.jar",
+    "hash": "2c9d3efa8b06438a7284139f68f6efcbfb2a11e0b9d20a3370d50189685afc0b",
+    "verification": "first-official-download-sha256-only"
+  },
+  "il2cppdumper": {
+    "version": "6.7.46",
+    "url": "https://github.com/Perfare/Il2CppDumper/releases/download/v6.7.46/Il2CppDumper-net6-v6.7.46.zip",
+    "hash": "db9bbbc538e33abfb057c7757ae5d6c1f16a05fdc0d13af8a5a67ea31faaba0c",
+    "verification": "first-official-download-sha256-only"
+  },
+  "cutter": {
+    "version": "2.5.0",
+    "url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Linux-x86_64.AppImage",
+    "hash": "b8ad215d7a9e2af9e1f463511229f16e1f4745a0fb541413e5f4787f949ac0cf",
+    "verification": "official-github-asset-sha256"
+  },
+  "cpp2il": {
+    "version": "2022.1.0-pre-release.21",
+    "url": "https://github.com/SamboyCoding/Cpp2IL/releases/download/2022.1.0-pre-release.21/Cpp2IL-2022.1.0-pre-release.21-Linux",
+    "hash": "526998e593c52c029c5a6215c5c6c9f9d963706bfc409fc9ff80a95c4c500349",
+    "verification": "official-github-asset-sha256"
+  }
+}

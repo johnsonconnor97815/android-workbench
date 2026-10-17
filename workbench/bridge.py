@@ -17,6 +17,41 @@ def locate_project(script):
     return None
 
 
+def verify_runtime_record(record):
+    """Always query the owning service; standalone JSON is not execution authority."""
+    grant_path = os.environ.get("AWB_INTERNAL_GRANT")
+    if grant_path:
+        grant = json.loads(Path(grant_path).read_text())
+        return rpc(grant["state"], "worker.verify_runtime",
+                   {"id": grant["job"], "record": record}, grant["token"])
+    project = locate_project(__file__)
+    if project is None:
+        raise WorkbenchError("Runtime evidence requires an authenticated Workbench project")
+    return Client(project).call("jobs.verify_runtime", record)
+
+
+def _validate_internal(script):
+    grant_path = os.environ.get("AWB_INTERNAL_GRANT")
+    if not grant_path:
+        raise WorkbenchError("This entry requires an authenticated managed worker")
+    grant = json.loads(Path(grant_path).read_text())
+    return rpc(
+        grant["state"], "worker.validate_entry",
+        {"id": grant["job"], "pid": os.getpid(), "script": str(Path(script).resolve())},
+        grant["token"],
+    )
+
+
+def managed_identity(script):
+    """Return the service-bound actor; grant files and display names are not identity."""
+    identity = _validate_internal(script)
+    keys = ("owner_digest", "client_session", "project", "job_id")
+    if (not isinstance(identity, dict) or identity.get("managed") is not True
+            or any(not isinstance(identity.get(key), str) or not identity[key] for key in keys)):
+        raise WorkbenchError("Managed worker identity is incomplete")
+    return {key: identity[key] for key in keys}
+
+
 def entry(script, argv=None):
     script = Path(script).resolve()
     project = locate_project(script)
@@ -24,13 +59,7 @@ def entry(script, argv=None):
         return  # Original standalone behavior outside registered workspaces.
     grant_path = os.environ.get("AWB_INTERNAL_GRANT")
     if grant_path:
-        grant = json.loads(Path(grant_path).read_text())
-        rpc(
-            grant["state"],
-            "worker.validate_entry",
-            {"id": grant["job"], "pid": os.getpid(), "script": str(script)},
-            grant["token"],
-        )
+        _validate_internal(script)
         return
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv in (["--help"], ["-h"]) or (

@@ -18,8 +18,9 @@ import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from workbench.client import Client
+from workbench.mcp import METHODS as MCP_METHODS
 from workbench.common import WorkbenchError, process_identity, rpc, same_process
-from workbench.project import generate, registered_path, update
+from workbench.project import builtin_operations, generate, registered_path, update
 from workbench.registry import normalize
 from workbench.service import DEFAULTS
 
@@ -597,7 +598,12 @@ class StandaloneInstallTest(unittest.TestCase):
                 )
                 manifest = json.loads((project / "workbench.project.json").read_text())
                 self.assertEqual(manifest["workbench_root"], str(moved))
-                self.assertEqual(len(manifest["operations"]), 120)
+                self.assertEqual(set(manifest["operations"]), set(builtin_operations()))
+                for name in ("analysis.query", "analysis.unknown_record", "analysis.unknown_update", "analysis.unknown_check",
+                             "analysis.offline_js", "analysis.offline_source_map", "analysis.offline_har", "analysis.offline_compare"):
+                    self.assertIn(name, manifest["operations"])
+                self.assertIn("device_manager.flash_verify", manifest["operations"])
+                self.assertIn("device_manager.recover_flash", manifest["operations"])
                 self.assertNotIn(str(ROOT), json.dumps(manifest))
                 self.assertFalse((project / "android-workbench").exists())
                 self.assertFalse((project / ".venv").exists())
@@ -682,7 +688,9 @@ class StandaloneInstallTest(unittest.TestCase):
                     messages = [
                         json.loads(line) for line in response.stdout.splitlines()
                     ]
-                    self.assertEqual(len(messages[1]["result"]["tools"]), 27)
+                    exported_tools = {tool["name"] for tool in messages[1]["result"]["tools"]}
+                    self.assertEqual(exported_tools, set(MCP_METHODS))
+                    self.assertIn("jobs_verify_runtime", exported_tools)
                     self.assertFalse(messages[2]["result"]["isError"])
                     self.assertIn(
                         "apk.pull", messages[2]["result"]["content"][0]["text"]
@@ -698,12 +706,18 @@ class StandaloneInstallTest(unittest.TestCase):
                     except (WorkbenchError, ProcessLookupError, FileNotFoundError):
                         pass
                 if identity and same_process(identity):
-                    os.kill(identity["pid"], signal.SIGTERM)
+                    try:
+                        os.kill(identity["pid"], signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass  # The fixture service may finish between check and kill.
                     deadline = time.monotonic() + 8
                     while same_process(identity) and time.monotonic() < deadline:
                         time.sleep(0.05)
                     if same_process(identity):
-                        os.kill(identity["pid"], signal.SIGKILL)
+                        try:
+                            os.kill(identity["pid"], signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
 
 if __name__ == "__main__":

@@ -1,0 +1,365 @@
+{
+  "schema": 1,
+  "tools": [
+    {
+      "id": "jdk",
+      "kind": "static-env",
+      "version": "21.0.12+101.0.LTS",
+      "source": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz.sha256.txt",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "sdk",
+      "kind": "static-env",
+      "version": "21.0",
+      "source": "https://dl.google.com/android/repository/repository2-3.xml",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "jadx",
+      "kind": "static-env",
+      "version": "v1.5.6",
+      "source": "https://github.com/skylot/jadx/releases/tag/v1.5.6",
+      "install_operation": "tools.install",
+      "run_operation": "analysis.decompile",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "apktool",
+      "kind": "static-env",
+      "version": "v3.0.3",
+      "source": "https://github.com/iBotPeaches/Apktool/releases/tag/v3.0.3",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "smali",
+      "kind": "static-env",
+      "version": "3.0.10",
+      "source": "https://github.com/google/smali",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "bundletool",
+      "kind": "static-env",
+      "version": "1.18.3",
+      "source": "https://github.com/google/bundletool/releases/tag/1.18.3",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "androguard",
+      "kind": "static-env",
+      "version": "4.1.4",
+      "source": "https://pypi.org/project/androguard/4.1.4/",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "droidasc",
+      "kind": "static-env",
+      "version": "0.1.1.post2",
+      "source": "https://pypi.org/project/droidasc/0.1.1.post2/",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "dex2jar",
+      "kind": "static-env",
+      "version": "v2.4",
+      "source": "https://github.com/pxb1988/dex2jar/releases/tag/v2.4",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "apkid",
+      "kind": "static-env",
+      "version": "3.1.0",
+      "source": "https://pypi.org/project/apkid/3.1.0/",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "quark",
+      "kind": "static-env",
+      "version": "26.9.1",
+      "source": "https://pypi.org/project/quark-engine/26.9.1/",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "semgrep",
+      "kind": "static-env",
+      "version": "1.177.0",
+      "source": "https://pypi.org/project/semgrep/1.177.0/",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "rizin",
+      "kind": "static-env",
+      "version": "v0.9.1",
+      "source": "https://github.com/rizinorg/rizin/releases/tag/v0.9.1",
+      "install_operation": "tools.install",
+      "run_operation": "analysis.exec",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "ghidra",
+      "kind": "static-env",
+      "version": "Ghidra_12.1.3_build",
+      "source": "https://github.com/NationalSecurityAgency/ghidra/releases/tag/Ghidra_12.1.3_build",
+      "install_operation": "tools.install",
+      "run_operation": "analysis.mcp_call",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "native-python",
+      "kind": "static-env",
+      "version": "1.0.0",
+      "source": "https://lief.re/",
+      "install_operation": "tools.install",
+      "run_operation": "tools.binary_layout",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "utilities",
+      "kind": "static-env",
+      "version": "distribution-defined",
+      "source": "skills/android-workbench/components/static-env/assets/toolchain.lock.json",
+      "install_operation": "tools.install",
+      "run_operation": "static.smoke",
+      "limitations": "Existing toolchain adapter; inventory presence and CLI check do not establish sample compatibility."
+    },
+    {
+      "id": "frida",
+      "kind": "frida",
+      "version": "explicit caller-selected release",
+      "source": "https://github.com/frida/frida",
+      "install_operation": "frida.fetch",
+      "run_operation": "frida.provenance",
+      "managed_operations": [
+        "frida.fetch",
+        "frida.apply_profile",
+        "frida.build",
+        "frida.sync_resources",
+        "frida.mcp_session",
+        "frida.probe_native"
+      ],
+      "limitations": "Source presence is not a working host client, device server, modified Hook compatibility or runtime verification. Fetch/build/probe keep their existing explicit-input and device boundaries."
+    },
+    {
+      "id": "babel",
+      "kind": "node",
+      "version": "7.28.4",
+      "source": "https://babeljs.io/docs/babel-parser",
+      "install_operation": "tools.install",
+      "run_operation": "tools.js_ast"
+    },
+    {
+      "id": "wakaru",
+      "kind": "node",
+      "version": "1.13.0",
+      "source": "https://github.com/pionxzh/wakaru",
+      "install_operation": "tools.install",
+      "run_operation": "tools.js_deobfuscate",
+      "limitations": "Readable syntax recovery; not guaranteed original source, full deobfuscation or behavioral equivalence."
+    },
+    {
+      "id": "rust",
+      "kind": "rust",
+      "version": "1.90.0",
+      "source": "https://static.rust-lang.org/dist/channel-rust-1.90.0.toml",
+      "install_operation": "tools.install",
+      "run_operation": "tools.check",
+      "requirements": [
+        "Linux x86_64",
+        "existing C linker for compiling Binwalk"
+      ],
+      "limitations": "Project-local compiler, Cargo and standard library only; no global profile edits or Rustup."
+    },
+    {
+      "id": "binwalk",
+      "kind": "cargo",
+      "version": "3.1.0",
+      "source": "https://github.com/ReFirmLabs/binwalk",
+      "install_operation": "tools.install",
+      "run_operation": "tools.firmware_scan",
+      "requirements": [
+        "Managed Rust 1.90.0 automatically provisioned",
+        "C compiler",
+        "liblzma development files"
+      ],
+      "limitations": "Fixed signature scan only, extraction disabled."
+    },
+    {
+      "id": "unblob",
+      "kind": "python",
+      "version": "26.6.4",
+      "source": "https://unblob.org/installation/",
+      "install_operation": "tools.install",
+      "run_operation": "tools.firmware_scan",
+      "requirements": [
+        "Python >=3.10",
+        "libmagic",
+        "Landlock-capable Linux",
+        "prlimit"
+      ],
+      "limitations": "One-level signature scan and carving; external extractors disabled. Not a full firmware reconstruction."
+    },
+    {
+      "id": "hopper",
+      "kind": "catalog-only",
+      "version": "unknown",
+      "source": "https://www.hopperapp.com/",
+      "requirements": [
+        "Commercial Linux/macOS download; user-provided license required for full use"
+      ],
+      "limitations": "No installer or license present; trial is not a full licensed installation."
+    },
+    {
+      "id": "ida",
+      "kind": "catalog-only",
+      "version": "unknown",
+      "source": "https://hex-rays.com/ida-pro",
+      "requirements": [
+        "commercial engine and license; no bundled adapter"
+      ],
+      "limitations": "No install/run adapter in this Linux/Android profile."
+    },
+    {
+      "id": "macos-runtime",
+      "kind": "catalog-only",
+      "version": "unknown",
+      "source": "https://developer.apple.com/documentation/xcode",
+      "requirements": [
+        "macOS/Xcode/LLDB and OS permissions"
+      ],
+      "limitations": "No install/run adapter in this Linux/Android profile."
+    },
+    {
+      "id": "ilspy",
+      "kind": "optional",
+      "version": "11.1.0.9782",
+      "source": "https://github.com/icsharpcode/ILSpy",
+      "limitations": "Project-local installation and harmless check only; no analysis/capture/device adapter.",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check"
+    },
+    {
+      "id": "evmole",
+      "kind": "optional",
+      "version": "0.9.3",
+      "source": "https://github.com/cdump/evmole",
+      "limitations": "Project-local installation and harmless check only; no analysis/capture/device adapter.",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check"
+    },
+    {
+      "id": "pwntools",
+      "kind": "optional",
+      "version": "4.15.0",
+      "source": "https://docs.pwntools.com/",
+      "limitations": "Project-local installation and harmless check only; no analysis/capture/device adapter.",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check"
+    },
+    {
+      "id": "gdb-pwndbg",
+      "kind": "optional",
+      "version": "2026.09.15",
+      "source": "https://pwndbg.re/",
+      "limitations": "Project-local installation and harmless check only; no analysis/capture/device adapter.",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check"
+    },
+    {
+      "id": "mitmproxy",
+      "kind": "optional",
+      "version": "12.2.3",
+      "source": "https://docs.mitmproxy.org/",
+      "limitations": "Project-local installation and harmless check only; no analysis/capture/device adapter.",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check"
+    },
+    {
+      "id": "cfr",
+      "version": "0.152",
+      "source": "https://www.benf.org/other/cfr/",
+      "kind": "optional",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check",
+      "limitations": "Project-local static engine; fixed-class/core or CLI check only. GUI and Unity target compatibility require separate input."
+    },
+    {
+      "id": "jd-gui",
+      "version": "1.6.6",
+      "source": "https://github.com/java-decompiler/jd-gui",
+      "kind": "optional",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check",
+      "limitations": "Project-local static engine; fixed-class/core or CLI check only. GUI and Unity target compatibility require separate input."
+    },
+    {
+      "id": "cutter",
+      "version": "2.5.0",
+      "source": "https://github.com/rizinorg/cutter",
+      "kind": "optional",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check",
+      "limitations": "Project-local static engine; fixed-class/core or CLI check only. GUI and Unity target compatibility require separate input."
+    },
+    {
+      "id": "il2cppdumper",
+      "version": "6.7.46",
+      "source": "https://github.com/Perfare/Il2CppDumper",
+      "kind": "optional",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check",
+      "limitations": "Project-local static engine; fixed-class/core or CLI check only. GUI and Unity target compatibility require separate input."
+    },
+    {
+      "id": "cpp2il",
+      "version": "2022.1.0-pre-release.21",
+      "source": "https://github.com/SamboyCoding/Cpp2IL",
+      "kind": "optional",
+      "install_operation": "tools.install",
+      "check_operation": "tools.check",
+      "limitations": "Project-local static engine; fixed-class/core or CLI check only. GUI and Unity target compatibility require separate input."
+    },
+    {
+      "id": "blutter",
+      "version": "target-dependent",
+      "source": "https://github.com/worawit/blutter",
+      "kind": "catalog-only",
+      "requirements": [
+        "Android arm64 libapp.so/libflutter.so and matching Dart version/build dependencies required"
+      ],
+      "limitations": "No version is guessed without target input; source presence would not prove target-matched analyzer usable."
+    },
+    {
+      "id": "hbcdump",
+      "version": "target-dependent",
+      "source": "https://github.com/facebook/hermes",
+      "kind": "catalog-only",
+      "requirements": [
+        "Target Hermes bytecode version and matching compiler/release required"
+      ],
+      "limitations": "No version is guessed without target input; source presence would not prove target-matched analyzer usable."
+    }
+  ]
+}

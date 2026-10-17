@@ -8,19 +8,29 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
+
+from recover_flash_factory import fastboot_transport
 
 
-def main() -> int:
+def main(*, ota=False) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True)
+    parser.add_argument("--fastboot-serial")
+    parser.add_argument("--stage", choices=("prepare", "sideload"), default="sideload")
     parser.add_argument("--output", type=Path, required=True)
     arguments = parser.parse_args()
+    if arguments.output.exists():
+        parser.error("Use a new output path; existing evidence is retained")
 
     result = {
         "pass": False,
         "cleanup_errors": [],
         "recovery_targets": [],
         "adb_state": None,
+        "system_verified": False,
+        "safe_to_retry": False,
+        "stage": arguments.stage,
     }
     try:
         grant = json.loads(Path(os.environ["AWB_INTERNAL_GRANT"]).read_text())
@@ -35,38 +45,54 @@ def main() -> int:
                 Path(grant["state"]) / "jobs" / identifier / "normalized.json"
             )
             normalized = json.loads(normalized_path.read_text())
-            if normalized.get("operation") not in {
-                "device_manager.install_rom",
-                "device_manager.recover_install_rom",
-            }:
+            allowed = {"device_manager.install_ota", "device_manager.recover_ota"} if ota else {
+                "device_manager.install_rom", "device_manager.recover_install_rom"}
+            if normalized.get("operation") not in allowed:
                 raise RuntimeError("Recovery target is not a ROM installation")
+            original_args = normalized.get("args", [])
+            def values(flag):
+                return [original_args[i + 1] for i, value in enumerate(original_args[:-1]) if value == flag] + [
+                    value.split("=", 1)[1] for value in original_args if value.startswith(flag + "=")]
+            stages = values("--stage")
+            if len(stages) > 1 or (stages[0] if stages else "sideload") != arguments.stage:
+                raise RuntimeError("Recovery stage differs from the interrupted job")
+            serials = values("--fastboot-serial")
+            if len(serials) > 1 or (serials[0] if serials else arguments.serial) != (
+                    arguments.fastboot_serial or arguments.serial):
+                raise RuntimeError("Fastboot serial differs from the interrupted job")
             result["recovery_targets"].append(identifier)
+        if arguments.stage == "prepare" and not ota:
+            fastboot = shutil.which("fastboot")
+            if fastboot is None:
+                raise RuntimeError("fastboot executable not found in PATH")
+            command = [fastboot, "devices"]
+        else:
+            command = [spec["adb"], "-s", arguments.serial, "get-state"]
         completed = subprocess.run(
-            [spec["adb"], "-s", arguments.serial, "get-state"],
+            command,
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-        state = completed.stdout.strip()
-        result["adb_state"] = state
+        state = (fastboot_transport(completed.stdout, arguments.fastboot_serial or arguments.serial)
+                 if arguments.stage == "prepare" and not ota else completed.stdout.strip())
+        result["fastboot_state" if arguments.stage == "prepare" and not ota else "adb_state"] = state
         if completed.returncode != 0:
             raise RuntimeError(
                 "ADB state check failed: "
                 + (completed.stderr.strip() or completed.stdout.strip())
             )
-        if state != "sideload":
+        permitted = ({"recovery", "sideload"} if ota else {"fastboot", "fastbootd"}) if arguments.stage == "prepare" else {"sideload"}
+        if state not in permitted:
             raise RuntimeError(
-                "ROM recovery requires the phone to wait in sideload mode, got: "
-                + state
+                "ROM recovery requires the phone in the interrupted stage's mode, got: "
+                + str(state)
             )
         result["pass"] = True
     except BaseException as error:
         result["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
     finally:
-        if arguments.output.exists():
-            result["cleanup_errors"].append("ValueError: output already exists")
-            result["pass"] = False
         arguments.output.write_text(
             json.dumps(result, ensure_ascii=False, indent=2) + "\n"
         )

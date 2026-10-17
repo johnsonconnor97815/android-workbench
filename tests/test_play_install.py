@@ -84,6 +84,35 @@ class PlayUiTest(unittest.TestCase):
         root, *_ = fixture(False)
         self.assertEqual(ui.find_install_action(xml(root), TITLE, DEVELOPER).layout, "full_details")
 
+    def test_compose_sheet_dismiss_backdrop_behind_header_is_not_an_overlay(self):
+        root, body, *_ = fixture()
+        root.remove(body)
+        surface = node(root, "[0,0][1080,2200]")
+        node(surface, "[0,0][1080,2200]", desc="关闭工作表", clickable=True)
+        surface.append(body)
+        action = ui.find_install_action(xml(root), TITLE, DEVELOPER)
+        self.assertIsNotNone(action)
+        self.assertEqual(action.center, (811, 783))
+
+    def test_dismiss_text_does_not_excuse_foreground_or_foreign_overlays(self):
+        for variation in ("after", "foreign", "other_label", "outside"):
+            with self.subTest(variation=variation):
+                root, body, *_ = fixture()
+                root.remove(body)
+                surface = node(root, "[0,0][1080,2200]")
+                scrim = node(surface, "[0,0][1080,2200]", desc="Close sheet", clickable=True)
+                surface.append(body)
+                if variation == "after":
+                    surface.remove(scrim)
+                    surface.append(scrim)
+                elif variation == "foreign":
+                    scrim.set("package", "com.example.overlay")
+                elif variation == "other_label":
+                    scrim.set("content-desc", "Another action")
+                else:
+                    scrim.set("bounds", "[700,700][900,900]")
+                self.assertIsNone(ui.find_install_action(xml(root), TITLE, DEVELOPER))
+
     def test_wrong_title_developer_substrings_and_package_are_rejected(self):
         for field, value in (("content-desc", TITLE + " extra\n" + DEVELOPER),
                              ("content-desc", TITLE + "\nOther Developer"),

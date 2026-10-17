@@ -1,12 +1,26 @@
 # Android Workbench 路由与调度
 
+刷机前按设备管理文档准备 `flash_plan`，绑定手机与文件校验值，并核对分区、启动程序版本、防降级要求和验收项目。`backup_data` 导出指定的共享存储文件；`backup_prepare` 保存原始镜像及数据取舍记录，`backup_verify` 检查是否可用于下一步恢复研究。第三方系统用 `install_rom` 的机型顺序和分阶段附加包；保数据的官方完整 OTA 用 `install_ota`。刷写、等待手机人工操作、验收是不同阶段；用 `device_manager.flash_verify --flash-record <刷写结果> --health-record <功能检查记录>` 确认目标系统、启动分区和指定功能，只有 `workflow_complete: true` 才代表本流程验收完成。中断使用对应的 `recover_flash`、`recover_flash_factory`、`recover_install_rom` 或 `recover_ota` 核实连接并恢复队列；它不代表系统已恢复，不能自动重放刷写。
+
 先读取使用者项目的 `workbench.project.json`；项目有 `.envrc` 时执行 `source .envrc`。未初始化时，用 `python3 <插件目录>/scripts/bootstrap.py --project <项目目录>` 安装共享运行时并登记本仓库能力。项目专用能力保留在项目中，通用组件随插件分发；不要将项目 APK 或证据复制进插件。仅做目标手机管理时可以不初始化分析项目：把 `--project` 指向本仓库或插件目录，服务会进入只包含 `device_manager.*` 的设备管理模式。
+
+本地环境与命令入口检查：
+
+- `.envrc` 是可选文件，缺失不表示项目或服务故障。在项目目录单独执行 `if [ -f .envrc ]; then source ./.envrc; else printf '%s\n' '.envrc 不存在，沿用当前环境'; fi`；加载失败仍保留原退出码。不要用 `ls | rg` 判断文件是否存在，也不要为了消除提示创建空文件。
+- 读文档、检查文件和查询服务分别执行并记录结果，避免用分号串联后只看到最后一项的退出码。`rg` 的退出码 `1` 表示无匹配，`2` 表示错误；仅在允许无匹配的探索性搜索中把 `1` 转成明确的“无匹配”结果，保留其他错误，不用 `|| true` 一律忽略。检查路径存在后再搜索；不要让 `| head` 隐藏搜索状态。
+- 查询命令用 `python3 <插件目录>/scripts/workbench.py --help`，查询已登记能力用 `operations`。`scripts/workbench.py` 只是启动入口，需要查看参数实现时读取 `workbench/cli.py`。判断调用失败时查看完整命令、退出码和错误输出；`cat`、`sed`、`tail` 打印出的源码不代表源码已经执行。
 
 使用 `service_capabilities` 确认共享服务、模型模式及 `client_session`。连接优先使用 `CODEX_THREAD_ID`；若没有该环境变量，保存返回的身份，重连时先用 `sessions_select` 恢复同一身份。用 `operations_list` 获取已登记脚本及参数约定。任务提交、进度、取消和产物分别使用 `jobs_submit`、`jobs_status`、`jobs_cancel`、`jobs_artifacts`。提交必须带稳定的 `request_key`；调用超时后用相同内容和相同标识查询或重试。先用 `devices_discover` 查看 ADB/fastboot 可见连接，用 `devices_register` 登记共享设备 ID，再用 `devices_list` 确认；多台设备时使用明确设备 ID，不能按型号替换来源手机。需要长期预留时用 `devices_project_assign` 指定项目；其他项目不能再排队该设备任务，恢复操作除外。用 `devices_project_release` 在无活动或排队任务时解除指定。
 
 能力路由：
 
+- App 复制：先读 [App 复制组件](../components/app-replica/README.md)，使用新的本地文件协调入口。Main 对接用户，Astra App 任务安排盘点、入口和 MVP，Sol 沿发现的类/方法实现。协调程序不占用长期队列项目锁；实际分析、设备和共享环境操作仍通过既有受管入口。旧 `replication.*` 流程和 Agent 已删除，历史状态不用于恢复旧执行器。
+
 - 新 App 分析：先读 `references/sample-analysis.md`。对 base 和全部已提供 split 执行 `analysis.recon`，保存结构线索和限制，再用 `analysis.route --recon` 结合样本选择流程。通过 `analysis.plan`、`analysis.plan_update` 和 `analysis.plan_check` 保存阶段与证据；最终 `complete:true` 只表示声明的任务范围完成，静态任务不因此成为真机验证。重新打开阶段或输入变化会使后续完成状态失效。
+
+- 精确索引、未知问题与离线文件：读取 [分析组件的 REA 入口](../components/analysis-agent/README.md#rea-机制入口)。`analysis.query` 使用已有 SQLite 原字节索引及精确 selector；不自动建索引。`analysis.unknown_record/update/check` 使用明确 ledger 路径；更新必须带当前 revision，解决须审阅证据。`analysis.offline_js/source_map/har/compare` 只读取明确提供的本地文件；比较须两份同类输入。`analysis.route` 按当前问题推荐，缺输入返回 `required_inputs`；文件名线索不证明文件存在，执行前核对路径和登记。单独离线文件无需 APK，不采集网络或申请手机；HAR 记录不代替真实任务的运行证明。
+- 统一工具入口：工具目录、适配器和新运行时定义放在仓库 `Tools/`，见 [工具说明](../../../Tools/README.md)。先用 `tools.inventory` 查目录、`tools.check` 查实际可用性；明确安装请求才用受管 `tools.install`。JS 语法树用 `tools.js_ast`，可读恢复用 `tools.js_deobfuscate`；ELF 段/节/符号布局用 `tools.binary_layout`；有限固件扫描用 `tools.firmware_scan`。执行须已有本地输入和可用工具；路由不自动安装，不把后缀当格式证明，不把解析/恢复/扫描当运行证明。已有 `.android-static` 等工具位置由目录登记，不能为了统一入口随意搬动正在使用的环境。
+- 运行来源核对：`jobs_verify_runtime` 核对认证项目内真实任务、完整任务执行窗口和可信发布文件的 SHA-256；`analysis.plan_update` 与 `analysis.plan_check` 也重新调用服务核对。服务或可信发布记录缺失时保留未核验，不能自行填写任务 JSON 批准运行结论。格式见 [样本完成检查](sample-analysis.md) 和 [REA 使用说明](../../../docs/rea-adoption-usage.md)。
 
 - 环境安装及分析 MCP：读取 `components/static-env/README.md`。修改环境要等实际使用者收尾。只读宿主访问因已退出进程留下故障占用时，使用 `environment.recover_host_lease` 核验并恢复；仍存活或未知的进程不能清锁。
 - APK 权限与代码用途审计：读取 `components/permission-audit/README.md`，通过 `static.permission_audit` 提交 base APK 和全部 split APK；可以用 `--source-dir` 复用已有反编译源码。输出权限清单、代码证据和报告草稿后继续人工或模型审阅，草稿不能直接当作最终报告。输入文件哈希、源码目录、工具环境和输出目录参与队列检查，纯静态操作不申请手机。
@@ -28,5 +42,7 @@
 刷机、安装或重装 Root 和设备模式切换开始前，先按设备管理文档列出需要按键、触屏或授权的步骤，并提醒用户必须有人在手机旁边；机型是否需要人工操作尚未确认时，也要提前说明。已有 Root 授权不重复提醒：先读 `devices_state` 或 `devices_list` 的 `device_status`，`stale:false` 且 `root_access.status:granted` 可复用最近的执行身份授权记录；失效或命令失败后用受管预检重新核验，确需手机操作时才提示。研究、下载、镜像校验和不接触手机的 `--dry-run` 可以先做。必须人工完成的步骤是后续任务的前置条件：给出当前步骤的操作说明和完成标志，等待用户完成，再通过共享队列验证，不能只凭上一条命令成功就提交下一阶段。人工接管仍遵循 `devices_manual_acquire` / `devices_manual_release`；已有任务未释放或处于 `needs_recovery` 时，按其实际状态处理，不绕过队列。
 
 普通 `preflight` 只读取状态，不执行请求 Root 权限的命令；上下文未变时可复用旧授权，并保留原验证时间。需要 Root 的任务没有可复用授权时才用 `preflight --check-root`；它可能出现手机授权弹窗。不要为刷新型号、电量等信息主动请求 Root，也不要把 `not_checked` 当作已经授权或 Root 失败。
+
+官方 OTA 的 `prepare` 成功后，人工接管并等待用户选中 `Apply update from ADB`。此时用 `devices_manual_release(device=..., transport="sideload", prepared_job="<本次准备任务 ID>")` 归还，等待返回的核验任务成功再提交旁加载；默认归还会检查正常开机的 Android，不能用于此阶段。专用归还只核验已审核的准备记录和旁加载连接，不表示系统已修复，也不适用于第三方 ROM 或 fastboot。
 
 用户要看“当前这一页”时，指定场景、App、Activity 和有限排队时间；过期后说明现场已消失，不用另一页截图代替。需要无 Hook 基线时不得借用活动 Hook 的现场。读取已有不可变证据可直接进行，不重新占用手机。

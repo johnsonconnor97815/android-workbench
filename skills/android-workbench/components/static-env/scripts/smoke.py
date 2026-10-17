@@ -181,7 +181,8 @@ def main():
         if 'apktool' in selected:
             attempt('apktool-decode', lambda: run('apktool-decode', ['apktool', 'd', '-p', out / 'framework', '-o', out / 'apktool', apk], timeout=300))
         if 'quark' in selected:
-            rules = (root / 'quark-rules.path').read_text().strip()
+            pointer = Path((root / 'quark-rules.path').read_text().strip())
+            rules = str(pointer if pointer.is_absolute() else root / pointer)
             attempt('quark-apk', lambda: run('quark-apk', ['quark', '-a', apk, '-r', rules, '-o', out / 'quark.json'], timeout=300))
         require(sha256(apk) == provenance['apk']['sha256'], 'Input APK changed during smoke tests')
     elif 'quark' in selected:

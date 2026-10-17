@@ -29,6 +29,7 @@ from .common import (
     descendants,
     become_subreaper,
 )
+from .analysis_evidence import executable_identity, make_evidence, read_analysis_metadata
 
 
 class Cancelled(Exception):
@@ -482,6 +483,7 @@ class Runner:
 
     def command(self, argv, timeout=30, cleanup=False, env=None, cwd=None):
         self.authorize(cleanup)
+        self.record_executable(argv[0], env=env, cwd=cwd)
         operation = {"argv": argv, "prepared_at": time.time(), "confirmed": False}
         self.call("event", kind="command_prepared", data=operation)
         cmd_id = str(time.time_ns())
@@ -536,6 +538,13 @@ class Runner:
                 f"Command failed ({code}): {err.read_text(errors='replace')[-1000:]}"
             )
         return out.read_bytes()
+
+    def record_executable(self, command, env=None, cwd=None):
+        identities = getattr(self, "executable_identities", [])
+        identity = executable_identity(command, env=env, cwd=cwd)
+        if identity not in identities:
+            identities.append(identity)
+        self.executable_identities = identities
 
     def sleep(self, seconds):
         end = time.monotonic() + seconds
@@ -621,7 +630,20 @@ class Runner:
         spec = self.spec
         if spec["operation"] == "device.recover":
             # Reinspection does not claim to undo unknown remote mutations.
-            observation = self.device.observe()
+            handover = spec.get("manual_return")
+            if handover:
+                from .results import verify_ota_prepare_handover
+                verified = verify_ota_prepare_handover(
+                    Path(self.grant["state"]) / "jobs" / handover["prepared_job"], spec)
+                if any(handover.get(key) != value for key, value in verified.items()):
+                    raise WorkbenchError("OTA preparation changed after manual release")
+                if handover.get("transport") != "sideload" or self.device.adb("get-state") != "sideload":
+                    raise WorkbenchError("Manual return requires the selected phone in sideload mode")
+                observation = {"transport": "sideload", "serial": spec["serial"],
+                               "prepared_job": handover["prepared_job"],
+                               "system_verified": False, "observed_at": time.time()}
+            else:
+                observation = self.device.observe()
             previous = []
             for identifier in spec.get("recovery_targets", []):
                 folder = Path(self.grant["state"]) / "jobs" / identifier
@@ -643,18 +665,26 @@ class Runner:
                     raise WorkbenchError("An old command process is still alive")
                 result = folder / "result.json"
                 outcome = json.loads(result.read_text()) if result.is_file() else {}
-                if not outcome.get("cleanup_ok") and not old.get("readonly", False):
-                    from .results import verify_native_probe_recovery, verify_package_query_recovery
+                if folder.name in spec.get("adb_recovery_targets", []):
+                    # The service checked the dead exclusive ADB owner; the
+                    # observation above verifies the selected device transport.
+                    self.recovered_resources.extend(old.get("resources", []))
+                    self.reconciled_jobs.append(folder.name)
+                elif not outcome.get("cleanup_ok") and not old.get("readonly", False):
+                    from .results import verify_native_probe_recovery, verify_package_query_recovery, verify_hal_query_recovery
 
                     if (old[
                         "operation"
                     ] == "frida.probe_native" and verify_native_probe_recovery(
                         self, folder, old
-                    )) or verify_package_query_recovery(self, folder, old):
+                    )) or verify_package_query_recovery(self, folder, old) or verify_hal_query_recovery(self, folder, old):
                         self.recovered_resources.extend(old.get("resources", []))
                         self.reconciled_jobs.append(folder.name)
                     else:
                         previous.append(folder.name)
+                else:
+                    self.recovered_resources.extend(old.get("resources", []))
+                    self.reconciled_jobs.append(folder.name)
             if previous:
                 raise WorkbenchError(
                     "Uncertain mutating operations require their registered recovery procedure: "
@@ -801,6 +831,7 @@ class Runner:
         if self.spec["script"].endswith(".sh"):
             argv = ["bash", self.spec["script"], *self.spec.get("args", [])]
         self.authorize()
+        self.record_executable(argv[0], env=env, cwd=self.spec["project"])
         out = self.directory / "stdout.log"
         err = self.directory / "stderr.log"
         with out.open("wb") as stdout, err.open("wb") as stderr:
@@ -845,6 +876,8 @@ class Runner:
             finally:
                 self.active = None
         cleanup_verified = False
+        if entry.get("analysis_metadata"):
+            self.analysis_status.update(read_analysis_metadata(self.spec, out))
         result_file = entry.get("result_file")
         if result_file:
             outputs = self.spec.get("outputs", [])
@@ -915,6 +948,7 @@ class Runner:
                 "normalized.json",
                 "result.json",
                 "artifacts.json",
+                "analysis-evidence.json",
                 "worker.log",
             }:
                 with path.open("rb") as stream:
@@ -952,9 +986,7 @@ class Runner:
                         {"path": str(path), "sha256": hashed, "bytes": after.st_size}
                     )
             external.append(record)
-        atomic_json(
-            self.directory / "artifacts.json",
-            {
+        artifacts = {
                 "job": self.grant["job"],
                 "operation": self.spec["operation"],
                 "device": self.spec.get("device"),
@@ -963,8 +995,16 @@ class Runner:
                 "files": files,
                 "external_outputs": external,
                 "resource_usage": result.get("resource_usage"),
-            },
-        )
+            }
+        evidence = make_evidence(self.spec, result, artifacts,
+                                 getattr(self, "executable_identities", []))
+        evidence_path = self.directory / "analysis-evidence.json"
+        atomic_json(evidence_path, evidence)
+        reference = {"name": evidence_path.name, "sha256": file_hash(evidence_path),
+                     "bytes": evidence_path.stat().st_size}
+        artifacts["files"].append(reference)
+        result["analysis_evidence"] = {**reference, "evidence_id": evidence["evidence_id"]}
+        atomic_json(self.directory / "artifacts.json", artifacts)
         atomic_json(self.directory / "result.json", result)
 
     def execute(self, borrowed=False):
@@ -987,8 +1027,7 @@ class Runner:
             if self.spec["operation"] == "host.lease":
                 from .leases import execute_lease
 
-                execute_lease(self)
-                outcome = "succeeded"
+                outcome = execute_lease(self) or "succeeded"
             elif "entry" in self.spec:
                 outcome, code = self.legacy()
             else:
@@ -1024,6 +1063,7 @@ class Runner:
             "recovered_resources": self.recovered_resources,
             "resource_usage": self.resource_usage(),
             **({"analysis_status": self.analysis_status} if self.analysis_status else {}),
+            **({"external_call": self.external_call} if hasattr(self, "external_call") else {}),
         }
         try:
             self.publish(result)

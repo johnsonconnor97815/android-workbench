@@ -768,5 +768,336 @@ def main():
     else:query(args)
 
 
+QUERY_SCHEMA = 'apk-query/v1'
+QUERY_MAX_DB_BYTES = 1024 * 1024 * 1024
+QUERY_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+QUERY_MAX_ROWS = 10000
+QUERY_SELECTORS = {
+    'methods': {'artifact', 'entry', 'descriptor', 'method_idx', 'name'},
+    'callers': {'artifact', 'entry', 'descriptor', 'method_idx', 'name'},
+    'callees': {'artifact', 'entry', 'descriptor', 'method_idx', 'name'},
+    'dex_graph': {'artifact', 'entry', 'descriptor', 'method_idx', 'name'},
+    'fields': {'artifact', 'entry', 'descriptor', 'pool_idx'},
+    'field_sites': {'artifact', 'entry', 'descriptor', 'pool_idx'},
+    'constants': {'artifact', 'entry', 'value', 'pool_idx'},
+    'string_sites': {'artifact', 'entry', 'value', 'pool_idx'},
+    'native_functions': {'artifact', 'entry', 'name', 'address'},
+    'native_sites': {'artifact', 'entry', 'name', 'address'},
+    'native_graph': {'artifact', 'entry', 'name', 'address'},
+    'jni_bindings': {'artifact', 'entry', 'descriptor', 'method_idx', 'name', 'address'},
+}
+
+
+class QueryError(ValueError):
+    def __init__(self, code, message, **details):
+        super().__init__(message)
+        self.code, self.details = code, details
+
+
+def query_failure(code, message, **details):
+    raise QueryError(code, message, **details)
+
+
+def query_json(value):
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(',', ':'))
+
+
+def validate_query(request):
+    """Only data selectors are admitted; no caller SQL or file indirection."""
+    if not isinstance(request, dict):
+        query_failure('invalid_request', 'Request must be an object')
+    kind = request.get('kind')
+    if request.get('schema') != QUERY_SCHEMA or not isinstance(kind, str) or kind not in QUERY_SELECTORS:
+        query_failure('invalid_request', 'Unsupported schema or query kind', kinds=sorted(QUERY_SELECTORS))
+    graph = kind.endswith('_graph')
+    allowed = {'schema', 'kind', 'selector'} | ({'depth', 'max_nodes', 'max_edges'} if graph else {'page_size', 'cursor'})
+    if kind == 'native_sites':
+        allowed.add('direction')
+    if request.keys() - allowed:
+        query_failure('invalid_request', 'Unknown request fields', fields=sorted(request.keys() - allowed))
+    selector = request.get('selector', {})
+    if not isinstance(selector, dict) or selector.keys() - QUERY_SELECTORS[kind]:
+        query_failure('invalid_request', 'Unknown selector fields')
+    selector = dict(selector)
+    for key, value in selector.items():
+        if key in {'method_idx', 'pool_idx', 'address'}:
+            if key == 'address' and isinstance(value, str):
+                try:
+                    value = int(value, 0)
+                except ValueError:
+                    query_failure('invalid_request', 'Address must be an integer or hexadecimal string')
+                selector[key] = value
+            if type(value) is not int or not 0 <= value <= 0x7fffffffffffffff:
+                query_failure('invalid_request', key + ' must be a nonnegative SQLite integer')
+        elif not isinstance(value, str) or len(value.encode('utf-8')) > 8192 or (not value and key != 'value'):
+            query_failure('invalid_request', key + ' must be a bounded string')
+    if 'method_idx' in selector and 'artifact' not in selector:
+        query_failure('invalid_request', 'method_idx requires artifact; indices are DEX-local')
+    if 'pool_idx' in selector and 'artifact' not in selector:
+        query_failure('invalid_request', 'pool_idx requires artifact; pool indices are DEX-local')
+    if 'descriptor' in selector:
+        import re
+        pattern = r'L[^;]+;->[^()]+:[^:]+' if kind in {'fields', 'field_sites'} else r'L[^;]+;->[^()]+\([^)]*\).+'
+        if not re.fullmatch(pattern, selector['descriptor']):
+            query_failure('invalid_request', 'descriptor must include class, member and full type descriptor')
+    normalized = dict(schema=QUERY_SCHEMA, kind=kind, selector=selector)
+    limits = {'depth': (0, 8, 3), 'max_nodes': (1, 200, 80), 'max_edges': (1, 2000, 400)} if graph else {'page_size': (1, 200, 80)}
+    for key, (minimum, maximum, default) in limits.items():
+        value = request.get(key, default)
+        if type(value) is not int or not minimum <= value <= maximum:
+            query_failure('invalid_request', key + f' must be {minimum}..{maximum}')
+        normalized[key] = value
+    if kind == 'native_sites':
+        direction = request.get('direction', 'exact')
+        if not isinstance(direction, str) or direction not in {'exact', 'incoming', 'outgoing'}:
+            query_failure('invalid_request', 'direction must be exact, incoming or outgoing')
+        normalized['direction'] = direction
+    cursor = request.get('cursor')
+    if cursor is not None and (not isinstance(cursor, str) or not cursor or len(cursor) > 8192):
+        query_failure('invalid_cursor', 'Cursor must be a bounded string')
+    return normalized, cursor
+
+
+def database_identity(path):
+    """Hash persisted DB and WAL bytes; never pretend mutable WAL is immutable."""
+    parts = []; total = 0
+    for role, item in (('database', path), ('wal', Path(str(path) + '-wal'))):
+        if not item.exists():
+            if role == 'database':
+                query_failure('database_missing', 'Index database does not exist')
+            # SQLite can create an empty WAL when a mode=ro reader opens a WAL
+            # database. Missing and zero-byte WAL carry the same persisted data.
+            parts.append(dict(role=role, size=0, sha256=digest(b''))); continue
+        if not item.is_file():
+            query_failure('invalid_database', 'Database and WAL must be regular files')
+        size = item.stat().st_size; total += size
+        if total > QUERY_MAX_DB_BYTES:
+            query_failure('resource_limit', 'Database/WAL byte budget exceeded')
+        sha = hashlib.sha256(); read_size = 0
+        try:
+            with item.open('rb') as stream:
+                while chunk := stream.read(1024 * 1024):
+                    read_size += len(chunk)
+                    if read_size > size:
+                        query_failure('database_changed', 'Database/WAL grew during hashing')
+                    sha.update(chunk)
+        except FileNotFoundError:
+            query_failure('database_changed', 'Database/WAL disappeared during hashing')
+        if read_size != size:
+            query_failure('database_changed', 'Database/WAL changed during hashing')
+        parts.append(dict(role=role, size=size, sha256=sha.hexdigest()))
+    return dict(sha256=digest(query_json(parts).encode()), files=parts)
+
+
+def require_query_tables(db, *tables):
+    present = {r[0] for r in db.execute('SELECT name FROM sqlite_master WHERE type=\'table\'')}
+    missing = sorted(set(tables) - present)
+    if missing:
+        query_failure('index_capability_missing', 'Required index tables are absent', missing_tables=missing)
+
+
+def select_query_method(db, selector):
+    clauses = []; values = []
+    for key, column in (('artifact', 'm.artifact'), ('entry', 'a.entry'),
+                        ('descriptor', 'm.signature'), ('method_idx', 'm.raw_idx'), ('name', 'm.name')):
+        if key in selector:
+            clauses.append(column + '=?'); values.append(selector[key])
+    if not any(k in selector for k in ('descriptor', 'method_idx', 'name')):
+        query_failure('invalid_selector', 'Select a method with descriptor or artifact+method_idx')
+    candidates = as_rows(db.execute('SELECT m.*,a.sha256 AS artifact_sha256,a.entry,a.source '
+        'FROM dex_methods m JOIN artifacts a ON a.id=m.artifact WHERE ' + ' AND '.join(clauses) +
+        ' ORDER BY m.artifact,m.raw_idx,m.id LIMIT 51', values))
+    if len(candidates) != 1:
+        query_failure('ambiguous_selector' if candidates else 'not_found', 'Method selection requires one indexed method',
+                      candidates=candidates[:50], candidates_truncated=len(candidates) > 50)
+    return candidates[0]
+
+
+def select_query_native(db, selector, address_required=True):
+    clauses = ["kind='elf'"]; values = []
+    for key, column in (('artifact', 'id'), ('entry', 'entry')):
+        if key in selector:
+            clauses.append(column + '=?'); values.append(selector[key])
+    if 'name' in selector:
+        suffix = '/' + selector['name']
+        clauses.append('(entry=? OR substr(entry,-?)=?)'); values.extend((selector['name'], len(suffix), suffix))
+    if not any(k in selector for k in ('artifact', 'entry', 'name')):
+        query_failure('invalid_selector', 'Native selection requires artifact or full ZIP entry')
+    candidates = as_rows(db.execute('SELECT * FROM artifacts WHERE ' + ' AND '.join(clauses) + ' ORDER BY id,entry LIMIT 51', values))
+    if len(candidates) != 1:
+        query_failure('ambiguous_selector' if candidates else 'not_found', 'Native selection requires one artifact',
+                      candidates=candidates[:50], candidates_truncated=len(candidates) > 50)
+    if address_required and 'address' not in selector:
+        query_failure('invalid_selector', 'Native query requires address')
+    return dict(artifact=candidates[0]['id'], address=selector.get('address'), input=candidates[0])
+
+
+def plan_query_rows(db, query):
+    """Return fixed SQL and ordering; all external values use parameters."""
+    kind, selector = query['kind'], query['selector']
+    selected = None; clauses = []; values = []
+    method_columns = 'm.*,a.sha256 AS artifact_sha256,a.entry,a.source'
+    if kind == 'methods':
+        sql = 'SELECT ' + method_columns + ' FROM dex_methods m JOIN artifacts a ON a.id=m.artifact'
+        mapping = {'artifact': 'm.artifact', 'entry': 'a.entry', 'descriptor': 'm.signature', 'method_idx': 'm.raw_idx', 'name': 'm.name'}
+        if any(key in selector for key in ('descriptor', 'method_idx', 'name')):
+            selected = select_query_method(db, selector)
+            clauses = ['m.id=?']; values = [selected['id']]; mapping = {}
+        order = 'm.artifact,m.raw_idx,m.id'
+    elif kind in {'callers', 'callees'}:
+        selected = select_query_method(db, selector)
+        sql = ('SELECT c.*,m.artifact,m.signature AS source_descriptor,m.raw_idx AS source_method_idx,'
+               'a.sha256 AS artifact_sha256,a.entry,a.source FROM dex_calls c '
+               'JOIN dex_methods m ON m.id=c.src JOIN artifacts a ON a.id=m.artifact')
+        if kind == 'callers':
+            clauses = ['m.artifact=?', 'c.ref_idx=?']; values = [selected['artifact'], selected['raw_idx']]
+        else:
+            clauses = ['c.src=?']; values = [selected['id']]
+        mapping = {}; order = 'm.artifact,c.src,c.pc,c.file_offset,c.opcode,c.raw_hex,c.rowid'
+    elif kind in {'fields', 'field_sites', 'constants', 'string_sites'}:
+        field = kind.startswith('field'); table = 'dex_fields' if field else 'constants'
+        require_query_tables(db, table)
+        member = 'p.signature' if field else 'p.value'
+        if kind in {'fields', 'constants'}:
+            sql = 'SELECT p.*,a.sha256 AS artifact_sha256,a.entry,a.source FROM ' + table + ' p JOIN artifacts a ON a.id=p.artifact'
+            order = 'p.artifact,p.pool_idx'
+        else:
+            sites = 'field_sites' if field else 'string_sites'; require_query_tables(db, sites)
+            sql = ('SELECT s.*,m.signature AS source_descriptor,a.sha256 AS artifact_sha256,a.entry,a.source,' +
+                   member + ' AS pool_value FROM ' + sites + ' s JOIN ' + table +
+                   ' p ON p.artifact=s.artifact AND p.pool_idx=s.pool_idx '
+                   'JOIN dex_methods m ON m.id=s.src JOIN artifacts a ON a.id=s.artifact')
+            order = 's.artifact,s.src,s.pc,s.file_offset,s.pool_idx,s.raw_hex,s.rowid'
+        mapping = {'artifact': 'p.artifact', 'entry': 'a.entry', 'pool_idx': 'p.pool_idx', 'descriptor' if field else 'value': member}
+    elif kind in {'native_functions', 'native_sites'}:
+        selected = select_query_native(db, selector, kind == 'native_sites')
+        table = 'native_functions' if kind == 'native_functions' else 'native_sites'
+        sql = 'SELECT n.*,a.sha256 AS artifact_sha256,a.entry,a.source FROM ' + table + ' n JOIN artifacts a ON a.id=n.artifact'
+        clauses = ['n.artifact=?']; values = [selected['artifact']]; mapping = {}
+        if 'address' in selector:
+            address = selector['address']
+            if kind == 'native_functions':
+                clauses += ['n.start<=?', 'n.end>?']; values += [address, address]
+            elif query['direction'] == 'outgoing':
+                clauses.append('n.func IN (SELECT start FROM native_functions WHERE artifact=? AND start<=? AND end>?)')
+                values += [selected['artifact'], address, address]
+            else:
+                clauses.append('n.' + ('target' if query['direction'] == 'incoming' else 'pc') + '=?'); values.append(address)
+        order = 'n.artifact,n.start,n.end,n.authority,n.rowid' if kind == 'native_functions' else 'n.artifact,n.func,n.pc,n.file_offset,n.mnemonic,n.raw_hex,n.rowid'
+    elif kind == 'jni_bindings':
+        if 'address' in selector:
+            if any(k in selector for k in ('descriptor', 'method_idx')):
+                query_failure('invalid_selector', 'JNI selection must use either DEX or native identity')
+            selected = select_query_native(db, selector)
+            clauses = ['j.artifact=?', 'j.address=?']; values = [selected['artifact'], selected['address']]
+        else:
+            selected = select_query_method(db, selector)
+            clauses = ['j.dex_signature=?']; values = [selected['signature']]
+        sql = ('SELECT j.*,a.sha256 AS artifact_sha256,a.entry,a.source AS artifact_source FROM jni_bindings j '
+               'JOIN artifacts a ON a.id=j.artifact')
+        mapping = {}; order = 'j.artifact,j.address,j.dex_signature,j.kind,j.source,j.source_sha256,j.rowid'
+    else:
+        query_failure('invalid_request', 'Not a flat query')
+    for key, column in mapping.items():
+        if key in selector:
+            clauses.append(column + '=?'); values.append(selector[key])
+    if clauses:
+        sql += ' WHERE ' + ' AND '.join(clauses)
+    return sql, values, order, selected
+
+
+def query_cursor(identity, query, offset):
+    import base64
+    payload = dict(schema=QUERY_SCHEMA, database=identity['sha256'], query=digest(query_json(query).encode()),
+                   kind=query['kind'], offset=offset)
+    payload['checksum'] = digest(query_json(payload).encode())
+    return base64.urlsafe_b64encode(query_json(payload).encode()).decode().rstrip('=')
+
+
+def read_query_cursor(cursor, identity, query):
+    import base64
+    try:
+        value = json.loads(base64.b64decode(cursor + '=' * (-len(cursor) % 4), altchars=b'-_', validate=True))
+        checksum = value.pop('checksum')
+        expected = dict(schema=QUERY_SCHEMA, database=identity['sha256'], query=digest(query_json(query).encode()), kind=query['kind'])
+        if value.keys() != expected.keys() | {'offset'} or checksum != digest(query_json(value).encode()):
+            raise ValueError('invalid payload')
+        if any(value[k] != v for k, v in expected.items()):
+            query_failure('stale_cursor', 'Cursor database, query, kind or schema changed')
+        if type(value['offset']) is not int or not 0 <= value['offset'] < QUERY_MAX_ROWS:
+            raise ValueError('invalid offset')
+        return value['offset']
+    except QueryError:
+        raise
+    except (ValueError, KeyError, TypeError, AttributeError):
+        query_failure('invalid_cursor', 'Cursor is malformed')
+
+
+def structured_query(path, request):
+    """Strict paged original-byte query; SQLite is opened read-only, not immutable."""
+    query, cursor = validate_query(request)
+    path = Path(path).resolve(); identity = database_identity(path)
+    if not path.is_file():
+        query_failure('database_missing', 'Index database does not exist')
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=2)
+    db.row_factory = sqlite3.Row
+    # A corrupt index must not allocate a giant text/blob before output checks.
+    db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 65536)
+    deadline = time.monotonic() + 15
+    db.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
+    try:
+        db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
+        require_query_tables(db, 'artifacts', 'dex_methods', 'dex_calls', 'native_functions', 'native_sites', 'jni_bindings')
+        selected = None
+        if query['kind'].endswith('_graph'):
+            try:
+                from .apk_navigation import bounded_query_graph
+            except ImportError:
+                from apk_navigation import bounded_query_graph
+            family = 'dex' if query['kind'] == 'dex_graph' else 'native'
+            selected = select_query_method(db, query['selector']) if family == 'dex' else select_query_native(db, query['selector'])
+            if family == 'native':
+                starts = [r[0] for r in db.execute('SELECT DISTINCT start FROM native_functions '
+                    'WHERE artifact=? AND start<=? AND end>? ORDER BY start LIMIT 51',
+                    (selected['artifact'], selected['address'], selected['address']))]
+                if len(starts) > 1:
+                    query_failure('ambiguous_selector', 'Overlapping native function starts', candidates=starts[:50])
+                if starts:
+                    selected = dict(selected, address=starts[0], requested_address=selected['address'])
+            graph = bounded_query_graph(db, family, selected, query['depth'], query['max_nodes'], query['max_edges'])
+            value = dict(graph=graph, status='partial' if graph['truncated'] else 'succeeded', pagination=None)
+        else:
+            sql, params, order, selected = plan_query_rows(db, query)
+            offset = read_query_cursor(cursor, identity, query) if cursor else 0
+            count = db.execute('SELECT count(*) FROM (' + sql + ' LIMIT ?)', (*params, QUERY_MAX_ROWS + 1)).fetchone()[0]
+            capped = count > QUERY_MAX_ROWS; available = min(count, QUERY_MAX_ROWS)
+            if cursor and offset >= available:
+                query_failure('invalid_cursor', 'Cursor offset is outside the query result')
+            limit = min(query['page_size'], max(0, available - offset))
+            items = as_rows(db.execute(sql + ' ORDER BY ' + order + ' LIMIT ? OFFSET ?', (*params, limit, offset)))
+            following = offset + len(items)
+            next_cursor = query_cursor(identity, query, following) if following < available else None
+            value = dict(items=items, status='partial' if capped else 'succeeded', pagination=dict(
+                page_size=query['page_size'], offset=offset, returned=len(items), next_cursor=next_cursor,
+                indexed_rows=count if not capped else None, available_rows=available, row_budget=QUERY_MAX_ROWS,
+                budget_exhausted=capped, indexed_query_exhausted=next_cursor is None and not capped))
+        if database_identity(path) != identity:
+            query_failure('database_changed', 'Database/WAL changed during query; discard the result and retry')
+        value.update(schema=QUERY_SCHEMA, kind=query['kind'], request=query,
+                     database=identity, selected=selected, whole_apk_complete=False,
+                     limits=['Static original-byte references do not prove execution.',
+                             'Reflection, virtual dispatch, class-loader and indirect calls are unresolved.',
+                             'DEX callers/graphs use the selected artifact method-id pool; cross-DEX resolution is unknown.',
+                             'JNI matches by descriptor are candidates, not verified runtime bindings.',
+                             'Indexed query exhaustion does not establish complete APK coverage.'])
+        if len(query_json(value).encode()) > QUERY_MAX_OUTPUT_BYTES:
+            query_failure('resource_limit', 'Query output byte budget exceeded; narrow selector/page size')
+        return value
+    except sqlite3.Error as exc:
+        query_failure('query_failed', str(exc))
+    finally:
+        db.close()
+
+
 if __name__=='__main__':
     main()

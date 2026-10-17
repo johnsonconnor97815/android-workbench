@@ -10,6 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import build_plugin
+from scripts.install_runtime import runtime_sources
 from workbench.common import rpc, state_dir
 
 
@@ -23,7 +24,7 @@ def compare_installation(installed, runtime_state=None):
     for folder in build_plugin.DIRECTORIES:
         for path in (installed / folder).rglob("*"):
             relative = path.relative_to(installed)
-            if any(p in build_plugin.EXCLUDED for p in relative.parts) or path.suffix in {".pyc", ".pyo"}:
+            if build_plugin.excluded(relative) or path.suffix in {".pyc", ".pyo"}:
                 continue
             if path.is_file() and relative.as_posix() not in expected["files"]:
                 changes.append(relative.as_posix())
@@ -32,12 +33,13 @@ def compare_installation(installed, runtime_state=None):
         changes.append("release-manifest.json")
     runtime = None
     if runtime_state is not None:
-        files = sorted((ROOT / "workbench").glob("*.py"))
-        fingerprint = hashlib.sha256(b"".join(p.name.encode() + p.read_bytes() for p in files)).hexdigest()[:16]
+        files, fingerprint = runtime_sources(ROOT)
         current = json.loads((runtime_state / "current-runtime.json").read_text())
         live = rpc(runtime_state, "service.capabilities")
         target = Path(live["runtime_source"])
-        drift = [p.name for p in files if not (target / "workbench" / p.name).is_file() or p.read_bytes() != (target / "workbench" / p.name).read_bytes()]
+        relative_files = {p.relative_to(ROOT / "workbench").as_posix(): p for p in files}
+        drift = [name for name, p in relative_files.items() if not (target / "workbench" / name).is_file() or p.read_bytes() != (target / "workbench" / name).read_bytes()]
+        drift += [p.relative_to(target / "workbench").as_posix() for p in (target / "workbench").rglob("*.py") if p.relative_to(target / "workbench").as_posix() not in relative_files]
         runtime = {"matches": current["fingerprint"] == fingerprint and not drift and live["version"] == expected["version"] and target == Path(current["command"][1]).parent, "changed_files": drift, "version": live["version"], "fingerprint": current["fingerprint"]}
     return {"pass": not changes and (runtime is None or runtime["matches"]), "version": expected["version"], "fingerprint": expected["fingerprint"], "changed_files": sorted(set(changes)), "runtime": runtime}
 

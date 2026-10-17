@@ -116,6 +116,29 @@ python3 "$COMPONENT_DIR/scripts/analysis.py" exec \
 | `analysis.python` | 任意 Python 计算，可带前置状态代码和可保存 session 状态 |
 | `analysis.scratchpad` | 持久分析笔记，可读取、追加、替换或清空 |
 | `analysis.exec` | 任意宿主命令执行 |
+| `analysis.query` | 已有原字节 SQLite 索引的精确查询、有界静态关系图和稳定续页 |
+| `analysis.unknown_record/update/check` | 记录未知问题、带版本更新、检查必需问题及证据失效 |
+| `analysis.offline_js` | 本地明文 JS 的词法线索，不执行脚本 |
+| `analysis.offline_source_map` | flat v3 source map 声明子集的位置映射 |
+| `analysis.offline_har` | 已有 HAR 1.2 请求/响应的有限摘要 |
+| `analysis.offline_compare` | 两份本地 JS 或 HAR 的观察子集比较 |
+
+## REA 机制入口
+
+完整命令、输入格式、预算和限制见 [REA 使用说明](../../../../docs/rea-adoption-usage.md)；运行记录格式见 [运行证据说明](../../../../docs/rea-runtime-evidence.md)。先执行 `operations` 确认项目登记，再通过 `run <操作> -- <参数>` 进入共享队列。源码、已登记项目、运行服务和插件缓存分别检查，不能因源码已更新就假定其他部分已同步。
+
+`analysis.route` 根据当前问题和明确输入推荐新增操作；缺输入时返回 `required_inputs`，不会从历史猜文件。路由只给建议，不运行工具、不批准设备或环境修改。执行前确认路径存在、输入身份和适用格式：
+
+- 精确 DEX/Native 查询：提供已有 `.sqlite`/`.db` 索引和精确 selector，用 `analysis.query --db ... --query-json ... --output ...`；它不建索引、不接受自由 SQL。歧义要显式选择，续页保留原条件和返回 cursor，图查询保持预算；静态边不证明动态执行。
+- 未知问题：`analysis.unknown_record -- unknown-record --ledger ... --question ... --output ...`；更新用 `analysis.unknown_update -- unknown-update` 并传 ID、expected revision、理由和证据；核对用 `analysis.unknown_check -- unknown-check`。解决须实际审阅，摘要一致不证明答案正确。仅本次必需问题标 `--required`，计划通过 `--unknown-ledger` 关联。
+- 离线文件：`analysis.offline_js` 参数以 `js --input ...` 开头；`analysis.offline_source_map` 用 `source-map --input ...`；`analysis.offline_har` 用 `har --input ...`；`analysis.offline_compare` 用 `compare --baseline ... --candidate ... --kind js|har`。独立文件无需 APK，不执行 JS、不抓取请求；JS 只有词法线索，map 只支持声明子集，比较不证明程序等价。文件缺失、超限和部分覆盖保留 unknown/partial。
+- 运行核对：MCP 工具 `jobs_verify_runtime` 核对已认证项目内真实任务和可信发布观察文件；`analysis.plan_update/check` 同样重新调用服务。观察须带 SHA-256 和完整任务窗口，核对通过不替代行为证据审阅。格式见上方运行证据说明。
+
+## 统一工具入口
+
+工具目录、安装和适配器见 [Tools 说明](../../../../Tools/README.md)。先执行 `tools.inventory` 和 `tools.check`，再按具体输入选择 `tools.js_ast`（Babel 语法树）、`tools.js_deobfuscate`（Wakaru 可读 JS 恢复）、`tools.binary_layout`（ELF 段/节/符号）或 `tools.firmware_scan`（binwalk/unblob 有限扫描）。`tools.install --tool ...` 只用于明确的安装请求，通过共享队列修改环境；普通文件分析不自动安装。新引擎分析入口均用显式 `--input` 与 `--output`，固件扫描另选 `--tool binwalk|unblob`。后缀只是路由线索，适配器仍须核对真实格式和工具可用性。
+
+`analysis.offline_js` 的词法线索与 `tools.js_ast` 的真实解析分开报告；解析器不提供完整行为证明。恢复结果须阅读并保留原文件，不执行恢复的脚本；ELF 布局不等于完整反编译，固件扫描不等于安全解包或固件运行。Tools 输出路径、原始摘要与限制都须进入证据审阅。
 
 ## 工具依赖
 
@@ -126,8 +149,9 @@ python3 "$COMPONENT_DIR/scripts/analysis.py" exec \
 - `keytool` 可用时，`overview`、`signature` 和 `snapshot` 会补充证书有效期。
 - `preview` 的 `--extract` 只导出不超过 `--max-bytes` 的条目；更大文件保留哈希和格式信息，但不会完整写出。
 - 未找到工具时结果中标记 `available: false` 和 `uncertain: true`，不会伪造字段。
-- `analysis.knowledge` 默认做本地词法检索；提供 `--embedding-endpoint` 和 `--embedding-model` 后使用 OpenAI 兼容 embeddings 接口做语义检索。向量随 `--index` 持久保存，后续查询只重新计算 query 向量。API key 只从 `--embedding-api-key-env` 指定的环境变量读取，不会写入结果。
+- `analysis.knowledge` 默认做本地词法检索；提供 `--embedding-endpoint` 和 `--embedding-model` 后使用 OpenAI 兼容 embeddings 接口做语义检索。向量随 `--index` 持久保存，只在文本和模型配置匹配时复用；文件或配置变化会重新核对，远程 URL 每次重新获取。预算范围内快照和验证失败不能称完整 fresh。API key 只从 `--embedding-api-key-env` 指定的环境变量读取，不会写入结果。
 - `analysis.python` 和 `analysis.exec` 提供通用本地计算与命令执行；受管调用独占项目目录及 `--cwd` 工作目录，避免命令内部写入未显式指定的项目文件时发生冲突。项目/工作目录之外的输入用可重复的 `--read-path` 声明，输出用可重复的 `--write-path` 声明；文件输入会记录哈希。服务不会推断代码的全部副作用，这些声明必须覆盖实际访问。设备操作和共享环境修改使用专门登记操作。`--read-path` / `--write-path` 供服务调度使用，不是文件系统沙箱。
+- `analysis.exec` 需要把新生成的 APK 等副产物加入任务证据时，使用可重复的 `--publish-path`。它声明独占的新输出路径，由受管发布流程记录文件哈希；`--output` 仍保存命令结果。`--write-path` 仅协调共享写入，不发布该路径下的文件。发布文件身份不等于命令成功或内容正确，验收还需检查内部退出码及适用的产物标准。
 - `analysis.python --prelude` 可先恢复常量、公式和候选值再执行新代码，`--session` 可加载已保存状态，`--save-session` 支持 `replace`/`append`，`--clear-session` 可清空状态。返回值包含代码或命令、退出码、输出、超时和 session 哈希，用于复核结论。
 - `analysis.scratchpad` 把候选值、脚本结果、未解决偏移和下一步保存在项目文件中；`--mode append` 可持续追加，`--clear` 可在换样本或结论失效时清空。
 

@@ -51,6 +51,13 @@ METHODS = {
         ["id", "priority"],
     ),
     "jobs_artifacts": ("jobs.artifacts", {"id": {"type": "string"}}, ["id"]),
+    "jobs_verify_runtime": (
+        "jobs.verify_runtime",
+        {"job_id": {"type": "string"}, "device": {"type": "string"},
+         "observation_window": {"type": "object"},
+         "observations": {"type": "array", "items": {"type": "object"}}},
+        ["job_id", "device", "observation_window", "observations"],
+    ),
     "artifacts_list": (
         "artifacts.list",
         {"name": {"type": "string"}},
@@ -94,13 +101,16 @@ METHODS = {
     ),
     "devices_manual_release": (
         "devices.manual_release",
-        {"device": {"type": "string"}},
+        {"device": {"type": "string"},
+         "transport": {"type": "string", "enum": ["android", "sideload"]},
+         "prepared_job": {"type": "string"}},
         ["device"],
     ),
     "resources_state": ("resources.state", {}, []),
     "service_capabilities": ("service.capabilities", {}, []),
 }
 DESCRIPTIONS = {
+    "jobs_verify_runtime": "Verify a completed device job and unchanged published observation files within this project. This checks provenance, not whether the files prove a behavioral claim.",
     "sessions_select": "Select or resume this connection's persistent Session name before submitting/retrying tasks. Use a stable per-conversation ID; do not reuse another conversation's name.",
     "jobs_submit": "Submit a registered Android operation. Requires operation and request_key; device operations also require device. Returns immediately with a job id. Use operations_list for existing script adapters.",
     "scenes_request_observation": "Queue a screenshot for a bound scene: include scene, device, request_key, expected app/activity and accept_hooks when appropriate. Never bypass the current controller.",
@@ -109,6 +119,7 @@ DESCRIPTIONS = {
     "evidence_state": "Inspect the named artifact index, internal evidence inventory, retention policy, and last retention run.",
     "evidence_apply_retention": "Apply the configured evidence retention policy now. Referenced and indexed artifacts are preserved.",
     "devices_manual_acquire": "Request a manual handover; only handed_over=true means the device has been released.",
+    "devices_manual_release": "Return manual control and queue verification. Defaults to Android. For a successful official OTA prepare, use transport=sideload and its prepared_job after the user selects Apply update from ADB; this checks transport, not installation success.",
     "devices_list": "List registered devices; project_occupied and occupying_projects identify active project use or a completed manual handover.",
     "devices_state": "Inspect project use, durable last_device_info and device_status, caller-specific root access, age, and invalidation. Ordinary device_manager.preflight reads passive facts and can reuse a matching grant; add --check-root only to verify privileges (may prompt on the phone). Use device.info to refresh general phone information.",
     "devices_discover": "List currently visible ADB and fastboot connections without requiring an analysis project.",

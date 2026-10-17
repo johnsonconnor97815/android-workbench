@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -70,6 +71,8 @@ def snapshot_tree(source, target):
     target.mkdir(parents=True, exist_ok=True)
     hashes = {}
     for path in sorted(source.rglob("*")):
+        if (source.name == "Tools" and path.relative_to(source).parts[0] == "runtime"):
+            continue
         if not path.is_file() or any(
             p in {".git", "__pycache__", "node_modules", ".venv"}
             for p in path.relative_to(source).parts
@@ -79,6 +82,7 @@ def snapshot_tree(source, target):
             ".py",
             ".sh",
             ".js",
+            ".cjs",
             ".json",
             ".patch",
             ".c",
@@ -97,7 +101,60 @@ def snapshot_tree(source, target):
     return hashes
 
 
-def normalize(request, config, directory):
+def analysis_reference_paths(documents, observed_hashes=None):
+    """Collect bounded local references through plan/ledger/review records."""
+    pending = list(documents)
+    visited, references = set(), set()
+    total_bytes = 0
+    parsed_documents = 0
+    while pending:
+        document = pending.pop()
+        if document in visited:
+            continue
+        visited.add(document)
+        if not document.is_file() or document.suffix.casefold() != ".json":
+            continue
+        parsed_documents += 1
+        if parsed_documents > 32:
+            raise WorkbenchError("Analysis records exceed the 32-document reference budget")
+        remaining = 16 * 1024 * 1024 - total_bytes
+        with document.open("rb") as stream:
+            raw = stream.read(remaining + 1)
+        total_bytes += len(raw)
+        if total_bytes > 16 * 1024 * 1024:
+            raise WorkbenchError("Analysis records exceed the 16 MiB reference-read budget")
+        if observed_hashes is not None:
+            observed_hashes[document] = hashlib.sha256(raw).hexdigest()
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeError):
+            continue
+        items = [data]
+        while items:
+            item = items.pop()
+            selected = []
+            if isinstance(item, dict):
+                if isinstance(item.get("path"), str):
+                    selected.append(item["path"])
+                # Review claims use evidence arrays of strings; other records
+                # carry arrays of {path,sha256} objects and recurse below.
+                evidence = item.get("evidence")
+                if isinstance(evidence, list):
+                    selected.extend(value for value in evidence if isinstance(value, str))
+                items.extend(item.values())
+            elif isinstance(item, list):
+                items.extend(item)
+            for raw in selected:
+                path = (document.parent / raw).expanduser().resolve()
+                if path not in references:
+                    references.add(path)
+                    pending.append(path)
+            if len(references) > 256:
+                raise WorkbenchError("Analysis records exceed the 256-reference budget")
+    return references
+
+
+def normalize(request, config, directory, *, manual_return=None):
     spec = copy.deepcopy(request)
     if not isinstance(spec, dict):
         raise WorkbenchError("Request must be an object")
@@ -128,6 +185,7 @@ def normalize(request, config, directory):
         "ui_expect",
         "artifact_outputs",
         "artifact_inputs",
+        "recovery_jobs",
     }
     if config.get("test_mode"):
         allowed.update({"test_readonly", "test_insertable", "test_resources", "hooks"})
@@ -138,6 +196,10 @@ def normalize(request, config, directory):
         )
     root, project = load_project(spec["project"])
     operation = spec.get("operation")
+    if manual_return is not None:
+        if operation != "device.recover" or manual_return.get("transport") != "sideload":
+            raise WorkbenchError("Invalid internal manual return")
+        spec["manual_return"] = copy.deepcopy(manual_return)
     spec["project"] = str(root)
     spec["timeout"] = bounded(spec.get("timeout", 600), 0.1, 86400, "timeout")
     spec["queue_timeout"] = bounded(
@@ -395,7 +457,10 @@ def normalize(request, config, directory):
                     *entry.get("input_flags", []), "--read-path",
                     *(["--script"] if entry["subcommand"] == "python" else []),
                 ])),
-                "outputs": list(dict.fromkeys([*entry.get("outputs", []), "--write-path"])),
+                "outputs": list(dict.fromkeys([
+                    *entry.get("outputs", []), "--write-path",
+                    *(["--publish-path"] if entry["subcommand"] == "exec" else []),
+                ])),
                 "shared_outputs": list(dict.fromkeys([*entry.get("shared_outputs", []), "--write-path"])),
             }
         args = spec.get("args", [])
@@ -405,6 +470,14 @@ def normalize(request, config, directory):
             or len(args) > 256
         ):
             raise WorkbenchError("args must be an array of at most 256 strings")
+        if operation.startswith("tools."):
+            # Fixed tool storage belongs to this registered project even in old registries.
+            workspaces = [args[i + 1] for i, x in enumerate(args[:-1]) if x == "--workspace"]
+            workspaces += [x.split("=", 1)[1] for x in args if x.startswith("--workspace=")]
+            if len(workspaces) > 1 or (workspaces and (root / workspaces[0]).resolve() != root):
+                raise WorkbenchError("Tools workspace must match the registered project")
+            spec["resources"].append(resource(path_resource(root / "Tools/runtime"),
+                "write" if operation == "tools.install" else "read"))
         default_arguments = []
         for flag, location in entry.get("default_paths", {}).items():
             if not any(x == flag or x.startswith(flag + "=") for x in args):
@@ -482,9 +555,9 @@ def normalize(request, config, directory):
         if entry.get("uses_mcp"):
             spec["resources"].append(resource("analysis:" + str(root)))
         spec["readonly"] = bool(entry.get("readonly"))
-        from .results import readonly_package_query
+        from .results import readonly_package_query, readonly_hal_query
 
-        spec["readonly"] = spec["readonly"] or readonly_package_query(spec)
+        spec["readonly"] = spec["readonly"] or readonly_package_query(spec) or readonly_hal_query(spec)
         mode = "write" if entry.get("mutates_environment") else "read"
         for location in project.get("environments", []):
             spec["resources"].append(resource(path_resource(root / location), mode))
@@ -523,6 +596,15 @@ def normalize(request, config, directory):
             "--previous-python",
             "--research",
             "--factory-zip",
+            "--rom",
+            "--recovery-boot",
+            "--flash-record",
+            "--prepared-record",
+            "--backup-record",
+            "--data-record",
+            "--health-record",
+            "--ota",
+            "--addon",
             "--patched-boot",
             "--stock-boot",
             "--magisk-apk",
@@ -539,40 +621,133 @@ def normalize(request, config, directory):
             ):
                 raise WorkbenchError(field + " must be an array of --flags")
         input_flags.update(entry.get("input_flags", []))
-        if entry.get("analysis_plan"):
-            # Plans reference samples and prior evidence outside the plan file.
-            # Reserve those exact files too, including newly submitted reviews.
+        if operation == "device_manager.image_verify":
+            input_flags.add("--image")
+        if operation in {"device_manager.flash", "device_manager.backup_prepare", "device_manager.install_rom"}:
+            image_flag = "--prepare-image" if operation == "device_manager.install_rom" else "--image"
+            for i, argument in enumerate(args):
+                if argument == image_flag:
+                    value = args[i + 1] if i + 1 < len(args) else ""
+                elif argument.startswith(image_flag + "="):
+                    value = argument.split("=", 1)[1]
+                else:
+                    continue
+                if "=" not in value:
+                    raise WorkbenchError("Flash image must be PARTITION=PATH")
+                path = (root / value.split("=", 1)[1]).expanduser().resolve()
+                if not path.is_file():
+                    raise WorkbenchError("Flash image is missing: " + str(path))
+                spec["resources"].append(resource(path_resource(path), "read"))
+                spec["input_fingerprints"][str(path)] = file_hash(path)
+        if operation.startswith("device_manager."):
+            # Backup and health receipts contain additional files. Hold and hash
+            # those inputs for the entire job, including a nested backup manifest.
             documents = [
-                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).resolve()
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).expanduser().resolve()
                 for i, arg in enumerate(args)
-                if arg.split("=", 1)[0] in {"--plan", "--evidence", "--recon"}
+                if arg.split("=", 1)[0] in {
+                    "--research", "--backup-record", "--data-record", "--health-record", "--flash-record", "--prepared-record"}
                 and ("=" in arg or i + 1 < len(args))
             ]
-            references = set()
-            for document in documents:
-                if not document.is_file() or document.suffix != ".json":
+            visited, references = set(), set()
+            while documents:
+                document = documents.pop()
+                if document in visited:
+                    continue
+                visited.add(document)
+                if len(visited) > 32:
+                    raise WorkbenchError("Too many nested flashing records")
+                if not document.is_file() or document.stat().st_size > 16 * 1024 * 1024:
                     continue
                 try:
                     data = json.loads(document.read_text())
                 except (ValueError, UnicodeError):
                     continue
-                if not isinstance(data, dict):
-                    continue
-                records = [*data.get("samples", []), *data.get("recon", {}).get("samples", [])]
-                for step in data.get("steps", []):
-                    records.extend(step.get("evidence", []))
-                records.extend(data.get("observations", []))
-                for claim in data.get("claims", []):
-                    records.extend({"path": p} for p in claim.get("evidence", []))
-                for record in records:
-                    if isinstance(record, dict) and isinstance(record.get("path"), str):
-                        references.add((document.parent / record["path"]).resolve())
-            if len(references) > 256:
-                raise WorkbenchError("Analysis plan has too many evidence paths")
+                pending = [data]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, list):
+                        pending.extend(item)
+                    elif isinstance(item, dict):
+                        if isinstance(item.get("path"), str):
+                            references.add((document.parent / item["path"]).expanduser().resolve())
+                        backup = item.get("backup_record")
+                        if isinstance(backup, dict) and isinstance(backup.get("path"), str):
+                            # flash_plan paths follow the project's command cwd.
+                            path = (root / backup["path"]).expanduser().resolve()
+                            references.add(path)
+                            documents.append(path)
+                        pending.extend(item.values())
+                    if len(references) > 4096:
+                        raise WorkbenchError("Too many flashing evidence files")
             for path in references:
                 spec["resources"].append(resource(path_resource(path), "read"))
                 if path.is_file():
                     spec["input_fingerprints"][str(path)] = file_hash(path)
+        if entry.get("analysis_plan"):
+            # Plans, ledgers and review/runtime records can refer to further
+            # evidence. Reserve that transitive set before running the adapter.
+            documents = [
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).expanduser().resolve()
+                for i, arg in enumerate(args)
+                if arg.split("=", 1)[0] in {"--plan", "--evidence", "--recon", "--ledger", "--unknown-ledger"}
+                and ("=" in arg or i + 1 < len(args))
+            ]
+            mutable_outputs = {
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).expanduser().resolve()
+                for i, arg in enumerate(args)
+                if arg.split("=", 1)[0] in set(entry.get("outputs", []))
+                and ("=" in arg or i + 1 < len(args))
+            }
+            observed_hashes = {}
+            references = analysis_reference_paths(documents, observed_hashes)
+            references.update(documents)
+            for path in references:
+                spec["resources"].append(resource(path_resource(path), "read"))
+                if path.is_file() and path not in mutable_outputs:
+                    spec["input_fingerprints"][str(path)] = (observed_hashes[path]
+                        if path in observed_hashes else file_hash(path))
+        if operation == "analysis.knowledge" and not any(
+            arg.split("=", 1)[0] in {"--root", "--url"} for arg in args
+        ):
+            # An index-only search revalidates its recorded roots. It must hold
+            # the same path reservations as an explicitly supplied root search.
+            indexes = [
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).expanduser().resolve()
+                for i, arg in enumerate(args)
+                if arg.split("=", 1)[0] == "--index" and ("=" in arg or i + 1 < len(args))
+            ]
+            for index in indexes:
+                if not index.is_file():
+                    continue
+                if index.stat().st_size > 64 * 1024 * 1024:
+                    raise WorkbenchError("Knowledge index exceeds the source-reservation read budget")
+                try:
+                    data = json.loads(index.read_text())
+                except (ValueError, UnicodeError):
+                    continue  # The adapter returns the explicit invalid-cache error.
+                roots = data.get("roots", []) if isinstance(data, dict) else []
+                if not isinstance(roots, list) or not all(isinstance(item, str) for item in roots):
+                    continue
+                # Pin this input only until launch; the adapter legitimately
+                # replaces its own cache after checking the recorded roots.
+                spec["input_fingerprints"][str(index)] = file_hash(index)
+                for recorded in roots:
+                    spec["resources"].append(resource(path_resource((root / recorded).expanduser().resolve()), "read"))
+        if operation == "analysis.query":
+            databases = [
+                (root / (arg.split("=", 1)[1] if "=" in arg else args[i + 1])).expanduser().resolve()
+                for i, arg in enumerate(args)
+                if arg.split("=", 1)[0] == "--db" and ("=" in arg or i + 1 < len(args))
+            ]
+            for database in databases:
+                # SQLite mode=ro can create/update shared-memory bookkeeping.
+                # Reserve both sidecars, including paths not present at submit.
+                for suffix in ("-wal", "-shm"):
+                    path = Path(str(database) + suffix)
+                    spec["resources"].append(resource(path_resource(path), "write"))
+                    if suffix == "-wal" and path.is_file():
+                        spec["input_fingerprints"][str(path)] = file_hash(path)
         directory_flags = {
             "--workspace",
             "--cache-dir",
@@ -659,6 +834,11 @@ def normalize(request, config, directory):
                 if flag not in entry.get("shared_outputs", []):
                     spec["outputs"].append(str(target))
                 spec["resources"].append(resource(path_resource(target)))
+        if operation in {"tools.js_ast", "tools.js_deobfuscate", "tools.binary_layout", "tools.firmware_scan"}:
+            for output in list(spec["outputs"]):
+                artifacts = output + ".artifacts"
+                spec["outputs"].append(artifacts)
+                spec["resources"].append(resource(path_resource(Path(artifacts))))
     # Resource effects come exclusively from the registered adapter.
     if artifact_outputs:
         if "entry" not in spec:

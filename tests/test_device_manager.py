@@ -51,6 +51,14 @@ class DeviceManagerCommandTest(unittest.TestCase):
     def setUp(self):
         self.module = load_module()
 
+    def test_battery_observations_preserve_conflicting_health_and_temperature(self):
+        observed = self.module.battery_observations(
+            "Current Battery Service state:\n  level: 72\n  health: 3\n  status: 4\n  temperature: 269\n")
+        self.assertEqual(observed, {"battery_level": 72, "battery_health": 3,
+                                   "battery_status": 4, "battery_temperature_tenths_c": 269,
+                                   "battery_updates_stopped": False})
+        self.assertEqual(self.module.battery_observations("error: device offline"), {})
+
     def test_root_access_distinguishes_grant_denial_missing_su_and_timeout(self):
         for expected in ("granted", "denied", "su_missing", "unknown"):
             records = []
@@ -398,7 +406,7 @@ class DeviceManagerCommandTest(unittest.TestCase):
             bin_directory = root / "bin"
             bin_directory.mkdir()
             fastboot = bin_directory / "fastboot"
-            fastboot.write_text("#!/bin/sh\nexit 0\n")
+            fastboot.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             fastboot.chmod(0o700)
             original_path = os.environ["PATH"]
             os.environ["PATH"] = f"{bin_directory}:{original_path}"
@@ -424,12 +432,74 @@ class DeviceManagerCommandTest(unittest.TestCase):
             finally:
                 os.environ["PATH"] = original_path
             self.assertEqual(script.parent, working_directory)
-            self.assertEqual(
-                (wrapper_directory / "fastboot").read_text(),
-                "#!/bin/sh\nexec "
-                + __import__("shlex").quote(str(fastboot.resolve()))
-                + " -s 8ARXS06LU \"$@\"\n",
-            )
+            result = subprocess.run([str(wrapper_directory / "fastboot"), "getvar", "product"],
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout.splitlines(), ["-s", "8ARXS06LU", "getvar", "product"])
+
+    def run_factory_with_output(self, completed=None, error=None):
+        records = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(self.module.subprocess, "run", return_value=completed, side_effect=error):
+                self.module.run_factory_flash(root / "flash-all.sh", root, root,
+                                              timeout=60, dry_run=False, records=records)
+        return records
+
+    def test_factory_log_keeps_full_long_output_and_final_reboot(self):
+        stdout = "stdout progress\n" * 1000 + "update finished\n"
+        stderr = "Writing system OKAY\n" * 1000 + "Erasing userdata OKAY\nRebooting OKAY\n"
+        records = self.run_factory_with_output(subprocess.CompletedProcess([], 0, stdout, stderr))
+        self.assertEqual(records[-1]["stdout"], stdout)
+        self.assertEqual(records[-1]["stderr"], stderr)
+
+    def test_factory_log_overflow_marks_omission_and_retains_tail(self):
+        limit = self.module.FACTORY_OUTPUT_LIMIT
+        stdout = "start stdout\n" + "x" * (limit + 100) + "\nfinal stdout"
+        stderr = "start stderr\n" + "y" * (limit + 100) + "\nfinal reboot OKAY"
+        record = self.run_factory_with_output(subprocess.CompletedProcess([], 0, stdout, stderr))[-1]
+        for stream, first, last in [("stdout", "start stdout", "final stdout"),
+                                    ("stderr", "start stderr", "final reboot OKAY")]:
+            self.assertTrue(record[stream].startswith(first))
+            self.assertTrue(record[stream].endswith(last))
+            self.assertIn("[truncated:", record[stream])
+            self.assertIn("characters omitted]", record[stream])
+            self.assertLess(len(record[stream]), limit + 100)
+
+    def test_factory_long_nonzero_log_still_fails_and_keeps_final_error(self):
+        stderr = "progress\n" * (self.module.FACTORY_OUTPUT_LIMIT // 8) + "FAILED final write error"
+        records = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(self.module.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", stderr)):
+                with self.assertRaisesRegex(RuntimeError, "failed with exit code 1") as failure:
+                    self.module.run_factory_flash(root / "flash-all.sh", root, root,
+                                                  timeout=60, dry_run=False, records=records)
+        self.assertEqual(records[-1]["returncode"], 1)
+        self.assertTrue(records[-1]["stderr"].endswith("FAILED final write error"))
+        self.assertIn("FAILED final write error", str(failure.exception))
+
+    def test_factory_timeout_preserves_long_byte_output_and_still_fails(self):
+        stdout = b"stdout progress\n" * 1000 + b"last stdout"
+        stderr = b"stderr progress\n" * (self.module.FACTORY_OUTPUT_LIMIT // 15) + b"last write before timeout"
+        records = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            error = subprocess.TimeoutExpired([], 60, output=stdout, stderr=stderr)
+            with patch.object(self.module.subprocess, "run", side_effect=error):
+                with self.assertRaisesRegex(RuntimeError, "timed out"):
+                    self.module.run_factory_flash(root / "flash-all.sh", root, root,
+                                                  timeout=60, dry_run=False, records=records)
+        self.assertEqual(records[-1]["returncode"], 124)
+        self.assertEqual(records[-1]["stdout"], stdout.decode())
+        self.assertIn("[truncated:", records[-1]["stderr"])
+        self.assertTrue(records[-1]["stderr"].endswith("last write before timeout"))
+
+    def test_ordinary_command_keeps_existing_small_output_limit(self):
+        output = "x" * (self.module.OUTPUT_LIMIT + 1) + "tail"
+        with patch.object(self.module.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, output)):
+            record = self.module.run_command(["fixture"], label="ordinary", timeout=1)
+        self.assertEqual(record["stdout"], "x" * self.module.OUTPUT_LIMIT + "\n[truncated]")
+        self.assertEqual(record["stderr"], record["stdout"])
 
     def test_factory_flash_extracts_super_empty(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -677,8 +747,8 @@ class DeviceManagerDryRunTest(unittest.TestCase):
             record = json.loads(output.read_text())
             self.assertEqual(record["status"], "dry_run")
             self.assertEqual(record["stage"], "prepare")
-            self.assertIn("Recovery mode", record["next_action"])
-            self.assertIn("Factory reset", record["next_action"])
+            self.assertIn("device-specific guide", " ".join(record["next_action"]))
+            self.assertFalse(record["flash_checks"]["execution_ready"])
             self.assertEqual(
                 record["plan"],
                 [

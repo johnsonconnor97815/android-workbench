@@ -92,6 +92,30 @@ class InstallerInvariants(unittest.TestCase):
         self.assertEqual(result['androguard']['status'], 'failed')
         self.assertEqual(result['apkid']['status'], 'verified')
 
+    def test_relative_quark_pointer_and_legacy_absolute(self):
+        self.env.prepare()
+        pointer = self.env.root / 'quark-rules.path'
+        pointer.write_text('tools/rules\n')
+        self.assertEqual(setup.quark_rules_path(self.env.root), self.env.root / 'tools/rules')
+        pointer.write_text('/legacy/rules\n')
+        self.assertEqual(setup.quark_rules_path(self.env.root), Path('/legacy/rules'))
+
+    def test_subset_check_preserves_historical_results_and_backup(self):
+        self.env.prepare()
+        old = {'timestamp_utc': 'old', 'results': {'jadx': {'status': 'verified', 'checks': []}}}
+        setup.write_json(self.env.root / 'manifest.json', old)
+        self.env.args.action = 'check'
+        self.env = setup.Environment(self.env.args)
+        self.env.checks = lambda name: [{'test_double': True}]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.env.execute(), 0)
+        manifest = json.loads((self.env.root / 'manifest.json').read_text())
+        self.assertEqual(manifest['checked_selected'], ['androguard', 'apkid'])
+        self.assertEqual(manifest['results']['jadx']['checked_at'], 'old')
+        self.assertFalse(manifest['results']['jadx']['checked_in_current_run'])
+        self.assertTrue(manifest['results']['apkid']['checked_in_current_run'])
+        self.assertEqual(json.loads((Path(manifest['backup']) / 'manifest.json').read_text()), old)
+
     def test_activation_is_safe_with_spaces_and_idempotent(self):
         self.env.prepare()
         self.env.activation()

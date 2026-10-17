@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import signal
@@ -61,6 +62,7 @@ RETENTION_PRESERVED = {
     "normalized.json",
     "result.json",
     "artifacts.json",
+    "analysis-evidence.json",
     "retention.json",
 }
 
@@ -317,6 +319,17 @@ class Service:
         if job["project"] != session["project"]:
             raise WorkbenchError("Task belongs to a different project")
         return job
+
+    def verify_runtime(self, params, project):
+        from .runtime_evidence import verify_runtime
+
+        if not isinstance(params, dict) or not isinstance(params.get("job_id"), str):
+            raise WorkbenchError("Runtime verification requires job_id")
+        job = self.shared(params["job_id"], {"project": project})
+        owner = self.store.rows("SELECT project FROM sessions WHERE token=?", (job["owner"],))
+        if not owner or owner[0]["project"] != project:
+            raise WorkbenchError("Runtime producer ownership cannot be verified")
+        return verify_runtime(job, params)
 
     def artifact_rows(self, project, name=None):
         if name is None:
@@ -598,6 +611,8 @@ class Service:
                         "estimate": p.get("estimate", 2),
                     }
                 return self.submit(p, session)
+            if method == "jobs.verify_runtime":
+                return self.verify_runtime(p, session["project"])
             if method in ("jobs.status", "jobs.explain"):
                 job = self.shared(p["id"], session)
                 value = self.public(job)
@@ -648,10 +663,20 @@ class Service:
                     )
                     self.store.event(job["id"], "cancel_requested", {})
                 return self.public(self.store.job(job["id"]))
-            if method in ("leases.release", "leases.state", "leases.track"):
+            if method in ("leases.release", "leases.state", "leases.track", "leases.record_mcp"):
                 job = self.own(p["id"], session)
                 if job["spec"]["operation"] != "host.lease":
                     raise WorkbenchError("Not a lease job")
+                if method == "leases.record_mcp":
+                    if (job["state"] != "running" or job["spec"].get("lease_mode") != "analysis"
+                            or job["spec"].get("lease_released") or job["spec"].get("mcp_receipt")):
+                        raise WorkbenchError("MCP recording requires an owned running unreleased analysis lease")
+                    from .mcp_evidence import record_mcp_call
+                    spec = job["spec"]
+                    spec["mcp_receipt"] = record_mcp_call(spec["directory"], p.get("record"))
+                    self.store.update(job["id"], spec=spec)
+                    atomic_json(Path(spec["directory"]) / "normalized.json", spec)
+                    return spec["mcp_receipt"]
                 if method == "leases.release":
                     spec = job["spec"]
                     tracked = spec.get("lease_process")
@@ -1028,8 +1053,8 @@ class Service:
                     )
                     if (
                         health
-                        and json.loads(health[0]["detail"]).get("owner")
-                        != session["token"]
+                        and (json.loads(health[0]["detail"]).get("owner")
+                             != session["token"] or health[0]["status"] == "manual_return_pending")
                     ):
                         raise WorkbenchError(
                             "Device requires recovery or is held by another session"
@@ -1050,15 +1075,48 @@ class Service:
                     or json.loads(rows[0]["detail"]).get("owner") != session["token"]
                 ):
                     raise WorkbenchError("Not manual owner")
+                if rows[0]["status"] != "manual":
+                    raise WorkbenchError("Manual handover has not completed")
+                transport = p.get("transport", "android")
+                if transport not in {"android", "sideload"}:
+                    raise WorkbenchError("Manual return transport must be android or sideload")
+                manual_return = None
+                if transport == "sideload":
+                    prepared_id = p.get("prepared_job", "")
+                    if not isinstance(prepared_id, str) or not re.fullmatch(r"[0-9a-f]{32}", prepared_id):
+                        raise WorkbenchError("Sideload return requires a successful OTA prepared_job")
+                    prepared = self.shared(prepared_id, session)
+                    if prepared["state"] != "succeeded":
+                        raise WorkbenchError("OTA preparation job is not succeeded")
+                    if not prepared.get("finished") or any(
+                        job["id"] != prepared_id
+                        and job["spec"].get("device") == p["device"]
+                        and (not job["spec"].get("readonly", False)
+                             or job["spec"].get("operation") == "device.recover")
+                        and job.get("started") is not None
+                        and job["started"] >= prepared["finished"]
+                        for job in self.store.jobs()
+                    ):
+                        raise WorkbenchError("OTA preparation was superseded by a later device operation")
+                    from .results import verify_ota_prepare_handover
+                    manual_return = {"transport": transport, **verify_ota_prepare_handover(
+                        self.directory / "jobs" / prepared_id,
+                        {"device": p["device"], "serial": self.config["devices"][p["device"]]["serial"],
+                         "project": session["project"]})}
+                elif p.get("prepared_job") is not None:
+                    raise WorkbenchError("prepared_job is only used for sideload return")
+                self.store.health(key, "manual_return_pending", json.loads(rows[0]["detail"]))
+                try:
+                    returned = self.submit(
+                        {"operation": "device.recover", "device": p["device"],
+                         "request_key": uuid.uuid4().hex},
+                        session, manual_return=manual_return,
+                    )
+                except BaseException:
+                    self.store.health(key, "manual", json.loads(rows[0]["detail"]))
+                    raise
                 self.store.health(key, "needs_recovery", {"reason": "manual_returned"})
-                return self.submit(
-                    {
-                        "operation": "device.recover",
-                        "device": p["device"],
-                        "request_key": uuid.uuid4().hex,
-                    },
-                    session,
-                )
+                return returned
             if method in ("devices.recover", "resources.recover"):
                 if not p.get("device"):
                     raise WorkbenchError(
@@ -1067,7 +1125,7 @@ class Service:
                 return self.submit({**p, "operation": "device.recover"}, session)
             raise WorkbenchError("Unknown method: " + method)
 
-    def submit(self, request, session):
+    def submit(self, request, session, *, manual_return=None):
         if self.stopping.is_set() or self.draining:
             raise WorkbenchError("Service draining")
         request = dict(request)
@@ -1104,7 +1162,7 @@ class Service:
         # Source snapshots and large input hashes must not block cancel/status handlers.
         self.lock.release()
         try:
-            spec = normalize(request, config_snapshot, folder)
+            spec = normalize(request, config_snapshot, folder, manual_return=manual_return)
         finally:
             self.lock.acquire()
         prior = self.store.rows(
@@ -1134,6 +1192,9 @@ class Service:
             if parent["spec"].get("device") != spec.get("device"):
                 raise WorkbenchError("Scene and observation device differ")
         outputs = spec.get("outputs", [])
+        self.prepare_recovery(spec)
+        if spec.get("recovery"):
+            atomic_json(Path(spec["directory"]) / "normalized.json", spec)
         for output in outputs:
             if any(
                 overlap("path:" + output, "path:" + r["path"])
@@ -1236,13 +1297,67 @@ class Service:
                 return False
         return True
 
+    def prepare_recovery(self, spec):
+        """Freeze a repair's scope before it enters the queue, never at completion."""
+        requested = spec.get("recovery_jobs")
+        if not spec.get("recovery"):
+            if requested is not None:
+                raise WorkbenchError("recovery_jobs requires a registered recovery operation")
+            return
+        if requested is not None and (
+            not isinstance(requested, list) or not 1 <= len(requested) <= 200
+            or any(not isinstance(x, str) or not re.fullmatch(r"[0-9a-f]{32}", x) for x in requested)
+            or len(set(requested)) != len(requested)
+        ):
+            raise WorkbenchError("recovery_jobs must be a nonempty unique list of job IDs")
+        platform = spec["operation"] == "device.recover"
+        repairs = set(spec.get("entry", {}).get("recovery_for", []))
+        jobs = {job["id"]: job for job in self.store.jobs()}
+        health = self.store.rows("SELECT * FROM resources WHERE status='needs_recovery'")
+        sources = {json.loads(row["detail"]).get("job") for row in health}
+
+        def covered(old):
+            return (old["spec"].get("device") == spec.get("device")
+                    and (platform or (old["project"] == spec["project"]
+                                      and old["spec"]["operation"] in repairs)))
+
+        if requested is not None:
+            for identifier in requested:
+                old = jobs.get(identifier)
+                # Explicit selection cannot confer cross-project authorization.
+                if (not old or old["project"] != spec["project"] or not covered(old)
+                        or (old["state"] != "needs_recovery" and identifier not in sources)):
+                    raise WorkbenchError("Recovery job is outside the affected project/scope: " + identifier)
+            targets = set(requested)
+        else:
+            targets = {identifier for identifier, old in jobs.items() if covered(old)
+                       and (old["state"] == "needs_recovery" or identifier in sources)
+                       and conflict(spec["resources"], old["spec"]["resources"])}
+        spec["recovery_targets"] = sorted(targets)
+        spec["adb_recovery_targets"] = sorted(
+            identifier for identifier in targets
+            if platform and self.adb_lock_recoverable(jobs[identifier])
+            and any(row["key"] == "service:adb"
+                    and json.loads(row["detail"]).get("job") == identifier for row in health)
+        )
+        spec["recovery_health"] = [row for row in health
+            if json.loads(row["detail"]).get("job") in targets
+            or (platform and row["key"] == "device:" + spec["device"]
+                and json.loads(row["detail"]).get("job") is None)]
+        # manual_release reserves this transition before submitting its repair.
+        # Freeze the exact next row; any different fault still blocks the repair.
+        if platform and self.store.rows(
+            "SELECT * FROM resources WHERE key=? AND status='manual_return_pending'",
+            ("device:" + spec["device"],),
+        ):
+            spec["recovery_health"].append({
+                "key": "device:" + spec["device"], "status": "needs_recovery",
+                "detail": encode({"reason": "manual_returned"}),
+            })
+
     def available(self, job, parent=None, fairness=True):
         spec = job["spec"]
-        repairs = (
-            set(spec.get("entry", {}).get("recovery_for", []))
-            if spec.get("recovery")
-            else set()
-        )
+        targets = set(spec.get("recovery_targets", [])) if spec.get("recovery") else set()
         if (
             job["cancel"]
             or job["state"] != "queued"
@@ -1272,26 +1387,12 @@ class Service:
         health = self.store.rows("SELECT * FROM resources")
         for h in health:
             if any(overlap(h["key"], x["key"]) for x in spec["resources"]):
-                if (
-                    spec.get("recovery")
-                    and h["status"] == "needs_recovery"
-                    and h["key"] == "device:" + spec.get("device", "")
-                ):
-                    continue
-                if spec.get("recovery") and h["status"] == "needs_recovery":
+                if spec.get("recovery") and h in spec.get("recovery_health", []):
                     source = json.loads(h["detail"]).get("job")
                     old = next((x for x in all_jobs if x["id"] == source), None)
-                    if (
-                        spec.get("operation") == "device.recover"
-                        and h["key"] == "service:adb"
-                        and self.adb_lock_recoverable(old)
-                    ):
+                    if source is None and spec["operation"] == "device.recover":
                         continue
-                    if (
-                        old
-                        and old["spec"]["operation"] in repairs
-                        and not (old.get("worker") and same_process(old["worker"]))
-                    ):
+                    if old and source in targets and not (old.get("worker") and same_process(old["worker"])):
                         continue
                 return False, h["status"]
         active = [j for j in all_jobs if j["state"] in ACTIVE]
@@ -1299,11 +1400,10 @@ class Service:
             if parent and current["id"] == parent["id"]:
                 continue
             if spec.get("recovery") and current["state"] == "needs_recovery":
-                if current["spec"]["operation"] not in repairs or (
+                if current["id"] in targets and not (
                     current.get("worker") and same_process(current["worker"])
                 ):
-                    return False, "old_worker_alive"
-                continue
+                    continue
             if conflict(spec["resources"], current["spec"]["resources"]):
                 return False, "waiting_resource:" + current["id"]
         if (
@@ -1360,38 +1460,11 @@ class Service:
         token = secrets.token_urlsafe(32)
         spec = job["spec"]
         if spec.get("device") and "--dry-run" not in spec.get("args", []) and spec["operation"] in {
-            "device_manager.flash", "device_manager.flash_factory", "device_manager.install_rom",
+            "device_manager.flash", "device_manager.flash_factory", "device_manager.install_rom", "device_manager.install_ota",
             "device_manager.root", "device_manager.root_prepare", "device_manager.partition_repair",
             "device_manager.bootloader_state",
         }:
             self.invalidate_device_status(spec["device"], spec["operation"], job["id"])
-        if spec.get("recovery"):
-            repairs = set(spec.get("entry", {}).get("recovery_for", []))
-            affected = {
-                j["id"]
-                for j in self.store.jobs()
-                if j["state"] == "needs_recovery"
-                and j["spec"].get("device") == spec.get("device")
-            }
-            for record in self.store.rows("SELECT * FROM resources"):
-                source = json.loads(record["detail"]).get("job")
-                old = next((j for j in self.store.jobs() if j["id"] == source), None)
-                if old and old["spec"]["operation"] in repairs:
-                    affected.add(source)
-            spec["recovery_targets"] = sorted(affected)
-            if spec.get("operation") == "device.recover":
-                adb_targets = set()
-                for record in self.store.rows("SELECT * FROM resources"):
-                    if record["key"] != "service:adb":
-                        continue
-                    source = json.loads(record["detail"]).get("job")
-                    old = next(
-                        (x for x in self.store.jobs() if x["id"] == source), None
-                    )
-                    if self.adb_lock_recoverable(old):
-                        adb_targets.add(source)
-                spec["adb_recovery_targets"] = sorted(adb_targets)
-            self.store.update(job["id"], spec=spec)
         internal = {
             "job": job["id"],
             "token": token,
@@ -1468,6 +1541,17 @@ class Service:
         if state not in TERMINAL:
             state = "failed"
         cleanup = result.get("cleanup_ok", False)
+        reconciled = set()
+        if job["spec"].get("recovery") and state == "succeeded" and cleanup:
+            reported = result.get("reconciled_jobs", [])
+            allowed = set(job["spec"].get("recovery_targets", []))
+            if (not isinstance(reported, list) or any(not isinstance(x, str) for x in reported)
+                    or len(set(reported)) != len(reported) or not set(reported) <= allowed):
+                state, cleanup = "failed", False
+                result = {**result, "state": state, "cleanup_ok": False,
+                          "reason": "recovery_result_outside_granted_targets"}
+            else:
+                reconciled = set(reported)
         artifact_records = []
         if state == "succeeded" and job["spec"].get("artifact_outputs"):
             try:
@@ -1496,29 +1580,17 @@ class Service:
         self.store.db.execute("BEGIN IMMEDIATE")
         try:
             if job["spec"].get("recovery") and state == "succeeded" and cleanup:
-                device = job["spec"].get("device")
-                if device:
-                    self.store.db.execute(
-                        "DELETE FROM resources WHERE key=?", ("device:" + device,)
-                    )
                 for row in self.store.rows("SELECT * FROM resources"):
-                    if row["key"] == "service:adb" and json.loads(row["detail"]).get(
-                        "job"
-                    ) in job["spec"].get("adb_recovery_targets", []):
-                        self.store.db.execute(
-                            "DELETE FROM resources WHERE key=?", (row["key"],)
-                        )
-                for row in self.store.rows("SELECT * FROM resources"):
-                    if json.loads(row["detail"]).get("job") in result.get(
-                        "reconciled_jobs", []
-                    ):
-                        if any(
-                            r["key"] == row["key"]
-                            for r in result.get("recovered_resources", [])
-                        ):
-                            self.store.db.execute(
-                                "DELETE FROM resources WHERE key=?", (row["key"],)
-                            )
+                    # A new fault, even for the same key, needs a new repair.
+                    if row not in job["spec"].get("recovery_health", []):
+                        continue
+                    source = json.loads(row["detail"]).get("job")
+                    manual_device = (source is None and job["spec"]["operation"] == "device.recover"
+                                     and row["key"] == "device:" + job["spec"]["device"])
+                    if manual_device or (source in reconciled and any(
+                        r["key"] == row["key"] for r in result.get("recovered_resources", [])
+                    )):
+                        self.store.db.execute("DELETE FROM resources WHERE key=?", (row["key"],))
             self.store.update(
                 job["id"],
                 state=state,
@@ -1547,12 +1619,10 @@ class Service:
             self.store.db.execute("ROLLBACK")
             raise
         if job["spec"].get("recovery") and state == "succeeded" and cleanup:
-            device = job["spec"].get("device")
             for old in self.store.jobs():
                 if (
-                    old["id"] != job["id"]
+                    old["id"] in reconciled
                     and old["state"] == "needs_recovery"
-                    and old["spec"].get("device") == device
                 ):
                     self.finish(
                         old,
@@ -1621,6 +1691,10 @@ class Service:
             job = self.store.job(p["id"])
             if not isinstance(token, str) or job["generation"] != digest(token):
                 raise WorkbenchError("Invalid execution token")
+            if method == "worker.verify_runtime":
+                if job["state"] != "running":
+                    raise WorkbenchError("Runtime verification caller is not running")
+                return self.verify_runtime(p.get("record"), job["project"])
             if method == "worker.finished":
                 path = Path(job["spec"]["directory"]) / "result.json"
                 result = json.loads(path.read_text())
@@ -1657,7 +1731,8 @@ class Service:
                     self.store.event(job["id"], "device_released", {})
                 return {"released": spec.get("device_released", False)}
             if method == "worker.lease_state":
-                return {"released": job["spec"].get("lease_released", False)}
+                return {"released": job["spec"].get("lease_released", False),
+                        "mcp_receipt": job["spec"].get("mcp_receipt")}
             if method in ("worker.validate_entry", "worker.validate_mcp"):
                 ident = process_identity(p["pid"])
                 ancestor = p["pid"]
@@ -1700,7 +1775,18 @@ class Service:
                     raise WorkbenchError(
                         "Nested entry is outside the pinned operation source"
                     )
-                return {"managed": True}
+                sessions = self.store.rows(
+                    "SELECT name,project FROM sessions WHERE token=?", (job["owner"],)
+                )
+                if not sessions or sessions[0]["project"] != job["project"]:
+                    raise WorkbenchError("Managed task has no authenticated project session")
+                return {
+                    "managed": True,
+                    "owner_digest": job["owner"],
+                    "client_session": sessions[0]["name"],
+                    "project": job["project"],
+                    "job_id": job["id"],
+                }
             if method == "worker.ready":
                 ident = process_identity(p["pid"])
                 if not ident:

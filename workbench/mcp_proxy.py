@@ -1,6 +1,8 @@
 """Relay analysis MCPs while coordinating live environments and queued tool calls."""
 
 from collections import deque
+import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,8 @@ import threading
 import time
 import uuid
 from .client import Client
+from .analysis_evidence import executable_identity
+from .mcp_evidence import SCHEMA as MCP_CALL_SCHEMA, MAX_RETAINED_RESPONSE, redact_request
 from .common import (
     WorkbenchError,
     encode,
@@ -48,6 +52,9 @@ def proxy(project, directory, command):
     waiting = None
     messages = queue.Queue()
     draining = False
+    provider = {"direct_executable": executable_identity(command[0], cwd=Path.cwd()),
+                "server_info": None, "identity_status": "proxy_reported"}
+    initialize_ids = set()
 
     def input_reader():
         # An idle daemon must not hold a buffered-stdin lock when maintenance
@@ -66,12 +73,30 @@ def proxy(project, directory, command):
         messages.put(("eof", None))
 
     def output_reader():
-        for line in proc.stdout:
+        while True:
+            line = proc.stdout.readline(32 * 1024 * 1024 + 1)
+            if not line:
+                break
+            if len(line) > 32 * 1024 * 1024:
+                messages.put(("upstream_limit", line))
+                return
             messages.put(("output", line))
         messages.put(("upstream_eof", None))
 
     def release(job):
         client.call("leases.release", {"id": job["id"]})
+
+    def record_call(job, raw=b"", outcome="incomplete"):
+        if job.get("_mcp_recorded"):
+            return
+        record = {
+            "schema": MCP_CALL_SCHEMA, "request": job["_mcp_request"], "provider": provider,
+            "response": {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+                         "retained_base64": base64.b64encode(raw[:MAX_RETAINED_RESPONSE]).decode("ascii"),
+                         "truncated": len(raw) > MAX_RETAINED_RESPONSE, "outcome": outcome},
+        }
+        client.call("leases.record_mcp", {"id": job["id"], "record": record})
+        job["_mcp_recorded"] = True
 
     def respond_busy(message):
         print(
@@ -138,6 +163,7 @@ def proxy(project, directory, command):
                     else:
                         state = client.call("jobs.status", {"id": job["id"]})["state"]
                         if state == "running":
+                            job["_mcp_request"] = redact_request(message)
                             pending[encode(message.get("id"))] = job
                             send(raw)
                             waiting = None
@@ -167,6 +193,12 @@ def proxy(project, directory, command):
                 kind, raw = messages.get(timeout=0.05)
             except queue.Empty:
                 continue
+            if kind == "upstream_limit":
+                # A bounded transport sample is incomplete, even if its prefix
+                # resembles success. Stop upstream rather than growing memory.
+                for job in pending.values():
+                    record_call(job, raw, "incomplete")
+                raise WorkbenchError("MCP response exceeded its 32 MiB transport budget; a bounded prefix was retained")
             if kind in ("eof", "upstream_eof"):
                 break
             message = json.loads(raw)
@@ -174,15 +206,28 @@ def proxy(project, directory, command):
                 if message.get("method") == "tools/call":
                     incoming.append((message, raw))
                 else:
+                    if message.get("method") == "initialize":
+                        initialize_ids.add(encode(message.get("id")))
                     send(raw)
             else:
                 job = (
-                    pending.pop(encode(message.get("id")), None)
+                    pending.get(encode(message.get("id")), None)
                     if "method" not in message
                     else None
                 )
                 if job:
+                    outcome = ("rpc_error" if "error" in message else
+                               "tool_error" if isinstance(message.get("result"), dict) and message["result"].get("isError") is True
+                               else "success" if "result" in message else "incomplete")
+                    record_call(job, raw, outcome)
                     release(job)
+                    pending.pop(encode(message.get("id")), None)
+                elif encode(message.get("id")) in initialize_ids:
+                    result = message.get("result")
+                    info = result.get("serverInfo") if isinstance(result, dict) else None
+                    if isinstance(info, dict):
+                        provider["server_info"] = {key: str(info[key])[:1000] for key in ("name", "version") if key in info}
+                    initialize_ids.discard(encode(message.get("id")))
                 sys.stdout.buffer.write(raw)
                 sys.stdout.buffer.flush()
     finally:
@@ -192,6 +237,7 @@ def proxy(project, directory, command):
             client.call("jobs.cancel", {"id": waiting[0]["id"]})
         if not descendants(os.getpid()):
             for job in pending.values():
+                record_call(job)
                 release(job)
             release(environment)
         # If descendants survive, owner death leaves a recovery block instead of a false release.

@@ -21,6 +21,10 @@
 
 `device.scene` 接受连续步骤。可用动作：`observe`、`screenshot`、`ui_dump`、`logcat`、`launch`、`tap`、`swipe`、`input`、`keyevent`、`wait`、`checkpoint`、`hook_attach`、`hook_unload`。启动用明确 `component`，点击用 `x/y`，输入用 `text`，等待用 `seconds`。日志步骤用 `lines`、`buffer`、`level` 和可选 `clear`；默认读取 `main` buffer 最近 500 行，`clear:true` 会先清空指定 buffer，因此该场景不是只读。Hook 使用项目内已审查脚本的绝对路径及明确 `package`；仅附加已运行进程，不自行启动 Frida 服务。
 
+Wi-Fi 扫描列表等动态页面会在截图后重新排列，等待动画结束也不能保证旧坐标仍有效。不要用跨工具调用的旧坐标批量点击列表或跨页面操作。优先使用已核实的明确页面入口；只能从动态列表进入时，在同一次受管操作内读取当前 UI、按准确文字或资源 ID 确认唯一节点并立即点击，随后核实实际页面标题。没有唯一匹配就停止点击。误入其他网络的密码页不能继续输入目标凭据；误连或误保存网络时，通过受管状态查询核对名称和编号，仅清除本次误建配置，保留原有配置。
+
+连接 Wi-Fi 时先确认名称、加密方式及是否隐藏。隐藏网络未出现在扫描列表不等于手机故障；有的系统只在添加网络页面提供隐藏选项，不能假定修改页面也有。普通 `input.text` 和 shell 参数可能进入任务日志，不能用它们提交需保密的密码。没有专用保密输入接口时，可在已核实的稳定屏幕键盘上受管逐键输入；不勾选显示密码，不在输入期间保存截图或 UI 转储，也不把按键序列当作可公开的脱敏证据。保存配置、连上指定网络、能访问互联网是三种不同结果；验收要核对实际连接名称和活动网络状态，不能把网络请求中出现的 `VALIDATED` 当作活动网络已经通过验证。
+
 `device.info` 是单独的只读操作，采集启动代次、型号/系统/ABI 属性、屏幕分辨率、内存、数据分区容量、系统版本、网络状态、Wi‑Fi 状态和 Google Play 登录推断。存储值来自 `df -k /data`，同时保留实际返回的 filesystem 与 mount；部分 Magisk/ROM 组合可能返回镜像挂载路径，不能把它改写成 `/data`。网络部分只读系统状态，不发起外网连通性探测；`internet_reachable` 保持 `null` 且 `internet_probe_performed` 为 `false`。Google Play 登录由 Play 包已安装且存在 Google 账户推断，结果不包含账号名、邮箱或其他账号标识。运行时实验开始前先保存这份证据，便于报告复现；它不能证明 App 行为，语义结论仍要回到截图、日志、文件或状态证据。
 
 `devices_state` / `devices_list` 的 `device_status` 持久保存最近的受管预检：手机模式、系统、当前启动槽、开机标识、ADB 授权、电量、存储、Frida 进程和 `root_access`。后者记录 Root 检查结果、执行身份 `caller_uid`、`su_path`、`su_version` 和检查时间。`stale:false` 且 `root_access.status:granted` 表示最近验证过该身份可用 Root，普通操作不用再提醒授权；手机仍会检查当前权限，缓存不能代替命令结果，也不能证明授权永久有效。

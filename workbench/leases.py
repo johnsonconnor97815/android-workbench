@@ -1,10 +1,14 @@
 """External local-tool leases keep long-lived MCP users visible to the scheduler."""
 
+import json
+from pathlib import Path
+
 from .common import (
     resource,
     path_resource,
     same_process,
     WorkbenchError,
+    file_hash,
 )
 
 
@@ -37,7 +41,27 @@ def execute_lease(runner):
             runner.authorize()
             state = runner.call("lease_state")
             if state.get("released"):
-                return
+                receipt = state.get("mcp_receipt")
+                if receipt is None:
+                    return None  # Ordinary environment/analysis leases retain their behavior.
+                path = Path(receipt["path"])
+                if (path != runner.directory / "mcp-call.json" or not path.is_file()
+                        or path.stat().st_size != receipt["bytes"] or file_hash(path) != receipt["sha256"]):
+                    raise WorkbenchError("MCP call receipt changed before publication")
+                data = json.loads(path.read_text())
+                raw = data["retained_response"]
+                raw_path = Path(raw["path"])
+                if (raw_path != runner.directory / "mcp-response.bin" or not raw_path.is_file()
+                        or raw_path.stat().st_size != raw["bytes"] or file_hash(raw_path) != raw["sha256"]):
+                    raise WorkbenchError("MCP retained response changed before publication")
+                runner.external_call = {"tool_name": receipt["tool_name"],
+                                        "request_identity_sha256": receipt["request_identity_sha256"],
+                                        "provider": receipt["provider"], "identity_scope": "proxy_reported",
+                                        "response": data["response"]}
+                runner.analysis_status = {"mcp_call_outcome": data["response"]["outcome"],
+                                          "response_truncated": data["response"]["truncated"],
+                                          "semantic_review_required": True}
+                return receipt["outcome"]
             if not same_process(runner.spec["lease_owner"]):
                 raise WorkbenchError(
                     "External tool owner died without releasing its process tree"

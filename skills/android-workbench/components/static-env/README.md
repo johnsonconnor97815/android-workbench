@@ -9,7 +9,7 @@
 
 ## 选择安装范围
 
-先读取项目指令、已有 `.envrc`、工具安装与检查脚本。使用已有项目环境前执行 `source .envrc`；存在 `scripts/check_tools.sh` 时运行并记录结果。区分静态工具缺失与已有动态工具故障，不为搭建静态环境修理或升级 Frida 等无关组件。
+先读取项目指令、已有 `.envrc`、工具安装与检查脚本。仅在 `.envrc` 存在时执行 `source ./.envrc`，缺失时沿用当前环境，加载失败时报告错误；存在 `scripts/check_tools.sh` 时运行并记录结果。区分静态工具缺失与已有动态工具故障，不为搭建静态环境修理或升级 Frida 等无关组件。
 
 读取 [工具范围与选型](references/tool-matrix.md)，按需求选择：
 
@@ -59,3 +59,5 @@ CLI 启动检查和真实分析分开报告。随附 `smoke.py` 使用现场生�
 交付只需说明安装位置、激活/检查命令、已验证范围、失败或限制和证据路径。首次使用 GUI、Docker 服务健康、特定样本兼容性需分别验证；CLI 检查不能替代它们。
 
 本次开发验收范围和未测试项见 [验证记录](references/validation.md)，用于评估这套基线的实际覆盖。
+
+环境刷新前会在本次运行的 `previous/` 中保存已有激活脚本、Quark 指针、wrapper 和 manifest。Quark 规则指针使用环境内的相对路径，仍兼容旧绝对路径。部分工具检查保留其他工具的历史结果；`checked_selected` 和每项 `checked_in_current_run` 标明本次实际检查，旧项保留原 `checked_at`，不能将旧项解释为本次重新验证。

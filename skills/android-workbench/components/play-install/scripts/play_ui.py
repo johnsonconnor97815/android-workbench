@@ -103,6 +103,21 @@ def find_install_action(xml, title, developer):
             node = parents[node]
         return node if parents.get(node) is container else None
 
+    def sheet_backdrop(node, target):
+        # Compose exposes the dismiss scrim as clickable across the whole
+        # window, before the sheet sibling that is drawn over it.
+        parent = parents.get(node)
+        if (not visible(node) or list(node) or parent is None
+                or values(node) not in ({"close sheet"}, {"关闭工作表"})):
+            return False
+        siblings = list(parent)
+        sheet = branch(target, parent)
+        if len(siblings) != 2 or siblings[0] is not node or siblings[1] is not sheet:
+            return False
+        outer, inner = bounds(node), bounds(sheet)
+        return bool(inner and outer[0] <= inner[0] < inner[2] <= outer[2]
+                    and outer[1] <= inner[1] < inner[3] <= outer[3])
+
     titles = [n for n in nodes if visible(n) and normalized(title) in values(n)]
     developers = [n for n in nodes if visible(n) and normalized(developer) in values(n)]
     allowed = set(LABELS)
@@ -131,7 +146,8 @@ def find_install_action(xml, title, developer):
                and n.get("enabled") != "false" and n.get("visible-to-user") != "false"
                and bounds(n)[0] <= point[0] < bounds(n)[2]
                and bounds(n)[1] <= point[1] < bounds(n)[3]
-               and n not in set(ancestors(target)) for n in nodes):
+               and n not in set(ancestors(target))
+               and not sheet_backdrop(n, target) for n in nodes):
             continue
         for title_node in titles:
             for developer_node in developers:

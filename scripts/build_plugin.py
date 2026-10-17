@@ -22,6 +22,7 @@ DIRECTORIES = (
     "licenses",
     "tests",
     "docs",
+    "Tools",
 )
 FILES = (
     ".mcp.json",
@@ -32,7 +33,7 @@ FILES = (
     "pyproject.toml",
     "sources.lock.json",
 )
-EXCLUDED = {"__pycache__", ".pytest_cache", ".ruff_cache", ".git", ".venv"}
+EXCLUDED = {"__pycache__", ".pytest_cache", ".ruff_cache", ".git", ".venv", "node_modules"}
 GENERATED_FILES = {"docs/android-static-manifest.json", "docs/android-mcp-manifest.json"}
 
 
@@ -46,13 +47,17 @@ def validate_markdown_links(path):
             raise ValueError(f"Broken local documentation link in {path}: {match.group(1)}")
 
 
+def excluded(relative):
+    return any(part in EXCLUDED for part in relative.parts) or relative.parts[:2] == ("Tools", "runtime")
+
+
 def payload():
     paths = [ROOT / name for name in FILES]
     for name in DIRECTORIES:
         for path in (ROOT / name).rglob("*"):
             if path.relative_to(ROOT).as_posix() in GENERATED_FILES:
                 continue
-            if any(part in EXCLUDED for part in path.relative_to(ROOT).parts):
+            if excluded(path.relative_to(ROOT)):
                 continue
             if path.is_symlink():
                 raise ValueError("Release must not contain symlinks: " + str(path))
@@ -106,6 +111,7 @@ def validate():
         "analysis-agent",
         "device-manager",
         "permission-audit",
+        "app-replica",
     ):
         component = ROOT / "skills/android-workbench/components" / name
         if not (component / "README.md").is_file():
@@ -128,6 +134,8 @@ def validate():
             ast.parse(path.read_bytes(), filename=str(path))
         elif path.suffix == ".json":
             json.loads(path.read_text())
+        elif path.suffix == ".toml":
+            tomllib.loads(path.read_text())
         elif path.suffix == ".md":
             validate_markdown_links(path)
     return paths

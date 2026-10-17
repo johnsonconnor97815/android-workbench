@@ -83,7 +83,7 @@ def load_recon(path):
     return data
 
 
-def create_plan(question, recon, route):
+def create_plan(question, recon, route, unknown_ledger=None):
     validate_records(recon["samples"])
     steps = []
     if recon["samples"]:
@@ -98,10 +98,16 @@ def create_plan(question, recon, route):
         {"id": "review", "status": "pending", "note": "Review claims, code context and limitations", "evidence": []},
         {"id": "report", "status": "pending", "note": "Write a final report, with evidence and unverified scope", "evidence": []},
     ])
-    return {"schema": "1", "question": question, "created_at": time.time(), "recon": recon, "route": route, "runtime_scope": "requested" if route["mode"] == "device_runtime" else "not_requested", "steps": steps, "complete": False}
+    plan = {"schema": "1", "question": question, "created_at": time.time(), "recon": recon, "route": route, "runtime_scope": "requested" if route["mode"] == "device_runtime" else "not_requested", "steps": steps, "complete": False}
+    if unknown_ledger is not None:
+        from analysis_ledger import check_unknowns
+        path = Path(unknown_ledger).expanduser().resolve()
+        check_unknowns(path)
+        plan["unknown_ledger"] = {"path": str(path)}
+    return plan
 
 
-def semantic_records(step, paths):
+def semantic_records(step, paths, runtime_verifier=None):
     records = [file_record(p) for p in paths]
     if step in {"review", "runtime"}:
         found = False
@@ -128,10 +134,26 @@ def semantic_records(step, paths):
                 observations = data.get("observations")
                 if not isinstance(observations, list) or not observations:
                     continue
+                selected = []
                 for observation in observations:
-                    if observation.get("kind") not in {"ui", "log", "file", "state"}:
+                    if not isinstance(observation, dict) or observation.get("kind") not in {"ui", "log", "file", "state"}:
                         raise ValueError("runtime requires semantic observations")
-                    records.append(file_record(Path(path).parent / observation["path"]))
+                    record = file_record(Path(path).parent / observation["path"])
+                    if observation.get("sha256") != record["sha256"]:
+                        raise ValueError("runtime observation requires its unchanged declared SHA-256")
+                    selected.append({"kind": observation["kind"], **record})
+                if runtime_verifier is None:
+                    raise ValueError("runtime has no authenticated managed-job verifier")
+                params = {"job_id": data["job_id"], "device": data["device"],
+                          "observation_window": data.get("observation_window"), "observations": selected}
+                try:
+                    verified = runtime_verifier(params)
+                except Exception as exc:
+                    raise ValueError("runtime service verification unavailable: " + str(exc)) from exc
+                if not isinstance(verified, dict) or verified.get("verified") is not True:
+                    reasons = verified.get("issues", []) if isinstance(verified, dict) else []
+                    raise ValueError("runtime managed-job verification failed: " + "; ".join(str(value) for value in reasons))
+                records.extend({"path": value["path"], "sha256": value["sha256"]} for value in selected)
                 found = True
         if not found:
             raise ValueError(step + " requires a reviewed claim or managed observation record, not command success")
@@ -141,7 +163,7 @@ def semantic_records(step, paths):
     return list({item["path"]: item for item in records}.values())
 
 
-def check_plan(plan):
+def check_plan(plan, runtime_verifier=None):
     issues = []
     try:
         if plan.get("schema") != "1" or not isinstance(plan.get("steps"), list) or not plan["steps"]:
@@ -158,13 +180,19 @@ def check_plan(plan):
                 issues.append(step["id"] + ": missing evidence")
             validate_records(step["evidence"])
             if step["id"] in {"review", "runtime", "report"}:
-                semantic_records(step["id"], [Path(e["path"]) for e in step["evidence"]])
+                semantic_records(step["id"], [Path(e["path"]) for e in step["evidence"]], runtime_verifier)
+        if "unknown_ledger" in plan:
+            from analysis_ledger import check_unknowns
+            ledger = plan["unknown_ledger"]
+            if not isinstance(ledger, dict) or set(ledger) != {"path"} or not isinstance(ledger["path"], str) or not Path(ledger["path"]).is_absolute():
+                raise ValueError("Invalid unknown ledger reference")
+            issues.extend("unknown: " + issue for issue in check_unknowns(ledger["path"])["issues"])
     except (ValueError, OSError, KeyError, TypeError) as exc:
         issues.append(str(exc))
     return {"schema": "1", "complete": not issues, "issues": issues, "runtime_scope": plan.get("runtime_scope"), "limitation": "Completion verifies records and hashes; the reviewer remains responsible for interpreting code and observations."}
 
 
-def update_plan(plan, step_id, status, paths, note):
+def update_plan(plan, step_id, status, paths, note, runtime_verifier=None):
     validate_records(plan["recon"]["samples"])
     if not note.strip():
         raise ValueError("A stage update requires a concrete note")
@@ -182,10 +210,10 @@ def update_plan(plan, step_id, status, paths, note):
             validate_records(prior["evidence"])
         if not paths:
             raise ValueError("Completed stage requires evidence")
-        evidence = semantic_records(step_id, paths)
+        evidence = semantic_records(step_id, paths, runtime_verifier)
     step.update(status=status, evidence=evidence, note=note, updated_at=time.time())
     # Reopening an earlier stage invalidates all conclusions downstream.
     for later in plan["steps"][plan["steps"].index(step) + 1:]:
         later.update(status="pending", evidence=[], note="Earlier stage updated")
-    plan["complete"] = check_plan(plan)["complete"]
+    plan["complete"] = check_plan(plan, runtime_verifier)["complete"]
     return plan

@@ -18,12 +18,19 @@ Manage target phones for discovery, registration, flashing, rooting, and Frida s
 | `device_manager.research` | Validate a device-specific flashing research dossier before any image is flashed, with optional result caching. |
 | `device_manager.image_download` | Download a flashing image into a content-addressed cache and verify its SHA-256. |
 | `device_manager.recover_image_cache` | Recover an interrupted image download by checking the old job and removing only `.part` files. |
-| `device_manager.recover_install_rom` | Confirm an interrupted ROM installation is waiting in sideload mode, then reconcile the failed queue job. |
+| `device_manager.recover_install_rom` | Reconcile a failed ROM stage: `--stage prepare` verifies bootloader reachability; the default `--stage sideload` verifies sideload mode. |
 | `device_manager.recover_flash_factory` | Confirm an interrupted factory flash is reachable in fastboot or fastbootd, then reconcile the failed queue job. |
 | `device_manager.image_verify` | Verify a local flashing image and write an evidence record. |
+| `device_manager.backup_data` | Export selected shared-storage files and retain their hashes and coverage. |
+| `device_manager.backup_prepare` | Preserve reviewed original images and a verified data receipt or explicit discard decision. |
+| `device_manager.backup_verify` | Check retained backup files and identity before researching a permitted restore. |
+| `device_manager.install_ota` | Prepare stock recovery and sideload a compatible full OTA while keeping data. |
+| `device_manager.recover_ota` | Reconcile an interrupted OTA's selected stage without retrying the update. |
 | `device_manager.flash` | Reboot to fastboot and flash one or more `PARTITION=PATH` images. |
+| `device_manager.flash_verify` | Verify boot/product/build/slot and the hashed evidence for every declared functional check. |
+| `device_manager.recover_flash` | Reconcile an interrupted partition flash after confirming the same bootloader transport is reachable; this does not restore or verify the installed system. |
 | `device_manager.flash_factory` | Check the research dossier, factory `android-info.txt`, and connected-phone product, then run the official Google factory-image script with the fastboot serial pinned to the selected phone. |
-| `device_manager.install_rom` | Two-stage LineageOS-style installation: flash recovery, then sideload a device-specific ROM package. |
+| `device_manager.install_rom` | Install the reviewed preparation images in order, then sideload the ROM and add-ons as separate stages. |
 | `device_manager.root` | Flash a Magisk-patched boot image, optionally install the Magisk APK, and reboot. |
 | `device_manager.root_prepare` | Install Magisk and copy the matching official boot image to the phone for same-device patching. |
 | `device_manager.root_collect` | Find and pull the Magisk-patched boot image generated on the selected phone. |
@@ -41,12 +48,15 @@ Manage target phones for discovery, registration, flashing, rooting, and Frida s
 - `device_manager.root --slot both` writes the same patched image to `boot_a` and `boot_b`; use it only when device-specific research confirms both slots use the same compatible image.
 - `device_manager.install_frida` expects a rooted phone and a local Frida server binary for the target ABI.
 - Mutating operations require `--confirm`. `--dry-run` prints the planned commands without touching the phone.
+- Actual `flash`, `flash_factory`, `install_rom`, `install_ota` and `partition_repair` operations require the reviewed `flash_plan` described below. Legacy dossiers may be previewed offline but report incomplete checks and cannot authorize a write.
 - `--dry-run` does not contact the device. When `device_manager.root` uses `--slot current`, the dry-run plan shows `boot`; an actual run resolves the active `a` or `b` slot first.
 - `device_manager.partition_inspect` requires fastbootd and is read-only. It does not reboot the phone and does not delete partitions.
 - `device_manager.partition_repair` requires a validated full-image research dossier and `--confirm`. It can delete only slot-suffixed `product`, `odm`, and `system_ext` logical partitions; never use it to delete `system`, `vendor`, or bootloader partitions.
 - `device_manager.flash_factory` parses the nested factory `android-info.txt`. A dry run validates the research device against the image's allowed boards without contacting the phone and records the connected-phone check as pending; an actual run reads the phone product before flashing.
 
 ## Operator Presence and Manual Steps
+
+At task intake, establish whether the user wants to keep data or permits wiping it before selecting the installation route and package. Reuse an explicit choice already made in the conversation. A general request to start flashing or use an official script does not authorize deleting data. If the route would wipe data, explain that consequence and the actual backup coverage before asking for the missing choice; keep independent read-only preparation moving while waiting. Do not first ask at the write stage, or silently choose a keep-data route solely because the question was omitted.
 
 Before starting a flash, root, or device-mode transition that may need physical input, tell the user: **Someone must stay beside the phone throughout this operation to press buttons, use the screen, or approve prompts when instructed.** List the expected manual steps before the first reboot or write. If the exact model's requirements are still unknown, state that manual input may be required and resolve the device-specific instructions before proceeding. Never assume a phone connected to the computer can finish these steps unattended.
 
@@ -63,7 +73,7 @@ Confirm that someone is available at the phone unless the user has already estab
 
 At each required manual step, tell the user what to do **now**, what screen or result marks completion, and which stage is waiting. Wait for the user's completion report, then verify through the shared queue before submitting dependent work. Do not treat a timeout as confirmation, bypass a phone prompt, or repeatedly reboot/reflash because ADB is unavailable. Once ADB is unavailable or unauthorized, computer-driven screen actions cannot be assumed available. Only request the documented manual action at its intended stage; do not instruct the user to power off during an image write.
 
-For a handover between completed jobs, use `devices_manual_acquire` and wait for `handed_over:true` before manual control; return it with `devices_manual_release`. If a running job already owns the phone and expects a specific confirmation, keep its queue ownership while the user completes that confirmation; do not start competing jobs. Manual release runs an Android state check, so a phone still in fastboot, recovery, sideload, or awaiting ADB authorization may remain blocked; report the state and use the applicable managed recovery instead of claiming automatic resumption. A failed or timed-out job may require its registered recovery procedure before further device work. Keep the scheduler's actual state in reports: “waiting for manual input” is a workflow explanation, not a new job state or proof that a device is free. See [device handover rules](../../references/device-analysis.md).
+For a handover between completed jobs, use `devices_manual_acquire` and wait for `handed_over:true` before manual control; return it with `devices_manual_release`. If a running job already owns the phone and expects a specific confirmation, keep its queue ownership while the user completes that confirmation; do not start competing jobs. Manual release defaults to an Android state check. Successful official OTA preparation has a dedicated sideload return described below; this exception does not cover fastboot or third-party ROM preparation. Other phones still in recovery or awaiting ADB authorization may remain blocked; report the state and use the applicable managed recovery instead of claiming automatic resumption. A failed or timed-out job may require its registered recovery procedure before further device work. Keep the scheduler's actual state in reports: “waiting for manual input” is a workflow explanation, not a new job state or proof that a device is free. See [device handover rules](../../references/device-analysis.md).
 
 The script prints an `operator_notice` before flashing, root installation/preparation, partition repair, ROM installation, and the rebooting bootloader check, and preserves it in the JSON result. Dry runs include the notice for the eventual real run. Ordinary `preflight`, `root_collect`, and `install_frida` calls do not unconditionally warn about root authorization or require presence; use the recorded device state and only warn if the next step actually needs manual input, such as enabling ADB after a mode change. Existing `next_action` fields describe the known on-phone steps; a stage's `status: complete` only means that script stage finished. The script does not detect whether someone is physically present.
 
@@ -113,6 +123,8 @@ Selection guidance:
 
 ## Examples
 
+Scheduler options such as `--device` must precede the operation name. The arguments after `--` must include the adapter subcommand shown by `operations` (for example, `preflight` or `image-download`). The same subcommand is required in the `args` array of `jobs_submit` / `Client.submit`; the operation name does not insert it automatically.
+
 ```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> discover-devices
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
@@ -122,7 +134,7 @@ python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> devic
 
 ```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.image_download -- \
+  run device_manager.image_download -- image-download \
   --url https://example.com/boot.img \
   --sha256 0000000000000000000000000000000000000000000000000000000000000000 \
   --label factory-boot \
@@ -131,54 +143,57 @@ python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
 
 ```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.research -- \
+  run device_manager.research -- research \
   --dossier /path/to/device-research.json
 ```
 
 ```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.preflight --device phone-1 -- \
+  run --device phone-1 device_manager.preflight -- preflight \
   --serial DEVICE_SERIAL
 
 # Only when the task needs to verify root access and no reusable grant exists:
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.preflight --device phone-1 -- \
+  run --device phone-1 device_manager.preflight -- preflight \
   --serial DEVICE_SERIAL --check-root
 
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.bootloader_state --device phone-1 -- \
+  run --device phone-1 device_manager.bootloader_state -- bootloader-state \
   --serial DEVICE_SERIAL --confirm
 
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.install_rom --device phone-1 -- \
+  run --device phone-1 device_manager.install_rom -- install-rom \
   --serial DEVICE_SERIAL --stage prepare \
   --recovery-boot /path/to/boot.img \
   --research /path/to/device-research-validated.json --confirm
+```
 
-On the phone, use the fastboot menu to choose `Recovery mode`. Then select Factory reset → Format data / factory reset and Apply update → Apply from ADB:
+Complete the researched `flash_plan.recovery_steps` on the phone. Menu names and reset requirements depend on the exact device and ROM. Retain the preparation result:
 
 ```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.install_rom --device phone-1 -- \
+  run --device phone-1 device_manager.install_rom -- install-rom \
   --serial DEVICE_SERIAL --stage sideload \
   --rom /path/to/lineage-blueline.zip \
+  --prepared-record /path/to/prepare-result.json \
   --research /path/to/device-research-validated.json --confirm
 ```
 
+```bash
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.flash --device phone-1 -- \
+  run --device phone-1 device_manager.flash -- flash \
   --serial DEVICE_SERIAL --image boot=/path/to/boot.img \
   --research /path/to/device-research-validated.json \
   --confirm
 
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.root --device phone-1 -- \
+  run --device phone-1 device_manager.root -- root \
   --serial DEVICE_SERIAL --patched-boot /path/to/magisk_patched_boot.img \
   --research /path/to/device-research-validated.json \
   --magisk-apk /path/to/Magisk.apk --confirm
 
 python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
-  run device_manager.install_frida --device phone-1 -- \
+  run --device phone-1 device_manager.install_frida -- install-frida \
   --serial DEVICE_SERIAL --server /path/to/frida-server \
   --research /path/to/device-research-validated.json \
   --start --confirm
@@ -191,7 +206,13 @@ python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
 - `status` is `complete`, `dry_run`, or `blocked`.
 - Exit code `0` means `complete` or `dry_run`.
 - Exit code `2` means the request was blocked, a command failed, or a required file was missing.
+- `complete` describes the individual operation. Flash records have `workflow_complete: false`; preparation uses `awaiting_sideload`, unfinished add-ons use `awaiting_addon`, and final writes use `awaiting_verification`. Finish setup and USB authorization, then run `device_manager.flash_verify --flash-record <write-result.json> --health-record <health.json>`. Verification checks the booted product/build/slot and every functional check declared in the plan. It does not read back every partition or independently measure the supplied functional evidence.
+- Flash commands save an atomic `in_progress` record before and after each external command. If interrupted, inspect `active_step`, completed `steps` and scheduler logs. A factory script is one command: its inner partition writes may remain uncertain. Never infer successful rollback or automatically replay partial writes from bootloader reachability.
+- `recover_flash` and `recover_flash_factory` return `system_verified: false` and `safe_to_retry: false`, even when their queue reconciliation succeeds. Review the partial outcome and recovery plan before any further writes. If the original operation used `--fastboot-serial`, pass the same value to recovery.
+- `recover_install_rom` and `recover_ota` also leave the system unverified. Pass the failed job's `--stage` and, when applicable, its `--fastboot-serial`; the recovery refuses a different operation, stage or transport.
 - A failed or interrupted mutating operation can leave the phone in fastboot or a partially flashed state. First read `jobs_status` and `devices_state`. If a resource is `needs_recovery`, ordinary preflight is blocked: use the registered recovery for that failed operation (for example `recover_flash_factory`, `recover_install_rom`, or `recover_partition_repair`). `devices_recover` can verify the supported read-only/manual-return cases, not unknown partial writes. If no applicable recovery exists, report the blocker and the evidence needed for a registered repair; do not queue repeated preflights or clear locks. After recovery succeeds, run preflight before retrying.
+
+Official factory-script output is retained separately for stdout and stderr, with up to 1,048,576 decoded characters per stream. Longer output keeps the beginning and end with an explicit omission marker; it is not a complete log. Ordinary commands retain their existing smaller output limit. This does not make historical truncated records complete, and missing logs are not a reason to repeat a successful write.
 
 ## Research Dossier
 
@@ -230,6 +251,124 @@ Required fields:
 
 `device_manager.research` validates that the dossier is complete. `device_manager.flash` and `device_manager.root` refuse to run without it.
 
+### Reviewed Flash Plan
+
+Before an actual flash, add `flash_plan` to the research dossier. Obtain image digests from the publisher's authenticated source (or the documented signing/build process for a local build); computing a digest of an unknown download does not establish its origin. Use `image_download`/`image_verify`, then retain the reviewed digest in this plan. This illustrative template contains no real device identifiers and must be filled with observed, device-specific facts:
+
+```json
+{
+  "flash_plan": {
+    "serial": "SELECTED_ADB_SERIAL",
+    "fastboot_serial": "VERIFIED_FASTBOOT_SERIAL",
+    "slot": "a",
+    "target_slot": "a",
+    "mode": "fastboot",
+    "bootloader_version": "OBSERVED_BOOTLOADER_VERSION",
+    "target_fingerprint": "EXACT_TARGET_BUILD_FINGERPRINT",
+    "source_fingerprint": "OBSERVED_SOURCE_BUILD_FINGERPRINT",
+    "minimum_battery": 50,
+    "acceptance_checks": ["wifi", "camera", "calls"],
+    "anti_rollback": {
+      "compatible": true,
+      "source": "https://vendor.example/device-specific-update-instructions"
+    },
+    "images": {
+      "boot": "REVIEWED_64_CHARACTER_SHA256"
+    }
+  }
+}
+```
+
+- `slot` is the currently observed slot; `target_slot` is the expected slot after installation. Either can be `a`, `b`, or `none` for a verified non-A/B device. Do not infer these from Android version alone.
+- `mode` selects bootloader fastboot or userspace fastbootd according to the specific partitions. Factory installation starts in `fastboot`; standalone logical-partition repair requires `fastbootd`.
+- `images` keys are the exact partition names for `flash`, `factory` for a factory ZIP, `ota` for a full OTA, or `recovery`, `rom`, preparatory partition names and `addon:1` through `addon:N` for custom-ROM stages. All selected files are rehashed before device transitions and checked again before writing. The scheduler reserves and fingerprints images and files referenced by backup/health receipts.
+- The live pre-write gate checks product, unlocked state, bootloader version and current slot. Changed or unreadable facts block the write. The anti-rollback decision is a sourced human/agent review bound to those facts, not a universal automatic anti-rollback detector.
+- Custom-ROM plans additionally require an explicit device-specific `recovery_partition` matching the reviewed recovery image rule. Only use the partition stated by the exact device's installation guide. The existing `--recovery-boot` argument supplies that recovery image; its name does not force the destination to `boot`.
+- For the sideload stage, pass `--prepared-record <prepare-result.json>`. Its phone identity and entire plan must match. Preparation success alone does not confirm the recovery's on-screen reset or installation steps; keep the operator handoff and verify sideload mode.
+- Research must cover required stock firmware, battery level, data backup, extra images/add-ons and whether rollback is permitted. ROM and OTA preparation compare `source_fingerprint`, bootloader and slot against Android before switching modes, and enforce `minimum_battery` from the selected guide (the number above is illustrative). The phone must start in authorized Android for these preparation operations. Partition/factory flashing retains its bootloader checks; a dossier alone does not prove every firmware prerequisite.
+- Actual writes require a nonempty `acceptance_checks` list. Choose checks from the installation guide and intended use, such as Wi-Fi, camera, calls, mobile data or encryption. Names alone do not implement those tests: the operator/agent must collect real evidence and supply a health receipt.
+- Bootloader unlocking/relocking, automatic downgrade/restore, arbitrary installation scripts and private-app-data backup remain outside these operations. Unsupported layouts need a reviewed device-specific implementation.
+
+Relevant sources: [Google factory images and anti-rollback notices](https://developers.google.com/android/images), [Google full OTA images](https://developers.google.com/android/ota), and the selected ROM's exact device installation guide. Use the separate full-OTA operation below for a compatible keep-data update.
+
+### Backup and Restore Preparation
+
+`backup_data` exports only the explicitly selected shared-storage files, such as `/sdcard/DCIM` or `/storage/emulated/0/Documents`. It reads Android identity/build and battery, pulls files into a new host directory, and records every file's SHA-256. It does not claim to preserve private app data, account credentials, authentication apps or DRM state. Use the relevant app's export/sync mechanism for data outside this coverage and retain its evidence separately.
+
+Both backup creation operations require an explicit `--backup-dir`. Select a durable directory outside Git and the scheduler's `jobs` evidence tree; task evidence is subject to automatic retention cleanup. `backup_data` saves `data-manifest.json` alongside the exported files; `backup_prepare` saves `backup-manifest.json` with the original images. Preserve these directories for the intended retention period.
+
+```bash
+python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
+  run --device phone-1 device_manager.backup_data -- backup-data \
+  --serial DEVICE_SERIAL --research /path/to/research.json \
+  --backup-dir /path/to/retained-backups/shared-storage-UNIQUE_NAME \
+  --remote-path /sdcard/DCIM --remote-path /sdcard/Documents
+```
+
+Before a data-wiping installation, put the current official original images' reviewed hashes in `flash_plan.rollback_images`. `backup_prepare` copies exactly those images, verifies the copies, and writes `backup-manifest.json`. Supply either `--data-record <data-manifest.json>` or `--discard-data-reason <owner-approved reason>`. The latter records a deliberate loss of data; it is not a data backup. Keep this directory outside Git.
+
+```bash
+python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
+  run device_manager.backup_prepare -- backup-prepare \
+  --research /path/to/research.json --image boot=/path/to/current-stock-boot.img \
+  --backup-dir /path/to/retained-backups/original-images-UNIQUE_NAME \
+  --data-record /path/to/retained-backups/shared-storage-UNIQUE_NAME/data-manifest.json
+```
+
+Bind the returned manifest path and SHA-256 as `flash_plan.backup_record: {"path": "ABSOLUTE_MANIFEST_PATH", "sha256": "MANIFEST_SHA256"}`, then validate the updated research again. Actual wipe flows refuse a missing or changed backup. `backup_verify --research <research.json> --backup-record <manifest.json>` checks identity, source build and all retained files before a restore is considered. Restoration still needs fresh device-specific research, anti-rollback review and user authorization: reuse the retained images with the appropriate flash/factory flow only if restoring that build is permitted. The tool does not automatically retry or downgrade a phone.
+
+### Device-Specific ROM Steps
+
+For extra preparation images, pass repeated `--prepare-image PARTITION=PATH`. Destinations must match the device-specific `partition_writes` research; a partition name alone never establishes compatibility. `flash_plan.prepare_order` must list every supplied partition exactly once, including `recovery_partition`. `partition_modes` optionally gives each partition's `fastboot` or `fastbootd` mode. The executor follows that order and repeats the identity/slot/loader/hash checks before each write. `flash_plan.recovery_steps` must list the sourced on-phone steps, including the required data reset. Complete and verify these manual steps before sideloading.
+
+For add-ons, pass repeated `--addon <package.zip>` in the reviewed order in both stages. The plan binds `addon:1` through `addon:N` hashes. Sideload `--package-index 0` installs the ROM; `1..N` select the add-ons. Each invocation installs one package, and each add-on requires the immediately preceding result as `--prepared-record`. Follow the guide's recovery restart and sideload instructions between packages. Pass `--no-reboot` until the final package; the final reboot flag must match the research decision. Missing add-ons, changed files, skipped stages and early reboot are rejected.
+
+### Official Full OTA
+
+Use `device_manager.install_ota` with `scope: ota`, `data: keep`, `mode: recovery`, and an `images.ota` hash from the official publisher. Set the observed source fingerprint/slot/bootloader, the exact target fingerprint and researched target slot. A stock locked bootloader is allowed; this path does not unlock it. The host checks the ZIP's Android metadata for device, target build, full-OTA type and absence of incremental/wipe/downgrade requirements. Recovery remains responsible for package signature verification and device-specific installation compatibility.
+
+```bash
+python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
+  run --device phone-1 device_manager.install_ota -- install-ota \
+  --serial DEVICE_SERIAL --stage prepare --ota /path/to/full-ota.zip \
+  --research /path/to/ota-research.json --confirm
+
+# Complete the managed handover below before submitting the next stage:
+python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
+  run --device phone-1 device_manager.install_ota -- install-ota \
+  --serial DEVICE_SERIAL --stage sideload --ota /path/to/full-ota.zip \
+  --prepared-record /path/to/ota-prepare-result.json \
+  --research /path/to/ota-research.json --confirm
+```
+
+Between these stages, save the successful preparation job ID and acquire manual control. After `handed_over:true`, guide the user through the model-specific stock recovery menu and wait for confirmation that they selected **Apply update from ADB**. Call `devices_manual_release` with `device`, `transport: "sideload"`, and `prepared_job: "<successful preparation job ID>"`. Wait for its returned verification job to succeed before submitting sideload. The service verifies the published preparation record, its approved research, the project and phone identity, then checks only that phone's ADB sideload connection. It does not require an Android shell or declare the installation successful. A changed record, unknown previous mutation, or surviving command process still blocks return. The preparation is rejected if a later device mutation or managed manual-return check has started; ordinary read-only observations do not invalidate it. Do not use an old preparation from another attempt. `recover_ota` handles interrupted OTA jobs; it is not the handover for a successful preparation.
+
+Confirm recovery reports success and reboot using its menu when authorized by the research decision. Acquire manual control for this menu action and, once Android has booted and USB debugging is authorized, return with the default `devices_manual_release` Android check. OTA does not silently issue an automatic reboot. It remains `awaiting_verification` until final acceptance. Interruptions use `recover_ota`; connection recovery does not establish that the update succeeded.
+
+### Functional Acceptance Receipt
+
+Save evidence files and a receipt like the following, filled from actual observations. Every declared check must pass and retain an existing hashed evidence file. This is a record of the performed checks, not an automatic hardware diagnostic.
+
+```json
+{
+  "serial": "SELECTED_ADB_SERIAL",
+  "target_fingerprint": "EXACT_TARGET_BUILD_FINGERPRINT",
+  "flash_record_sha256": "SHA256_OF_THIS_COMPLETED_FINAL_WRITE_RESULT",
+  "checks": {
+    "wifi": {"status": "passed", "evidence": [{"path": "wifi-observation.txt", "sha256": "EVIDENCE_SHA256"}]},
+    "camera": {"status": "passed", "evidence": [{"path": "camera-observation.txt", "sha256": "EVIDENCE_SHA256"}]},
+    "calls": {"status": "passed", "evidence": [{"path": "call-observation.txt", "sha256": "EVIDENCE_SHA256"}]}
+  }
+}
+```
+
+```bash
+python3 <Workbench目录>/scripts/workbench.py --project <Workbench目录> \
+  run --device phone-1 device_manager.flash_verify -- flash-verify \
+  --serial DEVICE_SERIAL --flash-record /path/to/final-write-result.json \
+  --health-record /path/to/health.json
+```
+
 For `root`, `root_prepare`, or `root_collect`, add `"root_partition": "boot"` at the top level only after model-specific research establishes that partition. This field is preserved in validated research and its cache key. Choosing `decisions.root: "yes"` alone does not establish the correct partition. An existing rooted phone's Frida installation does not need this field.
 
 ### User Decisions
@@ -238,7 +377,7 @@ For `root`, `root_prepare`, or `root_collect`, add `"root_partition": "boot"` at
 
 | Field | Allowed values | Meaning |
 | --- | --- | --- |
-| `scope` | `boot_only`, `system_only`, `full_image`, `custom` | How much of the system will be flashed. |
+| `scope` | `boot_only`, `system_only`, `full_image`, `custom`, `ota` | Partition, factory, custom-ROM or full-OTA route. |
 | `root` | `yes`, `no` | Whether the user wants to root the device. |
 | `data` | `keep`, `wipe` | Whether user data should be preserved or wiped. |
 | `reboot` | `yes`, `no` | Whether the device should reboot after flashing. |
@@ -249,6 +388,7 @@ These choices are enforced:
 - `device_manager.root` is blocked when `root` is not `yes`.
 - `device_manager.install_frida` is blocked when `root` or `frida` is not `yes`.
 - `device_manager.flash` rejects partitions that do not match `boot_only` or `system_only`.
+- Generic `flash` requires an unlocked bootloader, rejects duplicate partitions and blocks writing `userdata`/`metadata` when data must be kept. It does not implement a data wipe, so a `data: wipe` request must use an appropriate factory or ROM installation instead of silently preserving data.
 - `device_manager.flash_factory` requires `scope: full_image`, `data: wipe`, an unlocked bootloader, and the reboot decision `yes`.
 - `device_manager.flash_factory --reset-super` verifies that the official image contains `super_empty.img`, enters fastbootd, resets dynamic-partition metadata for both slots, returns to the bootloader, and then runs the official script. Use it when a previous custom-ROM layout left a slot without enough space.
 - `device_manager.flash_factory --reset-super --repair-dynamic-partitions` runs the staged repair that succeeded on Pixel 3 `blueline`: inspect in fastbootd, delete only image-supported logical `product_a`/`product_b`, retry `wipe-super`; if still blocked, repeat for image-supported `odm_*`; if still blocked, repeat for image-supported `system_ext_*`; then return to the bootloader and run the official script. The option requires `--reset-super` and a full-image research dossier.
@@ -287,3 +427,7 @@ These choices are enforced:
 - Use the existing `frida.*` operations for Frida source selection, patching, and deployment when those workflows are needed.
 - Fastboot serials are not identical to ADB serials on every device. Use `--fastboot-serial` when they differ.
 - The current implementation supports one device per invocation and does not preserve a phone-specific rollback plan.
+
+### Required Device Review
+
+Actual flashing additionally requires the [device research and failure-case workflow](../../references/flashing-research.md). It defines `device_review`, retained online evidence, freshness, `hardware_checks`, `partition_writes`, explicit activation, factory options and fresh acceptance binding. Older dossiers remain usable for offline previews but cannot authorize writes until reviewed under this contract. A source binding proves consistency, not correctness of the researcher’s conclusions.

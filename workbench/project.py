@@ -33,6 +33,7 @@ COMPONENTS = {
     "analysis-agent": "components/analysis-agent",
     "device-manager": "components/device-manager",
     "permission-audit": "components/permission-audit",
+    "app-replica": "components/app-replica",
 }
 
 
@@ -112,6 +113,48 @@ def builtin_operations():
     )
     device_manager = "device-manager"
     device_manager_definitions = {
+        "backup_prepare": {
+            "subcommand": "backup-prepare", "readonly": True,
+            "outputs": ["--output", "--backup-dir"],
+            "shared_outputs": ["--backup-dir"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "backup_verify": {
+            "subcommand": "backup-verify", "readonly": True,
+            "outputs": ["--output"], "default_outputs": {"--output": "operation-result.json"},
+        },
+        "backup_data": {
+            "subcommand": "backup-data", "serial": "--serial", "readonly": True,
+            "outputs": ["--output", "--backup-dir"], "shared_outputs": ["--backup-dir"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "install_ota": {
+            "subcommand": "install-ota", "serial": "--serial", "adb_exclusive": True,
+            "outputs": ["--output"], "default_outputs": {"--output": "operation-result.json"},
+        },
+        "recover_ota": {
+            "script": "recover_ota.py", "serial": "--serial", "adb_exclusive": True,
+            "recovery": True, "recovery_for": ["device_manager.install_ota", "device_manager.recover_ota"],
+            "outputs": ["--output"], "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
+        "flash_verify": {
+            "subcommand": "flash-verify",
+            "serial": "--serial",
+            "readonly": True,
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "operation-result.json"},
+        },
+        "recover_flash": {
+            "script": "recover_flash.py",
+            "serial": "--serial",
+            "adb_exclusive": True,
+            "recovery": True,
+            "recovery_for": ["device_manager.flash", "device_manager.recover_flash"],
+            "outputs": ["--output"],
+            "default_outputs": {"--output": "recovery-result.json"},
+            "result_file": ".",
+        },
         "preflight": {
             "subcommand": "preflight",
             "serial": "--serial",
@@ -227,6 +270,7 @@ def builtin_operations():
         "recover_install_rom": {
             "script": "recover_install_rom.py",
             "serial": "--serial",
+            "adb_exclusive": True,
             "recovery": True,
             "recovery_for": [
                 "device_manager.install_rom",
@@ -310,6 +354,21 @@ def builtin_operations():
             mutates_environment=True,
             **({"uses_mcp": True} if name == "mcp_setup" else {}),
         )
+    # Central fixed adapters share the same queue and reuse existing tool environments.
+    for name, subcommand in (("inventory", "inventory"), ("check", "check"),
+                             ("install", "install"), ("js_ast", "js-ast"),
+                             ("js_deobfuscate", "js-deobfuscate"),
+                             ("binary_layout", "binary-layout"), ("firmware_scan", "firmware-scan")):
+        operations["tools." + name] = {
+            "script": BUNDLE_PREFIX + "Tools/manager.py",
+            "source": BUNDLE_PREFIX + "Tools", "subcommand": subcommand,
+            "readonly": name != "install", "compute": name not in {"inventory", "install"},
+            "mutates_environment": name == "install",
+            "outputs": ["--output"], "default_outputs": {"--output": "tool-result.json"},
+            "result_file": ".", "input_flags": ["--input"],
+            "resources": [{"path": "Tools/runtime", "mode": "write" if name == "install" else "read"}],
+            "nested_sources": [SKILL_SOURCE + "/components/static-env"],
+        }
     operations["environment.recover_host_lease"] = {
         "script": BUNDLE_PREFIX + "scripts/recover_host_lease.py",
         "source": BUNDLE_PREFIX + "scripts",
@@ -363,7 +422,7 @@ def builtin_operations():
         "plan": {
             "subcommand": "plan", "readonly": True,
             "analysis_plan": True,
-            "input_flags": ["--recon"], "outputs": ["--output"],
+            "input_flags": ["--recon", "--unknown-ledger"], "outputs": ["--output"],
             "shared_outputs": ["--output"],
         },
         "plan_update": {
@@ -465,7 +524,7 @@ def builtin_operations():
             "readonly": False,
             "compute": True,
             "input_flags": ["--read-path"],
-            "outputs": ["--output", "--write-path"],
+            "outputs": ["--output", "--write-path", "--publish-path"],
             "shared_outputs": ["--write-path"],
         },
         "scratchpad": {
@@ -477,6 +536,20 @@ def builtin_operations():
     }
     for name, entry in analysis_definitions.items():
         add("analysis." + name, analysis, "analysis.py", **entry)
+    add("analysis.query", analysis, "analysis_query.py", readonly=True, compute=True, analysis_metadata=True,
+        input_flags=["--db", "--request"], outputs=["--output"],
+        nested_sources=[BUNDLE_PREFIX + "scripts"])
+    for action in ("record", "update", "check"):
+        mutates = action != "check"
+        add("analysis.unknown_" + action, analysis, "analysis_ledger.py",
+            subcommand="unknown-" + action, readonly=not mutates, analysis_plan=True,
+            input_flags=["--evidence"] + ([] if mutates else ["--ledger"]),
+            outputs=["--output"] + (["--ledger"] if mutates else []),
+            shared_outputs=["--ledger"] if mutates else [])
+    for name, command in (("js", "js"), ("source_map", "source-map"), ("har", "har"), ("compare", "compare")):
+        add("analysis.offline_" + name, analysis, "analysis_offline.py",
+            subcommand=command, readonly=True, compute=True, analysis_metadata=True,
+            input_flags=["--input", "--map", "--baseline", "--candidate"], outputs=["--output"])
 
     apkrev = "apk-reverse"
 
@@ -833,8 +906,9 @@ def generate(root, checkout, python=None):
         "version": 1,
         "workbench_root": str(checkout),
         "python": str(interpreter),
-        "environments": [".venv", ".tools", ".android-static", str(sdk)],
+        "environments": [".venv", ".tools", ".android-static", "Tools/runtime", str(sdk)],
         "mcp_environments": [
+            "Tools/runtime",
             ".android-static/bin",
             ".android-static/venvs",
             ".android-static/tools",
@@ -896,7 +970,22 @@ def update(existing, generated, python=None):
         if name not in LEGACY_SKILLS
     }
     result["skills"].update(generated["skills"])
-    result.setdefault("operations", {}).update(generated["operations"])
+    operations = result.setdefault("operations", {})
+    # Explicit updates retire only known bundled adapters, preserving project extensions.
+    retired = {
+        "replication.workflow": "replication.py",
+        "replication.emulator_compare": "runtime_compare.py",
+    }
+    for name, script in retired.items():
+        if operations.get(name, {}).get("script") == (
+            SKILL_SOURCE + "/components/app-replication/scripts/" + script
+        ):
+            del operations[name]
+    operations.update(generated["operations"])
+    # Add new managed storage without replacing custom roots or changing PATH.
+    for field in ("environments", "mcp_environments"):
+        result[field] = list(dict.fromkeys([*result.get(field, []), "Tools/runtime"]))
+
     # Preserve nested resource coverage when an older wrapper calls a bundled component.
     replacements = {
         location: generated["skills"][SKILL]

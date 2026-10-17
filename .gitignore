@@ -12,6 +12,8 @@ dist/
 *.egg-info/
 .venv/
 # Local analysis projects, configuration and artifacts do not belong in the source repository.
+.replication/
+/workspace/
 .envrc
 .env
 .env.*
@@ -31,3 +33,9 @@ reports/
 *.db
 *.db-wal
 *.db-shm
+
+# Downloaded central tool environments stay local; Tools source stays tracked.
+/Tools/runtime/
+/.pi-glla/
+/.workbench-host-recovery/
+/research_notes/

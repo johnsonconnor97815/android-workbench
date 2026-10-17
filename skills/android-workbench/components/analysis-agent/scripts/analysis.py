@@ -64,6 +64,8 @@ DEFAULT_MAX_STRING_BYTES = 16 * 1024 * 1024
 DEFAULT_KNOWLEDGE_CHUNK_CHARS = 1200
 DEFAULT_KNOWLEDGE_CHUNK_OVERLAP = 120
 DEFAULT_EMBEDDING_BATCH_SIZE = 64
+KNOWLEDGE_CACHE_VERSION = 2
+KNOWLEDGE_CHUNK_VERSION = 1
 SOURCE_EXTENSIONS = {
     ".c", ".cc", ".cpp", ".h", ".hpp", ".java", ".js", ".json", ".kt",
     ".map", ".md", ".py", ".rs", ".smali", ".txt", ".ts", ".xml",
@@ -185,23 +187,54 @@ def fetch_url_text(url: str, timeout: int, max_bytes: int) -> dict:
     }
 
 
-def iter_knowledge_files(root: Path, max_files: int) -> list[Path]:
+def scan_knowledge_files(
+    root: Path, max_files: int, excluded: set[Path] | None = None,
+) -> tuple[list[Path], bool]:
+    """Walk a bounded number of entries, without traversing ignored/symlink dirs."""
+    excluded = excluded or set()
+    if root.is_symlink() or root in excluded:
+        return [], False
     if root.is_file():
-        return [root] if root.suffix.casefold() in KNOWLEDGE_EXTENSIONS else []
+        return ([root] if root.suffix.casefold() in KNOWLEDGE_EXTENSIONS else []), False
     if not root.is_dir():
-        return []
+        return [], False
     files = []
-    for path in sorted(root.rglob("*")):
-        if len(files) >= max_files:
-            break
-        if path.is_symlink() or not path.is_file():
-            continue
-        if any(part in {".git", "__pycache__", ".venv", "node_modules"} for part in path.parts):
-            continue
-        if path.suffix.casefold() not in KNOWLEDGE_EXTENSIONS:
-            continue
-        files.append(path)
-    return files
+    pending = [root]
+    entry_budget = max(1000, max_files * 20)
+    visited = 0
+    ignored = {".git", "__pycache__", ".venv", "node_modules"}
+    while pending:
+        directory = pending.pop()
+        entries = []
+        scan_stopped = False
+        with os.scandir(directory) as stream:
+            for entry in stream:
+                visited += 1
+                if visited > entry_budget:
+                    scan_stopped = True
+                    break
+                if entry.name in ignored or entry.is_symlink():
+                    continue
+                entries.append(entry)
+        directories = []
+        for entry in sorted(entries, key=lambda item: item.name):
+            path = Path(entry.path)
+            if path in excluded:
+                continue
+            if entry.is_dir(follow_symlinks=False):
+                directories.append(path)
+            elif entry.is_file(follow_symlinks=False) and path.suffix.casefold() in KNOWLEDGE_EXTENSIONS:
+                if len(files) >= max_files:
+                    return files, True
+                files.append(path)
+        if scan_stopped:
+            return files, True
+        pending.extend(reversed(directories))
+    return files, False
+
+
+def iter_knowledge_files(root: Path, max_files: int) -> list[Path]:
+    return scan_knowledge_files(root, max_files)[0]
 
 
 def knowledge_documents(
@@ -210,35 +243,49 @@ def knowledge_documents(
     max_files: int,
     max_bytes: int,
     url_timeout: int,
+    excluded: set[Path] | None = None,
 ) -> tuple[list[dict], bool]:
     documents = []
     stopped = False
     total_bytes = 0
+    seen = set()
 
     for root in roots:
-        for path in iter_knowledge_files(root, max_files):
+        paths, scan_stopped = scan_knowledge_files(root, max_files, excluded)
+        stopped = stopped or scan_stopped
+        for path in paths:
+            if path in seen:
+                continue
+            seen.add(path)
             if len(documents) >= max_files or total_bytes >= max_bytes:
                 stopped = True
                 break
-            data = path.read_bytes()
+            remaining = max_bytes - total_bytes
+            with path.open("rb") as stream:
+                stat = os.fstat(stream.fileno())
+                data = stream.read(remaining + 1)
             if b"\0" in data[:1024]:
                 continue
-            remaining = max(0, max_bytes - total_bytes)
+            truncated = len(data) > remaining or stat.st_size > remaining
             data = data[:remaining]
             total_bytes += len(data)
             text = data.decode("utf-8", "replace")
-            chunks = chunk_text(text)
+            chunks = chunk_text(text, DEFAULT_KNOWLEDGE_CHUNK_CHARS,
+                                DEFAULT_KNOWLEDGE_CHUNK_OVERLAP)
             documents.append(
                 {
                     "path": str(path),
                     "source_type": "file",
-                    "size": path.stat().st_size,
-                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                    "truncated": path.stat().st_size > len(data),
+                    "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "hash_scope": "indexed_bytes",
+                    "truncated": truncated,
                     "chunks": chunks,
                 }
             )
-        if stopped:
+        if len(documents) >= max_files or total_bytes >= max_bytes:
+            stopped = True
             break
 
     for url in urls:
@@ -246,6 +293,7 @@ def knowledge_documents(
             stopped = True
             break
         fetched = fetch_url_text(url, url_timeout, max(0, max_bytes - total_bytes))
+        stopped = stopped or fetched["truncated"]
         text = fetched["text"]
         if b"\0" in text.encode("utf-8", "replace")[:1024]:
             continue
@@ -256,12 +304,42 @@ def knowledge_documents(
                 "source_type": "url",
                 "size": fetched["bytes"],
                 "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                "hash_scope": "decoded_indexed_text",
                 "truncated": fetched["truncated"],
                 "charset": fetched["charset"],
-                "chunks": chunk_text(text),
+                "chunks": chunk_text(text, DEFAULT_KNOWLEDGE_CHUNK_CHARS,
+                                     DEFAULT_KNOWLEDGE_CHUNK_OVERLAP),
             }
         )
     return documents, stopped
+
+
+def knowledge_content_identity(documents: list[dict]) -> str:
+    """Bind embeddings to the ordered source paths and exact chunk text."""
+    content = [
+        [doc["path"], doc["source_type"], [chunk["text"] for chunk in doc["chunks"]]]
+        for doc in documents
+    ]
+    return hashlib.sha256(json.dumps(content, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def write_knowledge_index(path: Path, index: dict) -> None:
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".tmp-", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(index, stream, ensure_ascii=False, sort_keys=True, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def lexical_scores(documents: list[dict], query: str) -> list[float]:
@@ -358,29 +436,147 @@ def knowledge_facts(
     embedding_timeout: int,
     url_timeout: int,
 ) -> dict:
-    index = None
-    if index_path is not None and index_path.is_file() and not rebuild:
-        index = json.loads(index_path.read_text(encoding="utf-8"))
-        if index.get("schema") != SCHEMA_VERSION:
-            raise ValueError("Unsupported knowledge index schema")
+    if max_files <= 0 or max_bytes <= 0:
+        raise ValueError("Knowledge file and byte limits must be positive")
+    cached = None
+    cache_reason = "no_index"
+    if index_path is not None and index_path.is_file():
+        try:
+            # Serialized chunks and vectors may exceed the source byte budget.
+            # Still cap cache reads: oversized indexes are rebuilt from sources.
+            cache_bytes = min(64 * 1024 * 1024, max_bytes * 32 + 1024 * 1024)
+            with index_path.open("rb") as stream:
+                raw = stream.read(cache_bytes + 1)
+            if len(raw) > cache_bytes:
+                raise ValueError("Knowledge index exceeds its read budget")
+            cached = json.loads(raw)
+            if not isinstance(cached, dict):
+                raise ValueError("Knowledge index must be an object")
+        except (ValueError, UnicodeError) as exc:
+            if not roots and not urls:
+                raise ValueError("Cannot rebuild invalid knowledge index without --root or --url") from exc
+            cached = None
+            cache_reason = "invalid_index"
 
-    if index is None:
+    # Preserve index-only searches, but revalidate their recorded sources too.
+    if not roots and not urls and cached is not None:
+        recorded_roots = cached.get("roots", [])
+        recorded_urls = cached.get("urls", [])
+        if (not isinstance(recorded_roots, list) or not all(isinstance(item, str) for item in recorded_roots)
+                or not isinstance(recorded_urls, list) or not all(isinstance(item, str) for item in recorded_urls)
+                or not (recorded_roots or recorded_urls)):
+            raise ValueError("Cannot revalidate knowledge index without --root or --url")
+        roots = [Path(item) for item in recorded_roots]
+        urls = recorded_urls
+    roots = list(dict.fromkeys(root.resolve() for root in roots))
+    urls = list(dict.fromkeys(urls))
+    config = {
+        "roots": [str(root) for root in roots],
+        "urls": urls,
+        "max_files": max_files,
+        "max_bytes": max_bytes,
+        "chunk_version": KNOWLEDGE_CHUNK_VERSION,
+        "chunk_chars": DEFAULT_KNOWLEDGE_CHUNK_CHARS,
+        "chunk_overlap": DEFAULT_KNOWLEDGE_CHUNK_OVERLAP,
+        "extensions": sorted(KNOWLEDGE_EXTENSIONS),
+        "url_policy": "refetch_each_request",
+    }
+    excluded = {index_path.resolve()} if index_path is not None else set()
+    try:
         documents, stopped = knowledge_documents(
-            roots, urls, max_files, max_bytes, url_timeout
+            roots, urls, max_files, max_bytes, url_timeout, excluded
         )
+    except (OSError, ValueError) as exc:
+        if cached is None:
+            raise
+        # Preserve the old index as historical evidence, without labelling it
+        # current or sending its unvalidated text to the embedding provider.
+        snapshots = []
+        old_documents = cached.get("documents", [])
+        if isinstance(old_documents, list):
+            for doc in old_documents[:limit]:
+                if not isinstance(doc, dict):
+                    continue
+                chunks = doc.get("chunks", [])
+                excerpt = (chunks[0].get("text", "") if isinstance(chunks, list)
+                           and chunks and isinstance(chunks[0], dict) else "")
+                snapshots.append({"path": doc.get("path"), "sha256": doc.get("sha256"),
+                                  "excerpt": bounded_text(str(excerpt), 1200)})
+        return {
+            "schema": SCHEMA_VERSION, "query": query, "available": False,
+            "uncertain": True, "reason": "Knowledge sources could not be revalidated",
+            "document_count": 0, "matches": [], "cached_evidence": snapshots,
+            "index_path": str(index_path) if index_path is not None else None,
+            "cache": {"status": "validation_failed", "reused": False,
+                      "reason": "source_validation_failed", "validation_error": str(exc),
+                      "snapshot_created_at": cached.get("created_at"),
+                      "url_policy": "refetch_each_request"},
+        }
+    content_identity = knowledge_content_identity(documents)
+    source_identity = [
+        {key: value for key, value in doc.items() if key != "chunks"}
+        for doc in documents
+    ]
+    reusable = bool(
+        not rebuild and cached is not None
+        and cached.get("schema") == SCHEMA_VERSION
+        and cached.get("cache_version") == KNOWLEDGE_CACHE_VERSION
+        and cached.get("config") == config
+        and cached.get("source_identity") == source_identity
+        and cached.get("content_identity") == content_identity
+        and cached.get("stopped_early") == stopped
+        and isinstance(cached.get("documents"), list)
+    )
+    # Validate cached text as well as its declared fingerprint. Never trust a
+    # stale/tampered chunk just because the stored fingerprint matches.
+    if reusable:
+        try:
+            reusable = knowledge_content_identity(cached["documents"]) == content_identity
+        except (KeyError, TypeError):
+            reusable = False
+    if reusable:
+        index = cached
+        # Use newly observed metadata/chunks. The cache contributes only vectors.
+        for fresh_doc, cached_doc in zip(documents, cached["documents"]):
+            for fresh_chunk, cached_chunk in zip(fresh_doc["chunks"], cached_doc["chunks"]):
+                if "vector" in cached_chunk:
+                    fresh_chunk["vector"] = cached_chunk["vector"]
+        index["documents"] = documents
+        cache_reason = "sources_unchanged"
+    else:
+        if rebuild:
+            cache_reason = "explicit_rebuild"
+        elif cached is not None:
+            cache_reason = ("legacy_index" if cached.get("cache_version") != KNOWLEDGE_CACHE_VERSION
+                            else "sources_or_config_changed")
         index = {
             "schema": SCHEMA_VERSION,
+            "cache_version": KNOWLEDGE_CACHE_VERSION,
             "created_at": time.time(),
-            "roots": [str(root) for root in roots],
+            "config": config,
+            "roots": config["roots"],
             "urls": urls,
+            "source_identity": source_identity,
+            "content_identity": content_identity,
             "document_count": len(documents),
             "stopped_early": stopped,
             "documents": documents,
             "embedding": None,
         }
+    index["checked_at"] = time.time()
+    freshness = {
+        "status": "bounded_snapshot" if stopped else "revalidated",
+        "reused": reusable,
+        "reason": cache_reason,
+        "url_policy": "refetch_each_request",
+        "scope": "bounded_sources",
+        "url_documents_refetched": sum(doc["source_type"] == "url" for doc in documents),
+    }
 
     documents = index.get("documents", [])
     if not documents:
+        if index_path is not None:
+            write_knowledge_index(index_path, index)
         return {
             "schema": SCHEMA_VERSION,
             "query": query,
@@ -388,6 +584,8 @@ def knowledge_facts(
             "uncertain": True,
             "reason": "No knowledge documents were indexed",
             "document_count": 0,
+            "stopped_early": stopped,
+            "cache": freshness,
             "matches": [],
         }
 
@@ -396,11 +594,17 @@ def knowledge_facts(
     endpoint = embedding_endpoint_url(embedding_endpoint) if embedding_endpoint else None
     reusable_embedding = bool(
         embedding_endpoint
-        and embedding
+        and isinstance(embedding, dict)
+        and embedding.get("provider") == "openai-compatible"
         and embedding.get("endpoint") == endpoint
         and embedding.get("model") == model
+        and embedding.get("content_identity") == content_identity
         and all(
-            chunk.get("vector")
+            isinstance(chunk.get("vector"), list)
+            and len(chunk["vector"]) == embedding.get("dimension")
+            and len(chunk["vector"]) > 0
+            and all(isinstance(value, (int, float)) and not isinstance(value, bool)
+                    and math.isfinite(value) for value in chunk["vector"])
             for document in documents
             for chunk in document.get("chunks", [])
         )
@@ -426,6 +630,7 @@ def knowledge_facts(
             "model": model,
             "dimension": len(query_vector),
             "api_key_env": embedding_api_key_env,
+            "content_identity": content_identity,
         }
         embedding = index["embedding"]
     elif embedding_endpoint:
@@ -469,7 +674,7 @@ def knowledge_facts(
                     )
                 )
 
-    results.sort(key=lambda item: item[0], reverse=True)
+    results.sort(key=lambda item: (-item[0], item[1]["path"], item[2]))
     matches = []
     for score, doc, chunk_index, chunk in results[:limit]:
         matches.append(
@@ -484,17 +689,18 @@ def knowledge_facts(
         )
 
     if index_path is not None:
-        write_output(index_path, index)
+        write_knowledge_index(index_path, index)
 
     return {
         "schema": SCHEMA_VERSION,
         "query": query,
         "available": True,
-        "uncertain": False,
+        "uncertain": bool(stopped),
         "document_count": len(documents),
         "stopped_early": index.get("stopped_early", False),
         "embedding": index.get("embedding"),
         "index_path": str(index_path) if index_path is not None else None,
+        "cache": freshness,
         "match_count": len(matches),
         "matches": matches,
     }
@@ -1930,6 +2136,27 @@ def route_request(question: str, has_package: bool, history: list[dict], recon: 
     patch_intent = bool(re.search(r"补丁|\b(?:patch|no-op|noop)\b", positive_request))
     static_fast_path = static_fast_path and (solve_intent or patch_intent)
 
+    # Only the current request supplies these inputs; history is not file authority.
+    supplied_files = [path for path in re.findall(r"[\w./\\:-]+\.(?:sqlite|sqlite3|db|js|mjs|cjs|jsx|ts|tsx|map|har|json|so|elf|bin|img)\b", positive_request) if "://" not in path]
+    js_files = [path for path in supplied_files if path.endswith((".js", ".mjs", ".cjs"))]
+    har_files = [path for path in supplied_files if path.endswith(".har")]
+    map_files = [path for path in supplied_files if path.endswith(".map")]
+    query_intent = bool(re.search(r"analysis\.query|原字节索引|dex.{0,12}(?:查询|调用者|调用链)|(?:查询|调用者|引用|caller|callee|query).{0,30}(?:索引|sqlite)|(?:index|sqlite).{0,30}(?:query|caller|callee)", positive_request))
+    offline_intent = bool(re.search(r"analysis\.offline_|\bhar\b|source[- ]?map|javascript|\bjs\b|离线.{0,12}(?:请求|脚本|比较)", positive_request)) or bool(js_files or har_files or map_files)
+    compare_intent = bool(re.search(r"比较|对比|差异|\b(?:compare|diff)\b|analysis\.offline_compare", positive_request))
+    ledger_intent = bool(re.search(r"未知问题|未解决问题|unknown.{0,12}(?:ledger|question)|analysis\.unknown_", positive_request))
+    ast_intent = bool(re.search(r"tools\.js_ast|\bast\b|语法树|babel", positive_request))
+    deobfuscate_intent = bool(re.search(r"tools\.js_deobfuscate|解混淆|\b(?:deobfuscat\w*|wakaru)\b", positive_request))
+    layout_intent = bool(re.search(r"tools\.binary_layout|(?:二进制|elf|\.so).{0,12}(?:结构|布局)|binary layout|elf layout", positive_request))
+    firmware_intent = bool(re.search(r"tools\.firmware_scan|固件.{0,12}(?:扫描|识别)|\b(?:binwalk|unblob)\b", positive_request))
+    tool_management = bool(re.search(r"tools\.(?:inventory|check|install)|工具.{0,8}(?:清单|目录|检查|安装)|(?:检查|安装).{0,8}(?:工具|babel|wakaru|binwalk|unblob)|\b(?:check|install|list)\b.{0,16}\b(?:tools?|babel|wakaru|binwalk|unblob)\b", positive_request))
+    tool_intent = ast_intent or deobfuscate_intent or layout_intent or firmware_intent or tool_management
+    explicit_device_action = bool(re.search(r"设备|手机|真机|logcat|截图|截屏|安装|启动|点击|滑动|\b(?:device|phone|install|launch|screenshot|tap|swipe)\b", positive_request))
+    if (offline_intent or tool_intent) and not explicit_device_action:
+        device_runtime = False
+    if tool_management and not re.search(r"设备|手机|真机|截图|截屏|点击|滑动|\b(?:device|phone|apk|screenshot|tap|swipe)\b", positive_request):
+        device_runtime = False
+
     if lightweight:
         mode = "lightweight_chat"
     elif static_fast_path and not device_runtime and not meta_review:
@@ -2170,6 +2397,88 @@ def route_request(question: str, has_package: bool, history: list[dict], recon: 
     result["suggested_references"] = list(dict.fromkeys(result["suggested_references"]))
     if recon is not None:
         result["sample_layers"] = sorted(layers)
+    additions = []
+    required_inputs = []
+    if query_intent:
+        if any(path.endswith((".sqlite", ".sqlite3", ".db")) for path in supplied_files):
+            additions.append("analysis.query")
+        else:
+            required_inputs.append("analysis.query: provide an existing original-byte SQLite index path and an exact selector; this operation does not build the index.")
+    if offline_intent:
+        if compare_intent:
+            if len(har_files) >= 2 or len(js_files) >= 2:
+                additions.append("analysis.offline_compare")
+            else:
+                required_inputs.append("analysis.offline_compare: provide two local HAR files or two local JS files of the same kind.")
+        elif js_files:
+            additions.append("analysis.offline_js")
+        elif har_files:
+            additions.append("analysis.offline_har")
+        elif map_files:
+            additions.append("analysis.offline_source_map")
+        else:
+            required_inputs.append("Offline analysis: provide an explicit local JS, source-map or HAR file; do not fetch or invent an input.")
+    if ledger_intent:
+        if any(path.endswith(".json") for path in supplied_files):
+            if re.search(r"analysis\.unknown_update|(?<!未)解决|重开|更新|\b(?:resolve|reopen|update)\b", positive_request):
+                additions.append("analysis.unknown_update")
+            elif re.search(r"analysis\.unknown_check|检查|核对|\b(?:check|verify)\b", positive_request):
+                additions.append("analysis.unknown_check")
+            elif re.search(r"analysis\.unknown_record|记录|新增|添加|\b(?:record|add)\b", positive_request):
+                additions.append("analysis.unknown_record")
+            else:
+                required_inputs.append("Unknown ledger: choose record, update or check for the supplied ledger path.")
+        else:
+            required_inputs.append("Unknown ledger: provide the explicit ledger path; resolving also requires the question ID, expected revision, reason and reviewed evidence.")
+    if tool_management:
+        additions.append("tools.install" if re.search(r"安装|\binstall\b", positive_request) else "tools.check" if re.search(r"检查|\bcheck\b", positive_request) else "tools.inventory")
+    if ast_intent or deobfuscate_intent:
+        if any(path.endswith((".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx")) for path in supplied_files):
+            if ast_intent:
+                additions.append("tools.js_ast")
+            if deobfuscate_intent and js_files:
+                additions.append("tools.js_deobfuscate")
+            elif deobfuscate_intent:
+                required_inputs.append("JS recovery: provide a local JS/mjs/cjs input; parser support for TS/JSX does not establish recovery support.")
+        elif not tool_management:
+            required_inputs.append("JS engine: provide the explicit local source path and check the selected tool; install through tools.install only when requested.")
+    if layout_intent:
+        if any(path.endswith((".so", ".elf", ".bin")) for path in supplied_files):
+            additions.append("tools.binary_layout")
+        else:
+            required_inputs.append("Binary layout: provide a local ELF input path; file suffix does not prove ELF format.")
+    if firmware_intent and not tool_management:
+        if any(path.endswith((".bin", ".img")) for path in supplied_files):
+            additions.append("tools.firmware_scan")
+        else:
+            required_inputs.append("Firmware scan: provide a local firmware path and choose binwalk or unblob; bounded scanning is not runtime or extraction proof.")
+    if query_intent or offline_intent or ledger_intent or tool_intent:
+        result["suggested_references"] = list(dict.fromkeys(result["suggested_references"] + ["components/analysis-agent/README.md"]))
+        result.setdefault("required_contract", []).append("Confirm input paths and registered operations before submitting; suggestions do not execute tools or authorize device/environment changes.")
+        if offline_intent:
+            result["required_contract"].append("JS clues and saved HAR requests are finite offline evidence, not live runtime verification or behavioral equivalence.")
+        if ledger_intent:
+            result["required_contract"].append("Resolve a question only after reviewing its evidence; use expected_revision and re-check stale evidence.")
+        if tool_intent:
+            result["required_contract"].append("Use tools.inventory/check before engine execution; tool installation uses the managed tools.install operation and does not authorize device actions. Parser, recovery and scan outputs need review and do not prove runtime behavior.")
+        if not has_package and additions and mode != "device_runtime":
+            result["uses_model"] = True
+            result.pop("local_reply", None)
+            result["suggested_operations"] = []
+        result["suggested_operations"] = list(dict.fromkeys(additions + result["suggested_operations"]))
+        if required_inputs:
+            result["required_inputs"] = required_inputs
+            if not has_package and not additions and mode != "device_runtime":
+                result["local_reply"] = "缺少明确的本地输入或操作选择，请补齐 required_inputs。"
+    runtime_record_intent = bool(re.search(r"jobs_verify_runtime|核对.{0,12}(?:运行记录|受管任务)|verify.{0,16}(?:runtime record|managed job)", positive_request))
+    if mode == "device_runtime" or runtime_record_intent:
+        # This is a read-only MCP method, not a submit-able operation name.
+        result["suggested_mcp_tools"] = ["jobs_verify_runtime"]
+        result.setdefault("required_contract", []).append("Use jobs_verify_runtime only after a completed managed device job: supply its ID, exact job.started/result.finished_at window and unchanged published observation hashes; provenance does not establish the behavioral claim.")
+        if runtime_record_intent and not has_package and mode != "device_runtime":
+            result["uses_model"] = True
+            result.pop("local_reply", None)
+            result["suggested_operations"] = additions
     return result
 
 
@@ -2268,6 +2577,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--question", required=True)
     plan.add_argument("--apk", type=Path, action="append", default=[])
     plan.add_argument("--recon", type=Path)
+    plan.add_argument("--unknown-ledger", type=Path)
     plan.add_argument("--output", type=Path, required=True)
 
     plan_update = subparsers.add_parser("plan-update", help="Record a completed, pending or blocked stage")
@@ -2424,7 +2734,15 @@ def build_parser() -> argparse.ArgumentParser:
     host.add_argument("--output", type=Path)
     host.add_argument("--read-path", action="append", type=Path, default=[], help="Declare an additional input path for Workbench coordination")
     host.add_argument("--write-path", action="append", type=Path, default=[], help="Declare an additional output path for Workbench coordination")
+    host.add_argument("--publish-path", action="append", type=Path, default=[], help="Declare a fresh artifact path for managed output publication and hashing")
     return parser
+
+
+def managed_runtime_verifier(record):
+    # Import only when runtime evidence is checked. Ordinary offline plans do
+    # not need a service, while runtime claims cannot use a standalone fallback.
+    from workbench.bridge import verify_runtime_record
+    return verify_runtime_record(record)
 
 
 def main() -> int:
@@ -2449,12 +2767,12 @@ def main() -> int:
             if args.apk and args.recon:
                 raise ValueError("Use --apk or --recon, not both")
             recon = load_recon(args.recon) if args.recon else reconnaissance(args.apk)
-            result = create_plan(args.question, recon, route_request(args.question, bool(recon["samples"]), [], recon))
+            result = create_plan(args.question, recon, route_request(args.question, bool(recon["samples"]), [], recon), args.unknown_ledger)
         elif args.command == "plan-update":
-            result = update_plan(json.loads(args.plan.read_text()), args.step, args.status, args.evidence, args.note)
+            result = update_plan(json.loads(args.plan.read_text()), args.step, args.status, args.evidence, args.note, managed_runtime_verifier)
             write_output(args.plan, result)
         elif args.command == "plan-check":
-            result = check_plan(json.loads(args.plan.read_text()))
+            result = check_plan(json.loads(args.plan.read_text()), managed_runtime_verifier)
         elif args.command == "code":
             result = {
                 "schema": SCHEMA_VERSION,

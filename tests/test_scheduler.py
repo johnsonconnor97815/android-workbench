@@ -466,6 +466,73 @@ class SchedulerTest(unittest.TestCase):
         self.assertGreaterEqual(results[1]["started"], results[0]["finished"])
         self.assertLess(results[2]["started"], results[0]["finished"])
 
+    def test_manual_ota_return_binds_owner_prepare_and_transport(self):
+        from test_manual_transport import ManualOtaPrepareRecordTest
+        from flash_review_fixture import approve
+        fixture = ManualOtaPrepareRecordTest()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.research["flash_plan"]["serial"] = "fake-one"
+        approve(fixture)
+        record = {**fixture.record, "device": "fake-one", "research": fixture.research}
+        self.register_script(
+            "device_manager.install_ota",
+            "import json,pathlib,sys\n"
+            "out=pathlib.Path(sys.argv[sys.argv.index('--output')+1])\n"
+            + "out.write_text(json.dumps(" + repr(record) + "))\n",
+            serial=0, outputs=["--output"],
+        )
+        mode = self.root / "mode"
+        mode.write_text("sideload")
+        calls = self.root / "adb-calls"
+        fake_adb = self.root / "fake-adb"
+        fake_adb.write_text(
+            "#!" + sys.executable + "\nimport pathlib,sys\n"
+            + "mode=pathlib.Path(" + repr(str(mode)) + ").read_text()\n"
+            + "with pathlib.Path(" + repr(str(calls)) + ").open('a') as f: f.write(' '.join(sys.argv[1:])+'\\n')\n"
+            "args=sys.argv[3:]\n"
+            "if args==['get-state']: print(mode)\n"
+            "elif mode!='android': raise SystemExit(1)\n"
+            "elif args[:2]==['shell','cat']: print('synthetic-boot')\n"
+            "elif args[:2]==['shell','dumpsys']: print('mResumedActivity: test.app/.Main')\n"
+            "elif args[:2]==['shell','pidof']: print('123')\n"
+        )
+        fake_adb.chmod(0o755)
+        config = json.loads((self.state / "config.json").read_text())
+        config["adb"] = str(fake_adb)
+        atomic_json(self.state / "config.json", config)
+        self.proc.terminate()
+        self.proc.wait()
+        self.proc = self.start_service()
+        prepared = self.a.submit(operation="device_manager.install_ota", device="one",
+                                 args=["fake-one", "--stage", "prepare", "--output", str(self.root / "prepare.json")])
+        self.assertEqual(self.a.wait(prepared["id"], 8)["state"], "succeeded")
+        observed = self.submit(device="one", test_readonly=True)
+        self.assertEqual(self.a.wait(observed["id"], 8)["state"], "succeeded")
+        self.a.call("devices.manual_acquire", {"device": "one"})
+        request = {"device": "one", "transport": "sideload", "prepared_job": prepared["id"]}
+        with self.assertRaisesRegex(WorkbenchError, "Not manual owner"):
+            self.b.call("devices.manual_release", request)
+        for invalid in ({"device": "one", "transport": "fastboot"},
+                        {"device": "one", "transport": "sideload"}):
+            with self.assertRaises(WorkbenchError):
+                self.a.call("devices.manual_release", invalid)
+            self.assertEqual(self.a.call("devices.state", {"device": "one"})["availability"], "manual")
+        returned = self.a.call("devices.manual_release", request)
+        result = self.a.wait(returned["id"], 8)
+        self.assertEqual(result["state"], "succeeded", result)
+        self.assertEqual(calls.read_text().splitlines(), ["-s fake-one get-state"])
+        self.assertEqual(self.a.call("devices.state", {"device": "one"})["availability"], "available")
+        with self.assertRaisesRegex(WorkbenchError, "Not manual owner"):
+            self.a.call("devices.manual_release", request)
+        mode.write_text("android")
+        self.a.call("devices.manual_acquire", {"device": "one"})
+        with self.assertRaisesRegex(WorkbenchError, "superseded"):
+            self.a.call("devices.manual_release", request)
+        self.assertEqual(self.a.call("devices.state", {"device": "one"})["availability"], "manual")
+        returned = self.a.call("devices.manual_release", {"device": "one"})
+        self.assertEqual(self.a.wait(returned["id"], 8)["state"], "succeeded")
+
     def test_idempotency_and_session_ownership(self):
         key = uuid.uuid4().hex
         a = self.submit(request_key=key)
@@ -1037,6 +1104,7 @@ class SchedulerTest(unittest.TestCase):
         repaired = self.a.submit(
             operation="environment_repair",
             args=["--output", str(repair_output)],
+            recovery_jobs=[failed["id"]],
         )
         done = self.a.wait(repaired["id"], 8)
         self.assertEqual(done["state"], "succeeded", done.get("result"))

@@ -81,6 +81,13 @@ def read_json(path, default=None):
     return json.loads(Path(path).read_text()) if Path(path).exists() else default
 
 
+def quark_rules_path(root):
+    """Relative rule pointers survive moving an owned project directory."""
+    root = Path(root).resolve()
+    pointer = Path((root / 'quark-rules.path').read_text().strip())
+    return pointer if pointer.is_absolute() else root / pointer
+
+
 def select_tools(args):
     selected = args.only.split(',') if args.only else list(CORE if args.profile == 'core' else FULL)
     if args.with_mobsf:
@@ -298,7 +305,7 @@ class Environment:
         if name == 'quark':
             rules = self.unpack('quark-rules')
             rules_path = self.find_one(rules, 'quark-rules-*')
-            (self.root / 'quark-rules.path').write_text(str(rules_path) + '\n')
+            (self.root / 'quark-rules.path').write_text(str(rules_path.relative_to(self.root)) + '\n')
 
     def install_one(self, name):
         print('INSTALL ' + name, flush=True)
@@ -424,7 +431,7 @@ class Environment:
             image = read_json(root / 'locks/mobsf-image.json')['digest']
             results.append(self.run(['docker', 'image', 'inspect', image]))
         if name == 'quark':
-            rules_path = Path((root / 'quark-rules.path').read_text().strip())
+            rules_path = quark_rules_path(root)
             if not any(rules_path.glob('**/*.json')):
                 raise RuntimeError('Quark rule snapshot contains no JSON rules')
         return results
@@ -443,6 +450,14 @@ class Environment:
         self.prepare()
         with (self.root / 'install.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # Preserve live pointers/manifests before installation or check refreshes them.
+            previous = read_json(self.root / 'manifest.json', {})
+            backup = self.run_dir / 'previous'; backup.mkdir()
+            for filename in ('env.sh', 'quark-rules.path', 'manifest.json', 'bin/quark'):
+                path = self.root / filename
+                if path.is_file():
+                    destination = backup / filename; destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
             self.activation()
             if self.args.action == 'install' and self.args.install_system_deps:
                 self.install_system_deps()
@@ -460,11 +475,20 @@ class Environment:
                 except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, tarfile.TarError, zipfile.BadZipFile) as error:
                     results[name] = {'status': 'failed', 'error': str(error)}
                     print('FAIL ' + name + ': ' + str(error), file=sys.stderr, flush=True)
-            manifest = {'schema': 1, 'timestamp_utc': stamp(), 'workspace': str(self.workspace),
+            checked_at = stamp()
+            for value in results.values(): value['checked_at'] = checked_at
+            current_results = results
+            historical = {name: {**value, 'checked_at': value.get('checked_at', previous.get('timestamp_utc')), 'checked_in_current_run': False}
+                          for name, value in previous.get('results', {}).items() if name in FULL + ['mobsf']}
+            historical.update({name: {**value, 'checked_in_current_run': True} for name, value in results.items()})
+            results = historical
+            recorded_selected = [name for name in FULL + ['mobsf'] if name in results]
+            manifest = {'schema': 1, 'timestamp_utc': checked_at, 'workspace': str(self.workspace),
                         'host': {'system': platform.system(), 'machine': platform.machine(), 'python': sys.version, 'platform': platform.platform()},
                         'catalog_sha256': digest(CATALOG), 'action': self.args.action,
-                        'selected': self.selected, 'results': results, 'downloads': self.artifacts,
-                        'validation_scope': 'CLI startup and dependency checks; sample smoke tests are separate',
+                        'selected': recorded_selected, 'checked_selected': self.selected, 'results': results, 'downloads': self.artifacts,
+                        'backup': str(backup),
+                        'validation_scope': 'CLI startup and dependency checks; checked_selected is this run, other results retain historical checked_at; sample smoke tests are separate',
                         'sdk_license_flag': self.args.accept_sdk_licenses}
             manifest['sdk_metadata'] = {str(p.relative_to(self.root)): {'sha256': digest(p), 'content': p.read_text()} for p in (self.root / 'sdk').glob('**/source.properties')}
             write_json(self.run_dir / 'manifest.json', manifest)
@@ -474,7 +498,7 @@ class Environment:
                 (self.workspace / '.envrc').write_text('source ' + shlex.quote(str(self.root / 'env.sh')) + '\n')
             print('Manifest: ' + str(self.root / 'manifest.json'))
             print('Activate: source ' + shlex.quote(str(self.root / 'env.sh')))
-            return int(any(x['status'] != 'verified' for x in results.values()))
+            return int(any(x['status'] != 'verified' for x in current_results.values()))
 
 
 def main():

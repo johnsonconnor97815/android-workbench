@@ -11,11 +11,12 @@
 - `.claude-plugin/plugin.json` 是唯一维护的插件清单。`.codex-plugin/plugin.json` 是构建校验强制保持字节相同的 Codex 兼容镜像，不是第二来源。
 - `skills/android-workbench/SKILL.md` 是唯一自动加载的 Skill。调度规则在 `references/`，静态环境、权限审计、分析代理、Frida、APK 导出、APK 逆向补丁和设备管理实现在 `components/`。
 - `agents/` 提供 `static-analyst`、`device-analyst`、`report-auditor` 三个 Claude Code 子代理。它们只是分工入口，所有设备和共享环境操作仍必须走 Workbench MCP。
+- App 复制使用新的 [入口驱动流程](skills/android-workbench/components/app-replica/README.md)：Astra 负责规划、分析和类结构，Sol 负责代码；文件协调、发现后再派发、具体 MVP 验证。旧流程和 Agent 已删除。
 - `.mcp.json` 指向当前共享调度运行时。插件安装本身不下载 SDK、Frida 或分析工具链。
 
 ## 独立安装
 
-调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。内置静态环境安装器要求 Linux x86_64 和 Python 3.12+；使用全部能力时建议以 Python 3.12+ 初始化项目。设备操作另外需要 ADB；刷机和 root 需要 `fastboot` 和已解锁 bootloader；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。
+调度服务需要 Linux 和 Python 3.11+，使用 Python 标准库。内置静态环境安装器要求 Linux x86_64 和 Python 3.12+；使用全部能力时建议以 Python 3.12+ 初始化项目。设备操作另外需要 ADB；分区刷写和 root 需要 `fastboot` 和已解锁 bootloader；官方完整 OTA 使用原厂恢复模式，允许锁定的 bootloader；APK 校验需要 Android SDK 工具；Hook 需要合适的 Frida 环境。仓库提供对应准备能力，不携带 SDK、Frida 二进制或 APK 样本。
 
 刷机、安装或重装 Root 和部分设备模式切换需要有人在手机旁边，按提示按键、点屏幕或授权。流程开始前会提醒并说明预计的人工步骤；到了必须人工完成的步骤，等待用户操作并验证后再继续。已有 Root 授权记录到共享设备状态，普通 Root 操作和预检不重复提醒；记录失效或命令失败后再核验，确需人工授权时才提示。没人能完成必要人工步骤时，可以先研究、下载和校验文件、演练命令。具体步骤见[设备管理说明](skills/android-workbench/components/device-manager/README.md#operator-presence-and-manual-steps)。
 
@@ -41,7 +42,7 @@ python3 scripts/configure_project.py /path/to/analysis --update
 python3 scripts/configure_mcp.py /path/to/analysis
 ```
 
-更新会备份旧配置，保留项目环境和自定义操作，重绑内置操作。旧 `android-static-env`、`pull-android-apk`、`frida-modified` 和 `apk-permission-audit` 脚本路径会转到已登记的新组件；未登记的脚本仍拒绝执行。仓库的 `.claude-plugin/plugin.json` 与 `.mcp.json` 是插件入口；插件本身仍需上述初始化步骤，安装插件不会自动下载整个分析工具链。
+更新会备份旧配置，保留项目环境和自定义操作，重绑内置操作，并清除指向已移除组件的旧内置 `replication.workflow`、`replication.emulator_compare` 登记。旧 `android-static-env`、`pull-android-apk`、`frida-modified` 和 `apk-permission-audit` 脚本路径会转到已登记的新组件；未登记的脚本仍拒绝执行。仓库的 `.claude-plugin/plugin.json` 与 `.mcp.json` 是插件入口；插件本身仍需上述初始化步骤，安装插件不会自动下载整个分析工具链。
 
 ## 使用
 
@@ -58,7 +59,9 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
   pull --serial YOUR_ADB_SERIAL --package com.example.app --output /path/to/analysis/apps/export
 ```
 
-`operations` 列出 120 个内置脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖样本识别、分析阶段与完成检查、请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、官方整包回刷、刷分区、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入这 120 个脚本。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+`operations` 列出当前项目实际登记的脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖样本识别、分析阶段与完成检查、请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、原始镜像与共享存储备份、官方整包回刷、保数据完整 OTA、机型安装步骤与附加包、刷分区、功能验收、中断恢复、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入脚本操作清单。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
+
+工具目录、版本锁和受管入口统一见 [Tools](Tools/README.md)。用 `tools.inventory` 查看登记、`tools.check` 核对实际可用性，明确安装请求才使用 `tools.install`。JS 语法树、可读恢复、ELF 布局和有限固件扫描分别使用 `tools.js_ast`、`tools.js_deobfuscate`、`tools.binary_layout`、`tools.firmware_scan`；生成环境在项目 `Tools/runtime/`，原 `.android-static`/`.tools` 原地复用。原字节精确查询、未知问题修订、JS/map/HAR 离线入口和路由条件见 [REA 使用说明](docs/rea-adoption-usage.md)。文件缺失或工具不可用时保留阻塞，不把目录登记当作安装或运行成功。
 
 Google Play 应用通过 `apk.play_install` 安装，支持紧凑详情卡。未知布局输出 `needs_llm` 和证据，由当前 LLM 离线复现、修复通用解析规则并受管重试；账号、支付或设备政策门槛才交给用户。安装后使用 `apk.pull` 导出全部已安装 split。见 [Google Play 安装与 LLM 修复](skills/android-workbench/components/play-install/README.md)。
 
@@ -93,7 +96,7 @@ JSON
 
 用 `status`、`explain`、`artifacts` 查询任务，用 `cancel` 请求停止。取消受理不表示手机已释放；任务结果同时记录功能结果、`cleanup_ok`、资源用量和资源状态。`partial` 表示有部分可用结果；未知结果或未清理占用保留阻塞，不自动重放设备动作。
 
-MCP 提供 27 个工具。用 `service_capabilities` 查询服务与 Session 身份，用 `sessions_select` 恢复稳定身份；任务提交必须使用稳定 `request_key`。`artifacts_list` 查询命名产物索引；`evidence_state` 查看内部证据、保留策略和上次清理结果；`evidence_apply_retention` 立即执行保留策略；`hooks_subscribe` 在活动 Hook 场景检查点加入只读订阅者。新 Session 才会加载更新后的插件和 MCP 配置。
+MCP 工具清单以当前服务的 `tools/list` 返回为准；脚本操作用 `operations` 查询，两者分别计数。用 `service_capabilities` 查询服务与 Session 身份，用 `sessions_select` 恢复稳定身份；任务提交必须使用稳定 `request_key`。`artifacts_list` 查询命名产物索引；`evidence_state` 查看内部证据、保留策略和上次清理结果；`evidence_apply_retention` 立即执行保留策略；`hooks_subscribe` 在活动 Hook 场景检查点加入只读订阅者。`jobs_verify_runtime` 核对同项目真实任务、完整任务执行窗口与可信发布观察文件的 SHA-256；它只证明来源与文件一致，具体行为仍须审阅。运行记录格式见 [样本完成检查](skills/android-workbench/references/sample-analysis.md)。新 Session 才会加载更新后的插件和 MCP 配置。
 
 Claude Code 中可用 `@android-workbench:static-analyst`、`@android-workbench:device-analyst`、`@android-workbench:report-auditor` 调用子代理。子代理会预载唯一入口 Skill，但仍通过同一 MCP 队列执行设备与环境操作。
 

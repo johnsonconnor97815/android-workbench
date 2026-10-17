@@ -62,3 +62,75 @@ def reverse_native(db, artifact, address, depth, limit):
         truncated |= node['incoming_truncated']
     return dict(nodes=nodes, edges=edges, nodes_truncated=truncated,
                 limits=['References and reviewed async boundaries do not prove an executed path.', 'FDE/symbol function bounds may be incomplete; indirect targets are not synthesized.'])
+
+
+def bounded_query_graph(db, family, selected, depth, max_nodes, max_edges):
+    """Reverse references with one global node/edge budget, never nested paging.
+
+    DEX edges resolve only the original method-id pool in the selected artifact.
+    Native direct/tail candidates target known entries; reviewed edges keep their
+    original provenance. Neither path guesses virtual/indirect runtime targets.
+    """
+    artifact = selected['artifact']
+    initial = selected['id'] if family == 'dex' else selected['address']
+    todo = collections.deque([(initial, 0)])
+    admitted = {initial}; visited = set(); nodes = []; edges = []; reasons = set()
+    while todo:
+        identity, distance = todo.popleft()
+        if identity in visited:
+            continue
+        visited.add(identity)
+        if family == 'dex':
+            method = db.execute('SELECT * FROM dex_methods WHERE id=? AND artifact=?',
+                                (identity, artifact)).fetchone()
+            if method is None:
+                reasons.add('missing_indexed_node'); continue
+            node = dict(method)
+            sql = ('SELECT c.*,m.artifact,m.signature AS caller FROM dex_calls c '
+                   'JOIN dex_methods m ON m.id=c.src WHERE m.artifact=? AND c.ref_idx=? '
+                   'ORDER BY m.artifact,c.src,c.pc,c.file_offset,c.opcode,c.raw_hex,c.rowid LIMIT ?')
+            params = (artifact, method['raw_idx'])
+        else:
+            node = dict(artifact=artifact, address=identity)
+            sql = ('SELECT artifact,func AS src,target AS dst,pc,file_offset,mnemonic,raw_hex,status '
+                   'FROM native_sites WHERE artifact=? AND target=? AND func IS NOT NULL '
+                   'AND mnemonic IN (\'bl\',\'b\') ORDER BY func,pc,file_offset,mnemonic,raw_hex,rowid LIMIT ?')
+            params = (artifact, identity)
+        node['distance'] = distance; nodes.append(node)
+        remaining = max_edges - len(edges)
+        incoming = rows(db.execute(sql, (*params, remaining + 1)))
+        if family == 'native' and len(incoming) <= remaining:
+            reviewed = rows(db.execute(
+                'SELECT * FROM reviewed_edges WHERE artifact=? AND dst=? AND src IS NOT NULL '
+                'ORDER BY src,pc,kind,source,source_sha256,rowid LIMIT ?',
+                (artifact, identity, remaining - len(incoming) + 1)))
+            incoming.extend(reviewed)
+        if distance >= depth:
+            if incoming:
+                reasons.add('depth_budget')
+            continue
+        if len(incoming) > remaining:
+            reasons.add('edge_budget')
+        for site in incoming[:remaining]:
+            source = site['src']
+            edge = dict(site)
+            edge.update(artifact=artifact, dst=identity,
+                        reference_kind=site.get('kind', site.get('mnemonic', 'static_reference')))
+            edges.append(edge)
+            if source not in admitted:
+                if len(admitted) >= max_nodes:
+                    reasons.add('node_budget')
+                    continue
+                if family == 'native' and not db.execute(
+                        'SELECT 1 FROM native_functions WHERE artifact=? AND start=? LIMIT 1',
+                        (artifact, source)).fetchone():
+                    reasons.add('unknown_function_bounds'); continue
+                admitted.add(source); todo.append((source, distance + 1))
+        if len(edges) >= max_edges and todo:
+            # Still inspect each admitted node with LIMIT 1 to distinguish no
+            # incoming edges from exhaustion, but never admit additional edges.
+            reasons.add('edge_budget')
+    return dict(nodes=nodes, edges=edges, truncated=bool(reasons),
+                budget_reasons=sorted(reasons), exhaustive=False,
+                budgets=dict(depth=depth, max_nodes=max_nodes, max_edges=max_edges),
+                scope='reverse references within the selected artifact; not runtime execution')

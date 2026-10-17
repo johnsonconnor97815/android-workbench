@@ -12,6 +12,16 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def runtime_sources(root):
+    """Fingerprint nested runtime modules as well as top-level scheduler files."""
+    directory = Path(root) / "workbench"
+    files = sorted(directory.rglob("*.py"))
+    fingerprint = hashlib.sha256(
+        b"".join(p.relative_to(directory).as_posix().encode() + b"\0" + p.read_bytes() for p in files)
+    ).hexdigest()[:16]
+    return files, fingerprint
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state", type=Path)
@@ -20,10 +30,7 @@ def main():
     from workbench.common import atomic_json, state_dir, rpc, WorkbenchError
 
     directory = state_dir(args.state)
-    files = sorted((ROOT / "workbench").glob("*.py"))
-    fingerprint = hashlib.sha256(
-        b"".join(p.name.encode() + p.read_bytes() for p in files)
-    ).hexdigest()[:16]
+    files, fingerprint = runtime_sources(ROOT)
     target = directory / "runtimes" / fingerprint
     if not target.exists():
         target.mkdir(parents=True, mode=0o700)
@@ -43,7 +50,7 @@ def main():
             {
                 "fingerprint": fingerprint,
                 "files": {
-                    p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files
+                    p.relative_to(ROOT / "workbench").as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in files
                 },
             },
         )

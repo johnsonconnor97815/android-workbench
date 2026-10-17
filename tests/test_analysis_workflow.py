@@ -139,14 +139,19 @@ class AnalysisWorkflowTest(unittest.TestCase):
         plan = analysis.create_plan("只截当前页面，不安装", analysis.reconnaissance([]), analysis.route_request("只截当前页面，不安装", False, []))
         screenshot = self.root / "ui.png"
         screenshot.write_bytes(b"explicit simulated screenshot evidence")
-        record = self.evidence("runtime.json", {"runtime_verified": True, "device": "simulated", "job_id": "simulated-job", "observations": [{"kind": "ui", "path": "ui.png"}]})
-        analysis.update_plan(plan, "runtime", "completed", [record], "Observed fixture UI")
+        record = self.evidence("runtime.json", {"runtime_verified": True, "device": "simulated", "job_id": "simulated-job", "observation_window": {"started_at": 10, "finished_at": 11}, "observations": [{"kind": "ui", "path": "ui.png", "sha256": analysis.sha256_file(screenshot)}]})
+        verifier = lambda params: {"verified": True}
+        with self.assertRaisesRegex(ValueError, "authenticated"):
+            analysis.update_plan(plan, "runtime", "completed", [record], "Unverified fixture")
+        analysis.update_plan(plan, "runtime", "completed", [record], "Observed fixture UI", verifier)
         review = self.evidence("review.json", {"review_complete": True, "claims": [{"claim": "Simulated fixture observation is retained", "evidence": [str(screenshot)]}], "limitations": ["Not a real device test"]})
-        analysis.update_plan(plan, "review", "completed", [review], "Reviewed fixture")
+        analysis.update_plan(plan, "review", "completed", [review], "Reviewed fixture", verifier)
         report = self.root / "report.md"
         report.write_text("Simulated fixture only")
-        analysis.update_plan(plan, "report", "completed", [report], "Report")
-        self.assertTrue(analysis.check_plan(plan)["complete"])
+        analysis.update_plan(plan, "report", "completed", [report], "Report", verifier)
+        self.assertTrue(analysis.check_plan(plan, verifier)["complete"])
+        self.assertFalse(analysis.check_plan(plan)["complete"])
+        self.assertFalse(analysis.check_plan(plan, lambda params: {"verified": False, "issues": ["service unavailable"]})["complete"])
         analysis.update_plan(plan, "runtime", "blocked", [], "Observation expired")
         self.assertFalse(analysis.check_plan(plan)["complete"])
         self.assertEqual(plan["steps"][-1]["status"], "pending")

@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--project", type=Path, default=Path.cwd())
     parser.add_argument("--drain-timeout", type=float, default=5,
                         help="Seconds to allow idle analysis services to release their leases")
+    parser.add_argument("--skip-project-update", action="store_true",
+                        help="Preserve project operation registration while switching the idle shared runtime")
     args = parser.parse_args()
     if not math.isfinite(args.drain_timeout) or not 0 <= args.drain_timeout <= 60:
         parser.error("--drain-timeout must be between 0 and 60")
@@ -68,15 +70,16 @@ def main():
             )
         break
     try:
-        subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts/configure_project.py"),
-                str(args.project.resolve()),
-                "--update",
-            ],
-            check=True,
-        )
+        if not args.skip_project_update:
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts/configure_project.py"),
+                    str(args.project.resolve()),
+                    "--update",
+                ],
+                check=True,
+            )
     except subprocess.CalledProcessError:
         client.call("service.resume")
         raise
