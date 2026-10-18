@@ -105,7 +105,49 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 
 需要等待时先保存 checkpoint，再 `wait --task TASK_ID --run RUN_ID --requires /path/requires.json --checkpoint /path/checkpoint.md` 并结束本轮。实现前置一般为 `["TASK_ID"]` 或 `[{"class_id":"CLASS_ID","revision":1}]`；App 要在依赖失败后也恢复处理时用 `[{"task_id":"TASK_ID","when":"stopped"}]`。具体答复可等待 `[{"message_id":"REPLY_ID"}]`。程序确认执行进程及其写入后代结束才释放名额；仅请求等待不会释放。
 
+旧的等待条件确需修正时，由 App 明确决定，再通过 `apply` 提交 `task.requires.replace`。请求包含 App/plan 任务 ID `actor`、目标 `task_id`、当前 `expected_revision`、完整有序的 `expected_requires`、替换后的 `requires`、`reason` 和带 SHA-256 的文件 `evidence`。证据可来自工作流内的文件（包括不可变消息）或已声明的工程输出根目录；只读校验，不登记输出，拒绝符号链接。任务必须处于空闲的 queued/waiting/failed 状态，且没有仍占用的运行；实现任务保留自身类声明前置。版本或旧条件不符、证据无效或依赖成环时拒绝。该操作保存修正历史并增加任务版本，不改变执行状态、交付结论或文件负责人；继续运行仍走正常调度。`task.add` 和 `task.wait` 仍只合并前置条件，不能删除旧条件。
+
 App 的 `role=app`、`mode=plan` 任务收到尚未分配的 `wake:true` 消息时，可以先处理新规划请求，不必等旧的 `when:stopped` 观察对象再次结束。交付、类版本和指定回复等其他前置条件仍须满足，原 `requires` 不会被删除或标为完成。状态中的 `planning_wake_messages` 和恢复记录注明触发消息；领取时只分配一次。其他角色或模式仍检查全部前置条件，已有运行实例和全局并发限制不变。
+
+## 工程自动提交与批量推送
+
+此功能仅保存复制 App 工程，不保存 Workbench 的开发修改、APK、运行证据或 Agent 对话。Main 在工程文件负责人已结束本轮写入的稳定边界接入；App 工程须已有 Git 仓库、提交身份和已配置的远端。使用当前 checkout：
+
+```bash
+python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-enable --repo /path/project/replica-app --remote origin
+python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-status
+```
+
+默认创建并检出 `replica/<project-id>`，已有工程源码改动一起形成首次保存。若同名分支已存在但当前未检出，先由 Main 明确选择，程序不替换当前工作树。保存范围内仍有工程文件负责人运行时会拒绝初次接入；范围外的规划和分析任务不阻止接入。默认范围为工程仓库，可用重复的 `--include src --include build.gradle.kts` 限定文件/目录，`--exclude 'private/*'` 增加排除项。内置排除构建目录、环境、证据、APK、密钥文件和本地配置；它不是任意源码内容的秘密扫描器。
+
+已有仓库同时包含工程和协调资料时，沿用该仓库并限定范围：`git-enable --repo /path/project --include replica-app --remote origin`，无需另建嵌套仓库。如果旧历史包含排除文件，仅当当前 HEAD 已是同一推送远端的某个分支头，才可登记为已发布历史基线；未发布的禁止历史仍拒绝接入。后续推送检查增量历史，拒绝新加入或改动的禁止文件，并拒绝将该基线改推到其他地址，不改写已有历史。
+
+CLI 工作者沿用现有目录布局：`execution_root=/path/project`，工程为其中的 `/path/project/replica-app`，协调工作区为另一子目录。本机 Codex CLI 0.163.0 的 `:workspace` 沙箱下已实测该保存路径；若把 App 仓库本身当作执行根目录，其 `.git` 会受只读保护。首次接入及搬迁后的服务登记由有相应权限的 Main 完成，普通保存不重复写外部服务状态目录。自定义沙箱及外置 linked-worktree 元数据须另行确认权限，程序不会放宽沙箱。
+
+启用后，`submit`、`wait` 和真实 `run.stopped` 共用同步保存入口。长任务在稳定组装完成时调用：
+
+```bash
+python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-checkpoint --task TASK_ID --run RUN_ID --request-id UNIQUE_SAVE_ID
+```
+
+默认保存这个任务的全部工程输出；部分文件仍在写入时，用重复的 `--path` 选择已经稳定的输出。负责人及其写入后代须保持选中文件稳定直到命令返回。相关文件一起提交，未组装的方法片段仍留在原产物协议中。未编译通过也可以保存，检查结论继续如实记录。省略 `--request-id` 时 CLI 生成新 ID；重试同一次保存使用原 ID，新的进展使用新 ID。无变化不创建空提交，Git 记录不修改任务修订。
+
+推送默认在未推送提交达到 **5 笔**，或最早一笔等待 **600 秒**时触发，配置项为 `--push-count`、`--push-seconds`。已有 Workbench 服务每 5 秒检查一次，网络工作在独立线程执行，不占设备/项目队列锁，也不阻塞代码提交。`git-enable` 会使用原有启动入口确保服务存在；若现有服务仍运行旧代码，返回 `service_restart_required`，Main 应在受管工作收尾后更新/重启原服务，不能中断正在执行的设备任务。此时本地提交可用，定时推送尚未启用。`--service-state` 可指定已有服务状态目录，默认沿用 Workbench 的环境配置。
+
+`git-status` 和普通 `status --summary` 的 `git` 字段显示最近保存、待推送数、最老等待时间、最近同步/错误及 `timer_running`；尚未接入时明确显示 `enabled:false, state:not_enabled`。健康标记是最近检查记录，突然退出后可能短暂滞后；服务停机、休眠、断网或权限问题不满足十分钟到达远端的承诺。失败保留工作文件和已有提交，不自动强推、清理人工暂存或合并远端分歧；修复后可继续保存/重试。单个 Git 子进程和等待提交锁均有 30 秒超时，仓库 hooks 仍生效，因此重型 hook 会增加本地等待时间。
+
+代码更新不会使旧服务热加载。使用现有 `scripts/upgrade_runtime.py --project /path/project --skip-project-update` 在共享任务收尾后切换运行时；它先暂停新调度，确认没有活跃任务再更新服务，已有排队任务和 Session 身份保留。接入验收须同时确认 `git` 已启用、服务报告 `replica_git_sync:true`，并核对一次实际保存和远端同步；只修改源码或只看到 `git-enable` 返回不能代替这些检查。
+
+Main 结束整项复制或准备阶段交付时可请求提前推送；App 负责人以 `delivered` 实际结束时也会自动请求：
+
+```bash
+python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-flush
+python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-disable
+```
+
+`git-flush` 只登记后台推送请求，返回不代表远端已经同步；`git-disable` 停止后续自动保存/推送，不撤销已生成历史或切换分支，已经发出的网络请求可能完成。恢复配置用 `git-enable`。schema 3 的工程路径通过已有绑定解析，搬迁后的首次保存会更新服务登记；Git 自身的 linked-worktree 路径仍需按其实际仓库布局处理。
+
+本次实现包含自动保存和批量备份；验证后自动发布开发分支仍是后续独立功能。保存成功不表示 MVP 通过。设计取舍见 [Git 保存方案](../../../../docs/app-replica-git-design.md)。
 
 ## MVP 与恢复
 
@@ -131,3 +173,11 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/workflo
 ```
 
 迁移持有原 store 锁，保留并校验 `coordination/legacy/SHA256.json` 的原字节备份，逐对象核对后原子切换。切换前中断仍用旧状态；切换后引用的文件均已写盘。使用相同参数重试会核验已有迁移并修复视图。不要手改状态或拿备份覆盖已有后续提交。完整步骤、失败恢复和接口兼容说明见[协议](../../../../docs/app-replica-protocol.md#explicit-schema-1-migration)。源码整合、完整宿主测试、实际项目迁移和重启都由 Main 负责，单个补丁交付不能宣称已经迁移。
+
+## Restored workflow at a new path
+
+Use the supported native-only `relocate --file REQUEST.json --dry-run` and then the identical `relocate --file REQUEST.json` request. This initial schema-2→3 operation preserves historical paths, IDs, inventory blobs, receipts, deliveries and lifecycle. It requires exact authority guards, a current-clone ownership observation, matching saved run/supervisor/completion proofs and current host-slot checks. Request/fence fields and replay recovery are defined in [the protocol](../../../../docs/app-replica-protocol.md#native-only-workspace-relocation). Main performs actual fencing, integration, migration and lifecycle reconciliation; workers use isolated fixtures.
+
+`resolve --kind path|locator|file_uri --value VALUE [--exists]` selects a current filesystem operand explicitly. The separate `coordination/path-bindings.json` projection is referenced by raw historical projections. Never recursively replace paths in provenance or edit projections. Bindings do not rewrite hard-coded paths inside source/scripts/commands. Use normal ownership to update runtime operands when necessary. Old/current output aliases share one owner and recorded hashes still check actual current bytes; a stale artifact remains stale.
+
+After actual stop proof, Main uses existing `run.stopped` with `backend_handle` omitted, sends an explicit `host_adoption` wake message containing the old checkpoint and inherited inbox IDs, then calls targeted `native-next` with a just-observed outside-agent count. The host must execute the returned directive and acknowledge its real target/configuration. A prior CLI UUID is preserved as history; it is not a native continuation target. Adopted workflows reject CLI Runner/step/run, codex claims, full reimport and another relocation. No HostSlots release, original-host retirement, source repair or Android success follows from path adoption.

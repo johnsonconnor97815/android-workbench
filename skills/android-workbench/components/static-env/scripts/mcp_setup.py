@@ -131,6 +131,9 @@ def merge_json(path, specs, client, enable_jadx=False):
 
 class MCPEnvironment(setup.Environment):
     def __init__(self, args):
+        self.project_workspace = Path(args.workspace).expanduser().resolve()
+        self.project_mcp_root = self.project_workspace / '.android-static/mcp'
+        self.client_state = self.project_workspace / 'evidence/android-mcp/client-state'
         super().__init__(base_args(args))
         self.options = args
         self.mcp_lock = setup.read_json(LOCK)
@@ -143,34 +146,39 @@ class MCPEnvironment(setup.Environment):
         keys = ['JAVA_HOME', 'PATH', 'PYTHONNOUSERSITE', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME',
                 'SEMGREP_SEND_METRICS', 'SEMGREP_ENABLE_VERSION_CHECK']
         selected = {k: env[k] for k in keys if k in env}
-        selected.update(JADX_CONFIG_DIR=str(self.root / 'config/jadx'),
-                        JADX_CACHE_DIR=str(self.root / 'cache/jadx'),
-                        XDG_DATA_HOME=str(self.root / 'data'),
+        selected.update(XDG_CONFIG_HOME=str(self.client_state / 'config'),
+                        XDG_CACHE_HOME=str(self.client_state / 'cache'),
+                        JADX_CONFIG_DIR=str(self.client_state / 'config/jadx'),
+                        JADX_CACHE_DIR=str(self.client_state / 'cache/jadx'),
+                        XDG_DATA_HOME=str(self.client_state / 'data'),
                         ANONYMIZED_TELEMETRY='False', OTEL_SDK_DISABLED='true',
-                        JAVA_TOOL_OPTIONS='"-Djava.util.prefs.userRoot=' + str(self.root / 'config/java-prefs') + '"')
+                        JAVA_TOOL_OPTIONS='"-Djava.util.prefs.userRoot=' + str(self.client_state / 'config/java-prefs') + '"')
         return selected
 
     def launch(self, name, command, extra=None):
         env = {**self.runtime_env(), **(extra or {})}
         target = self.root / 'bin' / ('mcp-' + name)
-        cwd = self.root / 'mcp/work'
+        cwd = self.project_workspace / 'evidence/android-mcp/work'
         cwd.mkdir(parents=True, exist_ok=True)
         script = '#!/bin/sh\nunset PYTHONPATH PYTHONHOME\n'
-        script += '\n'.join('export ' + k + '=' + shlex.quote(v) for k, v in env.items()) + '\n'
-        if not name.endswith('-gui'):
-            script += 'cd ' + shlex.quote(str(cwd)) + '\n'
+        private_keys = {'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+                        'JADX_CONFIG_DIR', 'JADX_CACHE_DIR', 'JAVA_TOOL_OPTIONS'}
+        script += '\n'.join('export ' + k + '=' + shlex.quote(v) for k, v in env.items() if k not in private_keys) + '\n'
+        # Shared launchers contain tool paths only. Per-project state directories
+        # are arguments in each project's MCP configuration, never baked into a
+        # launcher that another project will overwrite.
         script += 'exec ' + shlex.join(list(map(str, command))) + ' "$@"\n'
         target.write_text(script)
         target.chmod(0o755)
-        return self.managed_spec({'command': str(target), 'args': [], 'cwd': str(cwd)})
+        return self.managed_spec({'command': str(target), 'args': [], 'cwd': str(cwd), 'env': env})
 
     def managed_spec(self, spec):
-        if not (self.workspace / 'workbench.project.json').is_file():
+        if not (self.project_workspace / 'workbench.project.json').is_file():
             return spec
-        manifest = json.loads((self.workspace / 'workbench.project.json').read_text())
-        sys.path.insert(0, str((self.workspace / manifest.get('workbench_root', 'android-workbench')).resolve()))
+        manifest = json.loads((self.project_workspace / 'workbench.project.json').read_text())
+        sys.path.insert(0, str((self.project_workspace / manifest.get('workbench_root', 'android-workbench')).resolve()))
         from workbench.bridge import managed_mcp_spec
-        return managed_mcp_spec(self.workspace, spec)
+        return managed_mcp_spec(self.project_workspace, spec)
 
     def loopback_plugin(self, original):
         recipe = self.mcp_lock['artifacts']['mcp-jadx-plugin-source']
@@ -225,9 +233,7 @@ class MCPEnvironment(setup.Environment):
             folder = self.unpack('mcp-' + name + '-server')
             script = self.find_one(folder, '**/' + name + '_mcp_server.py')
             command = [self.root / 'venvs' / ('mcp-' + name) / 'bin/python', script]
-            if name == 'apktool':
-                command += ['--workspace', self.root / 'mcp/apktool-projects']
-            else:
+            if name != 'apktool':
                 command += ['--jadx-host', '127.0.0.1', '--jadx-port', str(self.options.jadx_port)]
                 plugin = self.fetch('mcp-jadx-plugin', self.mcp_lock['artifacts']['mcp-jadx-plugin'])
                 plugin = self.loopback_plugin(plugin)
@@ -238,14 +244,17 @@ class MCPEnvironment(setup.Environment):
                 (self.run_dir / 'jadx-plugin-install.log').write_text(result.stdout + result.stderr)
                 if result.returncode:
                     raise RuntimeError('JADX plugin registration failed; see ' + str(self.run_dir))
-                installed = list((self.root / 'config/jadx').rglob('*.jar'))
+                installed = list((self.client_state / 'config/jadx').rglob('*.jar'))
                 if not any(setup.digest(p) == setup.digest(plugin) for p in installed):
                     raise RuntimeError('Plugin was not registered in the isolated JADX config directory')
                 self.launch('jadx-gui', [self.root / 'bin/jadx-gui'])
-            return self.launch(name, command)
+            spec = self.launch(name, command)
+            if name == 'apktool':
+                spec['args'] += ['--workspace', str(self.project_workspace / 'evidence/android-mcp/apktool-projects')]
+            return spec
         if name == 'ghidra':
             ghidra = self.find_one(self.root / 'tools/ghidra', '*/ghidraRun').parent
-            project = Path(self.options.ghidra_project_dir).expanduser().resolve() if self.options.ghidra_project_dir else self.workspace / 'evidence/android-mcp/ghidra-projects'
+            project = Path(self.options.ghidra_project_dir).expanduser().resolve() if self.options.ghidra_project_dir else self.project_workspace / 'evidence/android-mcp/ghidra-projects'
             if any(part.startswith('.') for part in project.parts):
                 raise RuntimeError('Ghidra rejects hidden path elements; set --ghidra-project-dir to a path without dot-prefixed components')
             project.mkdir(parents=True, exist_ok=True)
@@ -253,9 +262,10 @@ class MCPEnvironment(setup.Environment):
             entry = self.root / 'mcp/ghidra_mcp_entry.py'
             entry.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(setup.COMPONENT / 'scripts/ghidra_mcp_entry.py', entry)
-            return self.launch(name, [self.root / 'venvs/mcp-ghidra/bin/python', entry, '--model-cache', model,
-                '--transport', 'stdio', '--project-root', project,
-                '--project-name', 'android-workbench'], {'GHIDRA_INSTALL_DIR': str(ghidra)})
+            spec = self.launch(name, [self.root / 'venvs/mcp-ghidra/bin/python', entry, '--model-cache', model,
+                '--transport', 'stdio'], {'GHIDRA_INSTALL_DIR': str(ghidra)})
+            spec['args'] += ['--project-root', str(project), '--project-name', 'android-workbench']
+            return spec
         # Keep Semgrep on local, explicit-rule operations in this static-analysis profile.
         entry = self.root / 'mcp/semgrep_mcp_entry.py'
         entry.parent.mkdir(parents=True, exist_ok=True)
@@ -266,7 +276,8 @@ class MCPEnvironment(setup.Environment):
             'SEMGREP_SCAN_SUPPLY_CHAIN_DISABLED': 'true'})
 
     def templates(self, specs):
-        folder = self.root / 'mcp'
+        folder = self.project_mcp_root
+        folder.mkdir(parents=True, exist_ok=True)
         specs = {name: self.managed_spec(spec) for name, spec in specs.items()}
         setup.write_json(folder / 'servers.json', specs)
         (folder / 'codex.toml').write_text(codex_text(specs))
@@ -278,8 +289,27 @@ class MCPEnvironment(setup.Environment):
             setup.write_json(folder / 'jadx-optional.json', {'mcpServers': {'android-jadx': {
                 'command': specs['android-jadx']['command'], 'args': specs['android-jadx'].get('args', [])}}})
 
+    def available_specs(self):
+        """Bind installed shared launchers to this project's private data paths."""
+        result = {}
+        for name in self.names:
+            launcher = self.root / 'bin' / ('mcp-' + name)
+            if not launcher.is_file():
+                continue
+            arguments = []
+            if name == 'apktool':
+                arguments = ['--workspace', str(self.project_workspace / 'evidence/android-mcp/apktool-projects')]
+            elif name == 'ghidra':
+                project = (Path(self.options.ghidra_project_dir).expanduser().resolve()
+                           if self.options.ghidra_project_dir else
+                           self.project_workspace / 'evidence/android-mcp/ghidra-projects')
+                arguments = ['--project-root', str(project), '--project-name', 'android-workbench']
+            result['android-' + name] = self.managed_spec({'command': str(launcher), 'args': arguments,
+                                                        'cwd': str(self.project_workspace), 'env': self.runtime_env()})
+        return result
+
     def execute_mcp(self):
-        specs_path = self.root / 'mcp/servers.json'
+        specs_path = self.project_mcp_root / 'servers.json'
         if self.options.action == 'install':
             base = setup.Environment(base_args(self.options))
             base.execute()
@@ -290,7 +320,7 @@ class MCPEnvironment(setup.Environment):
         results = {}
         with (self.root / 'install.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            specs = setup.read_json(specs_path, {})
+            specs = setup.read_json(specs_path, {}) or self.available_specs()
             for name in self.names:
                 try:
                     if self.options.action == 'install':
@@ -316,10 +346,10 @@ class MCPEnvironment(setup.Environment):
                 'results': results, 'downloads': self.artifacts,
                 'scope': 'Installation or MCP initialize/tools/list only; actual analysis needs a separate sample test'}
             setup.write_json(self.run_dir / 'mcp-manifest.json', manifest)
-            setup.write_json(self.root / 'mcp/manifest.json', manifest)
-            setup.write_json(self.workspace / 'docs/android-mcp-manifest.json', manifest)
+            setup.write_json(self.project_mcp_root / 'manifest.json', manifest)
+            setup.write_json(self.project_workspace / 'docs/android-mcp-manifest.json', manifest)
         print('Evidence: ' + str(self.run_dir))
-        print('Configurations: ' + str(self.root / 'mcp'))
+        print('Configurations: ' + str(self.project_mcp_root))
         return int(any(r['status'] == 'failed' for r in results.values()))
 
 
@@ -335,6 +365,8 @@ def main():
     parser.add_argument('--client', choices=['codex', 'claude', 'cursor', 'vscode'], default='codex')
     parser.add_argument('--enable-jadx', action='store_true', help='GUI must be running with an open sample')
     args = parser.parse_args()
+    if args.action != 'plan':
+        setup.route_workspace(__file__, args.workspace)
     if sys.version_info < (3, 12) or platform.system() != 'Linux' or platform.machine() not in ['x86_64', 'AMD64']:
         parser.error('Bundled installer requires Linux x86_64 and Python 3.12+')
     if not 1 <= args.jadx_port <= 65535 or args.timeout <= 0:
@@ -348,9 +380,24 @@ def main():
                 'note': 'No files changed; install generates templates; configure merges project client settings.'}, indent=2))
             return 0
         if args.action == 'configure':
-            all_specs = setup.read_json(env.root / 'mcp/servers.json', {})
+            all_specs = setup.read_json(env.project_mcp_root / 'servers.json', {}) or env.available_specs()
             specs = {f'android-{n}': env.managed_spec(all_specs[f'android-{n}']) for n in env.names}
-            path = env.workspace / {'codex': '.codex/config.toml', 'claude': '.mcp.json',
+            if 'jadx' in env.names:
+                plugin = env.root / 'tools/mcp-jadx-loopback/jadx-ai-mcp-loopback.jar'
+                if not plugin.is_file():
+                    raise RuntimeError('Install the shared JADX MCP plugin before configuring a project')
+                installed = list((env.client_state / 'config/jadx').rglob('*.jar'))
+                if not any(setup.digest(p) == setup.digest(plugin) for p in installed):
+                    env.prepare()
+                    # The plugin command needs this project's private GUI config.
+                    command_env = {**env.env(), **env.runtime_env()}
+                    result = subprocess.run([str(env.root / 'bin/jadx'), 'plugins', '--install-jar', str(plugin)],
+                                            env=command_env, capture_output=True, text=True, timeout=120)
+                    (env.run_dir / 'jadx-project-plugin.log').write_text(result.stdout + result.stderr)
+                    if result.returncode:
+                        raise RuntimeError('Project JADX plugin registration failed')
+            env.templates(specs)
+            path = env.project_workspace / {'codex': '.codex/config.toml', 'claude': '.mcp.json',
                                     'cursor': '.cursor/mcp.json', 'vscode': '.vscode/mcp.json'}[args.client]
             if args.client == 'codex':
                 merge_codex(path, specs, args.enable_jadx)

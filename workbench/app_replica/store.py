@@ -21,7 +21,8 @@ class ReplicaError(ValueError):
 
 class Store:
     def __init__(self, workspace):
-        self.workspace = Path(workspace).expanduser().resolve()
+        from .paths import lexical, no_symlinks
+        self.workspace = no_symlinks(lexical(workspace, base=Path.cwd(), strict=False))
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.authority = self.workspace / "coordination/state.json"
 
@@ -54,11 +55,13 @@ class Store:
             except (OSError, ValueError) as exc:
                 raise ReplicaError(f"Cannot read committed state: {exc}") from exc
             if state is not None:
-                if not isinstance(state, dict) or state.get("schema") not in {1, 2}:
+                if not isinstance(state, dict) or state.get("schema") not in {1, 2, 3}:
                     raise ReplicaError("Unsupported or invalid replica state")
                 if state["schema"] == 1 and not allow_legacy:
                     raise ReplicaError("Legacy schema 1 requires explicit migrate before reads/writes")
-                if state["schema"] == 2:
+                if state["schema"] in {2, 3}:
+                    from .paths import PathBindings
+                    PathBindings.from_state(self.workspace, state)
                     from .snapshot import Inventory, Scopes
                     state["inventory"] = Inventory(self, state["inventory_ref"], Scopes(self, state["scope_ref"]))
             yield state
@@ -186,6 +189,10 @@ class Store:
         marker = {"authority": "coordination/state.json", "revision": state["revision"],
                   "editable": False}
 
+        if state.get("schema") == 3:
+            marker["path_bindings"] = "coordination/path-bindings.json"
+            marker["binding_revision"] = state["relocation"]["binding_revision"]
+
         def project(relative, record):
             target = self.metadata_path(relative)
             if target.exists() and not target.is_file():
@@ -197,6 +204,8 @@ class Store:
                     valid_marker = (isinstance(prior_marker, dict)
                         and prior_marker.get("authority") == marker["authority"]
                         and prior_marker.get("editable") is False
+                        and prior_marker.get("path_bindings") == marker.get("path_bindings")
+                        and prior_marker.get("binding_revision") == marker.get("binding_revision")
                         and type(prior_marker.get("revision")) is int
                         and 0 < prior_marker["revision"] <= state["revision"])
                     if previous == record and valid_marker:
@@ -205,6 +214,8 @@ class Store:
                 pass
             self.write_json(relative, {**record, "_projection": marker})
 
+        if state.get("schema") == 3:
+            project("coordination/path-bindings.json", state["relocation"])
         project("project.json", state["project"])
         project("inventory/manifest.json", {"reference": state["inventory_ref"], "scope_reference": state["scope_ref"],
                 "count": len(state["inventory"]),
@@ -231,6 +242,8 @@ class Store:
         with self.locked(allow_legacy=True) as state:
             if state is None:
                 raise ReplicaError("Replica workspace is not initialized")
+            if state["schema"] == 3:
+                raise ReplicaError("Schema 3 is already adopted; schema-1 migrate is unsupported")
             if state["schema"] == 2:
                 migration = state.get("storage_migration", {})
                 if (migration.get("legacy_revision") != expected_revision
@@ -329,9 +342,8 @@ class Store:
         with self.locked() as state:
             if state is None:
                 raise ReplicaError("Replica workspace is not initialized")
-            output = Path(output)
-            if not output.is_absolute():
-                output = self.workspace / output
+            from .paths import resolve_path
+            output = resolve_path(self.workspace, state, str(output))
             if output.absolute() == self.workspace / "inventory/objects.json":
                 output = self.metadata_path("inventory/objects.json")
             else:
@@ -353,6 +365,8 @@ class Store:
                         inventory.cache.clear()
                     marker = {"authority": "coordination/state.json", "revision": state["revision"],
                               "editable": False, "inventory_ref": state["inventory_ref"]}
+                    if state.get("schema") == 3:
+                        marker.update(path_bindings="coordination/path-bindings.json", binding_revision=state["relocation"]["binding_revision"])
                     stream.write(b'},"_projection":' + encoded(marker).rstrip(b"\n") + b"}\n")
                     stream.flush()
                     os.fsync(stream.fileno())

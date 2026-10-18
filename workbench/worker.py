@@ -631,6 +631,13 @@ class Runner:
         if spec["operation"] == "device.recover":
             # Reinspection does not claim to undo unknown remote mutations.
             handover = spec.get("manual_return")
+            from .results import readonly_property_query, verify_property_query_recovery
+            targets=spec.get('recovery_targets', [])
+            query_only=bool(targets) and not handover
+            for identifier in targets:
+                normalized=Path(self.grant['state'])/'jobs'/identifier/'normalized.json'
+                old=json.loads(normalized.read_text()) if normalized.is_file() else {}
+                query_only=query_only and old.get('device')==spec['device'] and readonly_property_query(old)
             if handover:
                 from .results import verify_ota_prepare_handover
                 verified = verify_ota_prepare_handover(
@@ -642,6 +649,12 @@ class Runner:
                 observation = {"transport": "sideload", "serial": spec["serial"],
                                "prepared_job": handover["prepared_job"],
                                "system_verified": False, "observed_at": time.time()}
+            elif query_only:
+                # Exact read-only commands cannot mutate the absent phone.
+                # Verify their frozen sources and dead descendants below; do
+                # not contact another connected phone or claim current health.
+                observation={'transport':'not_probed','device_state_verified':False,
+                             'scope':'readonly_property_query_cleanup','observed_at':time.time()}
             else:
                 observation = self.device.observe()
             previous = []
@@ -665,7 +678,10 @@ class Runner:
                     raise WorkbenchError("An old command process is still alive")
                 result = folder / "result.json"
                 outcome = json.loads(result.read_text()) if result.is_file() else {}
-                if folder.name in spec.get("adb_recovery_targets", []):
+                if query_only and verify_property_query_recovery(self, folder, old):
+                    self.recovered_resources.extend(old.get('resources', []))
+                    self.reconciled_jobs.append(folder.name)
+                elif folder.name in spec.get("adb_recovery_targets", []):
                     # The service checked the dead exclusive ADB owner; the
                     # observation above verifies the selected device transport.
                     self.recovered_resources.extend(old.get("resources", []))

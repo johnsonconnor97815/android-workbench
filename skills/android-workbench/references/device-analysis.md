@@ -46,3 +46,7 @@ Wi-Fi 扫描列表等动态页面会在截图后重新排列，等待动画结�
 用 `jobs_cancel` 请求停止；清理完成才释放。人工操作先用 `devices_manual_acquire`，等 `handed_over:true`；交还用 `devices_manual_release`。`devices_recover` 可核实只读故障与人工交还；未知修改、残留 Hook 或子进程仍需相应恢复步骤，不能把恢复接口当作清空锁。
 
 内置 `apkrev.devsh` 的明确 `sh` / `shell`、`pm path <包名>` 和匹配的 `--serial` 参数组合按只读查询处理；不存在的包仍保留实际失败返回码，但不会被当成未知修改而阻塞手机。附加 shell 命令、重定向、自定义包装器和其他设备命令不适用。旧版本误标的这类查询可用 `devices_recover` 核验恢复；包装器、辅助文件及原快照必须保持一致，旧进程仍存活时不能恢复。
+
+同一包装器的 `sh "getprop <单个属性名>" --serial <登记序列号>` 也按精确只读查询处理。历史误标的此类任务可在原手机离线时，通过 `devices_recover` 核验包装器、快照和子进程后释放保护锁；结果明确标记 `device_state_verified:false`，不表示手机在线或健康，也不允许换用另一台连接设备完成原任务。
+
+共享服务暂不能切换到新运行时时，可提交受管 `apkrev.recover_readonly_query --serial <原登记序列号>`，用 `recovery_jobs` 明确选择误标的 `apkrev.devsh` 任务。它只接受上述精确属性查询、包路径查询和裸 `lshal` 列表，核验源码快照与原进程已退出，不联系手机、不恢复未知修改，也不证明设备健康。

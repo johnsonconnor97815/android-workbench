@@ -271,7 +271,9 @@ def normalize(request, config, directory, *, manual_return=None):
         if any(not isinstance(v, str) or len(v) > 500 for v in item.values()):
             raise WorkbenchError("UI condition values must be short strings")
     spec["python"] = project.get("python", sys.executable)
-    spec["env"] = project.get("env", {})
+    from .toolchains import worker_environment
+    spec["env"], tool_bindings = worker_environment(root, project)
+    spec["toolchain_bindings"] = tool_bindings
     spec["directory"] = str(directory)
     spec["readonly"] = False
     spec["insertable"] = False
@@ -433,7 +435,15 @@ def normalize(request, config, directory, *, manual_return=None):
             if not isinstance(entry["python"], str) or not entry["python"]:
                 raise WorkbenchError("Registered Python must be a nonempty path")
             interpreter = (root / entry["python"]).expanduser().absolute()
-            if not interpreter.is_file():
+            relative_python = Path(entry["python"])
+            if relative_python.parts[:2] == (".android-static", "venvs") and len(relative_python.parts) > 2:
+                selected = tool_bindings.get(relative_python.parts[2])
+                if selected:
+                    interpreter = Path(selected["workspace"]) / relative_python
+            prepared_later = (spec['dependencies'] and len(relative_python.parts) > 2
+                              and relative_python.parts[:2] == ('.android-static', 'venvs')
+                              and relative_python.parts[2] in entry.get('requires_tools', []))
+            if not interpreter.is_file() and not prepared_later:
                 raise WorkbenchError(
                     "Registered Python is missing; prepare its tool environment: "
                     + str(interpreter)
@@ -470,6 +480,15 @@ def normalize(request, config, directory, *, manual_return=None):
             or len(args) > 256
         ):
             raise WorkbenchError("args must be an array of at most 256 strings")
+        if entry.get('requires_frida_client') and project.get('toolchain', {}).get('auto_install'):
+            version = next((args[i + 1] for i, x in enumerate(args[:-1]) if x == '--version'), None)
+            version = next((x.split('=', 1)[1] for x in args if x.startswith('--version=')), version)
+            if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+', version):
+                raise WorkbenchError('An explicit Frida client version is required')
+            python = Path(tool_bindings['frida']['workspace']) / 'Tools/runtime/frida-clients' / version / 'venv/bin/python'
+            if not python.is_file() and not spec['dependencies']:
+                raise WorkbenchError('Prepare the selected host client with frida.install_client first')
+            spec['python'] = str(python)
         if operation.startswith("tools."):
             # Fixed tool storage belongs to this registered project even in old registries.
             workspaces = [args[i + 1] for i, x in enumerate(args[:-1]) if x == "--workspace"]
@@ -477,7 +496,7 @@ def normalize(request, config, directory, *, manual_return=None):
             if len(workspaces) > 1 or (workspaces and (root / workspaces[0]).resolve() != root):
                 raise WorkbenchError("Tools workspace must match the registered project")
             spec["resources"].append(resource(path_resource(root / "Tools/runtime"),
-                "write" if operation == "tools.install" else "read"))
+                "write" if operation in {"tools.install", "tools.ensure"} else "read"))
         default_arguments = []
         for flag, location in entry.get("default_paths", {}).items():
             if not any(x == flag or x.startswith(flag + "=") for x in args):
@@ -555,9 +574,9 @@ def normalize(request, config, directory, *, manual_return=None):
         if entry.get("uses_mcp"):
             spec["resources"].append(resource("analysis:" + str(root)))
         spec["readonly"] = bool(entry.get("readonly"))
-        from .results import readonly_package_query, readonly_hal_query
+        from .results import readonly_package_query, readonly_hal_query, readonly_property_query
 
-        spec["readonly"] = spec["readonly"] or readonly_package_query(spec) or readonly_hal_query(spec)
+        spec["readonly"] = spec["readonly"] or readonly_package_query(spec) or readonly_hal_query(spec) or readonly_property_query(spec)
         mode = "write" if entry.get("mutates_environment") else "read"
         for location in project.get("environments", []):
             spec["resources"].append(resource(path_resource(root / location), mode))
@@ -840,6 +859,13 @@ def normalize(request, config, directory, *, manual_return=None):
                 spec["outputs"].append(artifacts)
                 spec["resources"].append(resource(path_resource(Path(artifacts))))
     # Resource effects come exclusively from the registered adapter.
+    tool_mode = "write" if spec.get("entry", {}).get("mutates_environment") else "read"
+    for workspace in {b["workspace"] for b in tool_bindings.values()}:
+        for component in ('.android-static', 'Tools/runtime', '.tools'):
+            spec["resources"].append(resource(path_resource(Path(workspace) / component), tool_mode))
+    if operation == "environment.setup" and "--install-system-deps" in spec.get("args", []):
+        for system_path in ("/usr", "/etc", "/var", "/run", "/tmp"):
+            spec["resources"].append(resource(path_resource(Path(system_path)), "write"))
     if artifact_outputs:
         if "entry" not in spec:
             raise WorkbenchError("Artifact outputs require a registered operation")

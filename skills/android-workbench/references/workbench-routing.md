@@ -12,6 +12,8 @@
 
 使用 `service_capabilities` 确认共享服务、模型模式及 `client_session`。连接优先使用 `CODEX_THREAD_ID`；若没有该环境变量，保存返回的身份，重连时先用 `sessions_select` 恢复同一身份。用 `operations_list` 获取已登记脚本及参数约定。任务提交、进度、取消和产物分别使用 `jobs_submit`、`jobs_status`、`jobs_cancel`、`jobs_artifacts`。提交必须带稳定的 `request_key`；调用超时后用相同内容和相同标识查询或重试。先用 `devices_discover` 查看 ADB/fastboot 可见连接，用 `devices_register` 登记共享设备 ID，再用 `devices_list` 确认；多台设备时使用明确设备 ID，不能按型号替换来源手机。需要长期预留时用 `devices_project_assign` 指定项目；其他项目不能再排队该设备任务，恢复操作除外。用 `devices_project_release` 在无活动或排队任务时解除指定。
 
+通用工具就绪、ADB 连通性和能力验收以本次 `devices_discover` 发现的接入设备为准，每轮重新发现；历史登记和缓存不代表当前连接，也不构成固定验收目标。自动登记新发现的连接后，通过队列检查当前设备；单台无需因换机询问，多台按设备分别记录适用检查结果。普通换机不记作故障或待用户确认项，历史设备离线不阻塞当前设备验收。任务已明确绑定的来源设备、运行中或排队任务及其恢复记录仍保持原身份，不能把旧设备的授权、状态或结果套到新设备。
+
 能力路由：
 
 - App 复制：先读 [App 复制组件](../components/app-replica/README.md)，使用新的本地文件协调入口。Main 对接用户，Astra App 任务安排盘点、入口和 MVP，Sol 沿发现的类/方法实现。协调程序不占用长期队列项目锁；实际分析、设备和共享环境操作仍通过既有受管入口。旧 `replication.*` 流程和 Agent 已删除，历史状态不用于恢复旧执行器。
@@ -19,7 +21,7 @@
 - 新 App 分析：先读 `references/sample-analysis.md`。对 base 和全部已提供 split 执行 `analysis.recon`，保存结构线索和限制，再用 `analysis.route --recon` 结合样本选择流程。通过 `analysis.plan`、`analysis.plan_update` 和 `analysis.plan_check` 保存阶段与证据；最终 `complete:true` 只表示声明的任务范围完成，静态任务不因此成为真机验证。重新打开阶段或输入变化会使后续完成状态失效。
 
 - 精确索引、未知问题与离线文件：读取 [分析组件的 REA 入口](../components/analysis-agent/README.md#rea-机制入口)。`analysis.query` 使用已有 SQLite 原字节索引及精确 selector；不自动建索引。`analysis.unknown_record/update/check` 使用明确 ledger 路径；更新必须带当前 revision，解决须审阅证据。`analysis.offline_js/source_map/har/compare` 只读取明确提供的本地文件；比较须两份同类输入。`analysis.route` 按当前问题推荐，缺输入返回 `required_inputs`；文件名线索不证明文件存在，执行前核对路径和登记。单独离线文件无需 APK，不采集网络或申请手机；HAR 记录不代替真实任务的运行证明。
-- 统一工具入口：工具目录、适配器和新运行时定义放在仓库 `Tools/`，见 [工具说明](../../../Tools/README.md)。先用 `tools.inventory` 查目录、`tools.check` 查实际可用性；明确安装请求才用受管 `tools.install`。JS 语法树用 `tools.js_ast`，可读恢复用 `tools.js_deobfuscate`；ELF 段/节/符号布局用 `tools.binary_layout`；有限固件扫描用 `tools.firmware_scan`。执行须已有本地输入和可用工具；路由不自动安装，不把后缀当格式证明，不把解析/恢复/扫描当运行证明。已有 `.android-static` 等工具位置由目录登记，不能为了统一入口随意搬动正在使用的环境。
+- 统一工具入口：工具目录、适配器和锁文件放在仓库 `Tools/`，见 [工具说明](../../../Tools/README.md)。先用 `tools.inventory` 查来源、`tools.check` 查可用性。新项目默认使用同机共享的固定版本工具；项目显式覆盖优先，缺失时不退回其他版本。`toolchain.auto_install:true` 时，缺失或损坏自动通过受管 `tools.ensure` 补装或修复，检查通过后继续原任务；声明了工具依赖的操作由客户端自动建立准备任务依赖。不得在持有环境读锁的分析或 MCP 进程内安装；关闭或释放该进程后再排队修复。版本升级另行处理。JS 语法树用 `tools.js_ast`，可读恢复用 `tools.js_deobfuscate`；ELF 布局用 `tools.binary_layout`；有限固件扫描用 `tools.firmware_scan`。执行须有明确本地输入，不把后缀当格式证明或把离线解析当运行证明。更新旧项目登记时将已安装且已登记的环境保存为显式覆盖，不擅自移动工具字节。
 - 运行来源核对：`jobs_verify_runtime` 核对认证项目内真实任务、完整任务执行窗口和可信发布文件的 SHA-256；`analysis.plan_update` 与 `analysis.plan_check` 也重新调用服务核对。服务或可信发布记录缺失时保留未核验，不能自行填写任务 JSON 批准运行结论。格式见 [样本完成检查](sample-analysis.md) 和 [REA 使用说明](../../../docs/rea-adoption-usage.md)。
 
 - 环境安装及分析 MCP：读取 `components/static-env/README.md`。修改环境要等实际使用者收尾。只读宿主访问因已退出进程留下故障占用时，使用 `environment.recover_host_lease` 核验并恢复；仍存活或未知的进程不能清锁。

@@ -34,7 +34,7 @@ def main():
                 "Registry already exists; use --update to rebind built-ins"
             )
         before = target.read_text()
-        generated = update(json.loads(before), generated, args.python)
+        generated = update(json.loads(before), generated, args.python, project_root=root)
         if json.loads(before) == generated:
             print(target)
             return

@@ -30,6 +30,7 @@ FILES = (
     "LICENSE",
     "NOTICE.md",
     "AGENTS.md",
+    "CONTEXT.md",
     "pyproject.toml",
     "sources.lock.json",
 )

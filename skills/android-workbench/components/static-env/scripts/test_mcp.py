@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Behavioral tests for local MCP configuration and stdio probing; no network."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 import mcp_setup
 from mcp_probe import Session
@@ -25,6 +27,37 @@ class MCPTests(unittest.TestCase):
             self.assertTrue(is_loopback_listener(address), address)
         for address in ['0.0.0.0:8650', '*:8650', '[::]:8650', '192.0.2.1:8650']:
             self.assertFalse(is_loopback_listener(address), address)
+
+    def test_shared_launchers_keep_project_state_in_project_arguments(self):
+        import argparse
+        repository = Path(mcp_setup.__file__).resolve().parents[5]
+        sys.path.insert(0, str(repository))
+        try:
+            from workbench.project import generate
+            from workbench.toolchains import shared_workspace
+            with patch.dict(os.environ, {'ANDROID_WORKBENCH_TOOLCHAINS': str(self.root / 'shared-tools')}):
+                shared = shared_workspace(repository)
+                launcher = shared / '.android-static/bin/mcp-apktool'
+                launcher.parent.mkdir(parents=True)
+                launcher.write_text('#!/bin/sh\nexit 0\n')
+                specs = []
+                for name in ('project-one', 'project-two'):
+                    project = self.root / name
+                    project.mkdir()
+                    (project / 'workbench.project.json').write_text(json.dumps(generate(project, repository, sys.executable)))
+                    args = argparse.Namespace(workspace=str(project), servers='apktool', action='configure', cache_dir=None,
+                                              jadx_port=8650, timeout=5, ghidra_project_dir=None)
+                    environment = mcp_setup.MCPEnvironment(args)
+                    self.assertEqual(environment.root, shared / '.android-static')
+                    spec = environment.available_specs()['android-apktool']
+                    specs.append(spec)
+                    self.assertIn(str(project / 'evidence/android-mcp/apktool-projects'), spec['args'])
+                    self.assertTrue(Path(spec['env']['XDG_CACHE_HOME']).is_relative_to(project))
+                    self.assertTrue(Path(spec['env']['JADX_CACHE_DIR']).is_relative_to(project))
+                    self.assertNotIn(str(project), launcher.read_text())
+                self.assertNotEqual(specs[0]['args'], specs[1]['args'])
+        finally:
+            sys.path.pop(0)
 
     def test_plan_has_no_side_effects(self):
         project = self.root / 'unused'

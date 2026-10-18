@@ -83,6 +83,7 @@ def stop_process(process):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', default='.')
+    parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--servers', default='apktool,ghidra,semgrep')
     parser.add_argument('--apk', type=Path)
     parser.add_argument('--apk-source')
@@ -98,6 +99,7 @@ def main():
     parser.add_argument('--jadx-port', type=int, default=8650)
     parser.add_argument('--timeout', type=float, default=180)
     args = parser.parse_args()
+    setup.route_workspace(__file__, args.workspace)
     names = select(args.servers)
     if set(names) & {'jadx', 'apktool'} and not all([args.apk, args.apk_source, args.class_name, args.package_name, args.apk_marker]):
         parser.error('APK checks require --apk, --apk-source, --class-name, --package-name and --apk-marker')
@@ -108,7 +110,10 @@ def main():
     workspace = Path(args.workspace).expanduser().resolve()
     root = workspace / '.android-static'
     specs = setup.read_json(root / 'mcp/servers.json')
-    out = workspace / 'evidence/android-mcp' / ('smoke-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6])
+    if (workspace / 'workbench.project.json').is_file():
+        from workbench.toolchains import default_workspace
+        root = default_workspace(workspace) / '.android-static'
+    out = args.output_dir.expanduser().resolve() if args.output_dir else workspace / 'evidence/android-mcp' / ('smoke-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6])
     out.mkdir(parents=True)
     report = {'timestamp_utc': setup.stamp(), 'scope': 'sample functional MCP calls', 'inputs': {}, 'results': {}}
     for name in ['apk', 'so']:
@@ -138,7 +143,7 @@ def main():
                 command = [str(root / 'bin/mcp-jadx-gui'), str(args.apk)]
                 if args.xvfb:
                     command = ['xvfb-run', '-a', *command]
-                gui = subprocess.Popen(command, stdout=gui_log, stderr=subprocess.STDOUT, start_new_session=True)
+                gui = subprocess.Popen(command, env={**os.environ, **spec.get('env', {})}, stdout=gui_log, stderr=subprocess.STDOUT, start_new_session=True)
                 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
                 url = f'http://127.0.0.1:{args.jadx_port}/class-source?' + urllib.parse.urlencode({'class_name': args.class_name})
                 deadline = time.monotonic() + min(args.timeout, 90)
@@ -168,7 +173,7 @@ def main():
                     calls.append(tool)
                     return result
                 if name == 'apktool':
-                    project = root / 'mcp/apktool-projects' / out.name
+                    project = workspace / 'evidence/android-mcp/apktool-projects' / out.name
                     decoded = payload(call('decode_apk', {'apk_path': str(args.apk), 'output_dir': str(project), 'force': False}))
                     if decoded.get('has_manifest') is not True or decoded.get('success') is not True:
                         raise RuntimeError('APK decode did not produce a manifest')
@@ -214,6 +219,7 @@ def main():
                 gui_log.close()
             setup.write_json(out / 'result.json', report)
     report['input_hashes_unchanged'] = all(setup.digest(v['path']) == v['sha256'] for v in report['inputs'].values())
+    report['pass'] = report['input_hashes_unchanged'] and all(r['status'] == 'passed' for r in report['results'].values())
     setup.write_json(out / 'result.json', report)
     print('Evidence: ' + str(out))
     return int(not report['input_hashes_unchanged'] or any(r['status'] != 'passed' for r in report['results'].values()))

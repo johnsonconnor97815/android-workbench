@@ -102,6 +102,25 @@ def readonly_hal_query(spec):
         ["--serial", serial, command, "lshal"], [command, "lshal", "--serial", serial]))
 
 
+def readonly_property_query(spec):
+    """One named Android property through the reviewed, serial-bound wrapper."""
+    entry=spec.get('entry', {})
+    if (spec.get('operation')!='apkrev.devsh'
+            or entry.get('script')!='@workbench/skills/android-workbench/components/apk-reverse/scripts/devsh.py'
+            or entry.get('source')!='@workbench/skills/android-workbench/components/apk-reverse'):
+        return False
+    args=spec.get('args', [])
+    return (bool(spec.get('serial')) and len(args)==4 and args[0] in {'sh','shell'}
+            and args[2:]==['--serial',spec['serial']]
+            and re.fullmatch(r'getprop [A-Za-z0-9_.-]+',args[1]) is not None)
+
+
+def verify_property_query_recovery(runner, folder, spec):
+    if not readonly_property_query(spec):
+        return False
+    return verify_bounded_query_sources(runner, folder, spec, 'property')
+
+
 def verify_package_query_recovery(runner, folder, spec):
     if not readonly_package_query(spec):
         return False

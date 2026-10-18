@@ -10,7 +10,7 @@
 
 ## Workbench 操作
 
-本组件登记了 57 个 `apkrev.*` 操作：
+本组件登记了 58 个 `apkrev.*` 操作：
 
 | 分组 | 操作 |
 | --- | --- |
@@ -20,10 +20,12 @@
 | 设备与运行时 | `coldstart`、`devsh`、`frida_rpc_serve`、`grab_crash`、`install_test`、`lib_map`、`run_probe`、`sig_probe`、`snap`、`spawn_patch_detach` |
 | Native、协议与服务端 | `elf_plt`、`java2c_probe`、`native_crash`、`probe_api`、`protobuf_decode`、`stalker_report`、`svc_scan`、`tls_check` |
 | Dart、KernelSU 与 VMP | `dart_disasm`、`dart_pool_strings`、`dart_pprefs`、`kernel_gates`、`kernel_generate`、`kernel_verify`、`vmp_audit`、`vmp_build`、`vmp_compare`、`vmp_emit_smali`、`vmp_simulate` |
-| 维护 | `scan_leaks` |
+| 维护 | `scan_leaks`、`recover_readonly_query` |
 
 调用时使用完整前缀，例如 `apkrev.preflight`。`apkrev.device_shell` 校验 Android 标识、组件和设备路径并生成 POSIX 引号；`apkrev.dexutil` 输出单方法指令与偏移 dump。二者同时保留为共享库；Frida JS 模板由对应入口调用，不重复登记。
 `apkrev.doctor` 和 `apkrev.preflight` 需要已登记设备；`apkrev.capabilities` 是主机侧能力清单，不占用手机。
+
+`apkrev.recover_readonly_query --serial <原登记序列号>` 仅用于受管恢复误标的精确 `devsh` 只读查询，通过 `recovery_jobs` 选择原任务。它核验原命令、源码快照与进程已退出后释放保护锁，原手机可离线；不联系替代手机、不恢复未知修改，也不验证设备健康。
 
 方法级 DEX 补丁示例：
 

@@ -346,27 +346,34 @@ def builtin_operations():
     }
     for name, entry in definitions.items():
         add("frida." + name, "frida", name + ".py", **entry)
+    for operation, action in (('install_client', 'install'), ('check_client', 'check')):
+        add('frida.' + operation, 'frida', 'install_client.py', subcommand=action,
+            mutates_environment=action == 'install', readonly=action != 'install',
+            outputs=['--output'], default_outputs={'--output': 'frida-client.json'}, result_file='.')
+    for operation in ('probe_native', 'probe_uncrackable'):
+        operations['frida.' + operation]['requires_frida_client'] = {'17.18.0': '14.10.4'}
     for name in ("setup", "mcp_setup"):
         add(
             "environment." + name,
             "static-env",
             name + ".py",
             mutates_environment=True,
+            **({"input_flags": ["--reuse-sdk-licenses"]} if name == "setup" else {}),
             **({"uses_mcp": True} if name == "mcp_setup" else {}),
         )
     # Central fixed adapters share the same queue and reuse existing tool environments.
-    for name, subcommand in (("inventory", "inventory"), ("check", "check"),
+    for name, subcommand in (("inventory", "inventory"), ("check", "check"), ("ensure", "ensure"),
                              ("install", "install"), ("js_ast", "js-ast"),
                              ("js_deobfuscate", "js-deobfuscate"),
                              ("binary_layout", "binary-layout"), ("firmware_scan", "firmware-scan")):
         operations["tools." + name] = {
             "script": BUNDLE_PREFIX + "Tools/manager.py",
             "source": BUNDLE_PREFIX + "Tools", "subcommand": subcommand,
-            "readonly": name != "install", "compute": name not in {"inventory", "install"},
-            "mutates_environment": name == "install",
+            "readonly": name not in {"install", "ensure"}, "compute": name not in {"inventory", "install", "ensure"},
+            "mutates_environment": name in {"install", "ensure"},
             "outputs": ["--output"], "default_outputs": {"--output": "tool-result.json"},
             "result_file": ".", "input_flags": ["--input"],
-            "resources": [{"path": "Tools/runtime", "mode": "write" if name == "install" else "read"}],
+            "resources": [{"path": "Tools/runtime", "mode": "write" if name in {"install", "ensure"} else "read"}],
             "nested_sources": [SKILL_SOURCE + "/components/static-env"],
         }
     operations["environment.recover_host_lease"] = {
@@ -392,6 +399,8 @@ def builtin_operations():
     operations["static.inspect_so"].update(
         python=".android-static/venvs/native-python/bin/python", outputs=["--output"]
     )
+    operations['static.smoke'].update(outputs=['--output-dir'], default_outputs={'--output-dir': 'static-smoke'}, result_file='smoke-report.json')
+    operations['static.mcp_smoke'].update(outputs=['--output-dir'], default_outputs={'--output-dir': 'mcp-smoke'}, result_file='result.json')
     add(
         "static.permission_audit",
         "permission-audit",
@@ -627,6 +636,13 @@ def builtin_operations():
             "script": "devsh.py",
             "serial": "--serial",
             "adb_exclusive": True,
+        },
+        "recover_readonly_query": {
+            "script": "recover_readonly_query.py", "serial": "--serial",
+            "adb_exclusive": True, "readonly": True, "recovery": True,
+            "recovery_for": ["apkrev.devsh"],
+            "outputs": ["--output"], "default_outputs": {"--output": "query-recovery.json"},
+            "result_file": ".", "nested_sources": [BUNDLE_PREFIX + "workbench"],
         },
         "dex_check_verifier": {
             "script": "dex_check_verifier.py",
@@ -883,6 +899,17 @@ def builtin_operations():
     }
     for name, entry in apkrev_definitions.items():
         add_apkrev(name, **entry)
+    for operation, names in {
+        "tools.js_ast": ["babel"], "tools.js_deobfuscate": ["wakaru"],
+        "tools.binary_layout": ["native-python"], "tools.firmware_scan": ["$tool"],
+        "analysis.decompile": ["jadx"],
+    }.items():
+        operations[operation]["requires_tools"] = names
+    operations["analysis.decompile"]["tool_flags"] = {"jadx": "--jadx"}
+    for entry in operations.values():
+        python = Path(entry.get('python', ''))
+        if python.parts[:2] == ('.android-static', 'venvs') and len(python.parts) > 2:
+            entry['requires_tools'] = list(dict.fromkeys([*entry.get('requires_tools', []), python.parts[2]]))
     return operations
 
 
@@ -905,6 +932,7 @@ def generate(root, checkout, python=None):
     doc = {
         "version": 1,
         "workbench_root": str(checkout),
+        "toolchain": {"mode": "shared", "auto_install": True, "overrides": {}},
         "python": str(interpreter),
         "environments": [".venv", ".tools", ".android-static", "Tools/runtime", str(sdk)],
         "mcp_environments": [
@@ -955,12 +983,16 @@ def device_management_manifest(root, checkout, python=None):
     return document
 
 
-def update(existing, generated, python=None):
+def update(existing, generated, python=None, project_root=None):
     """Rebind built-ins while retaining custom operations and project environments."""
     if existing.get("version") != 1:
         raise WorkbenchError("Unsupported project manifest")
     result = copy.deepcopy(existing)
     result["workbench_root"] = generated["workbench_root"]
+    if "toolchain" not in result:
+        from .toolchains import preserve_legacy
+        result["toolchain"] = (preserve_legacy(project_root, existing) if project_root is not None
+                               else copy.deepcopy(generated["toolchain"]))
     if python or "python" not in result:
         result["python"] = generated["python"]
     old_skills = existing.get("skills", {})

@@ -81,6 +81,19 @@ def read_json(path, default=None):
     return json.loads(Path(path).read_text()) if Path(path).exists() else default
 
 
+def route_workspace(script, workspace):
+    """An explicit registered workspace also routes through its queue from any cwd."""
+    project = Path(workspace).expanduser().resolve()
+    config = project / 'workbench.project.json'
+    if not config.is_file() or os.environ.get('AWB_INTERNAL_GRANT'):
+        return
+    doc = read_json(config)
+    checkout = (project / doc.get('workbench_root', 'android-workbench')).resolve()
+    sys.path.insert(0, str(checkout))
+    from workbench.bridge import entry
+    entry(script, project=project)
+
+
 def quark_rules_path(root):
     """Relative rule pointers survive moving an owned project directory."""
     root = Path(root).resolve()
@@ -105,6 +118,11 @@ class Environment:
         self.args = args
         self.catalog = read_json(CATALOG)
         self.workspace = Path(args.workspace).expanduser().resolve()
+        if not getattr(args, 'storage_workspace', False) and (self.workspace / 'workbench.project.json').is_file():
+            config = read_json(self.workspace / 'workbench.project.json')
+            if config.get('toolchain', {}).get('mode') == 'shared':
+                from workbench.toolchains import default_workspace
+                self.workspace = default_workspace(self.workspace)
         self.root = self.workspace / '.android-static'
         self.cache = Path(args.cache_dir).expanduser().resolve() if args.cache_dir else self.root / 'cache'
         self.selected = select_tools(args)
@@ -312,6 +330,8 @@ class Environment:
         if name in self.catalog['python']:
             self.install_python(name)
         elif name == 'utilities':
+            if not shutil.which('7z', path=self.env()['PATH']) and shutil.which('7zz'):
+                self.wrapper('7z', [shutil.which('7zz')])
             missing = [x for x in UTILITY_CHECKS if not shutil.which(x, path=self.env()['PATH'])]
             if missing:
                 raise RuntimeError('Missing system utilities: ' + ', '.join(missing) + '; rerun with --install-system-deps on Ubuntu/Debian')
@@ -442,7 +462,14 @@ class Environment:
             raise RuntimeError('--install-system-deps is supported on Ubuntu/Debian only')
         prefix = [] if os.geteuid() == 0 else ['sudo', '-n']
         self.run(prefix + ['apt-get', 'update'], timeout=600)
-        self.run(prefix + ['apt-get', 'install', '-y', '--no-install-recommends'] + self.system_packages, timeout=1200)
+        packages = list(self.system_packages)
+        if 'p7zip-full' in packages:
+            policy = self.run(['apt-cache', 'policy', 'p7zip-full'])['output']
+            if 'Candidate: (none)' in policy or 'Candidate:' not in policy:
+                packages[packages.index('p7zip-full')] = '7zip'
+        if 'utilities' in self.selected:
+            packages += ['liblzma-dev', 'libfontconfig-dev', 'cmake', 'ninja-build', 'clang', 'xvfb', 'libicu-dev']
+        self.run(prefix + ['apt-get', 'install', '-y', '--no-install-recommends'] + packages, timeout=1200)
 
     def execute(self):
         if self.args.action == 'check' and not (self.root / 'owner.json').exists():
@@ -450,6 +477,21 @@ class Environment:
         self.prepare()
         with (self.root / 'install.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            prior_licenses = getattr(self.args, 'reuse_sdk_licenses', None)
+            if self.args.action == 'install' and prior_licenses:
+                source = Path(prior_licenses).expanduser().resolve()
+                if not source.is_dir():
+                    raise RuntimeError('Existing SDK license directory is missing: ' + str(source))
+                destination = self.root / 'sdk/licenses'
+                destination.mkdir(exist_ok=True)
+                reused = []
+                for candidate in source.iterdir():
+                    if candidate.is_file() and not candidate.is_symlink() and candidate.name.startswith('android-'):
+                        target = destination / candidate.name
+                        if not target.exists():
+                            shutil.copy2(candidate, target)
+                        reused.append({'source': str(candidate), 'sha256': digest(candidate)})
+                write_json(self.root / 'state/reused-sdk-licenses.json', {'files': reused, 'new_terms_accepted': False})
             # Preserve live pointers/manifests before installation or check refreshes them.
             previous = read_json(self.root / 'manifest.json', {})
             backup = self.run_dir / 'previous'; backup.mkdir()
@@ -510,9 +552,12 @@ def main():
     parser.add_argument('--cache-dir', help='Dedicated download cache; files are verified before reuse')
     parser.add_argument('--install-system-deps', action='store_true', help='Install the recorded apt packages (Ubuntu/Debian; sudo -n if non-root)')
     parser.add_argument('--accept-sdk-licenses', action='store_true', help='Accept Android SDK licenses for this project SDK')
+    parser.add_argument('--reuse-sdk-licenses', type=Path, help='Copy already accepted SDK license records; does not accept new terms')
     parser.add_argument('--with-mobsf', action='store_true', help='Pull MobSF and generate local Compose config; does not start a service')
     parser.add_argument('--mobsf-image', help='Official MobSF image with explicit version tag or digest')
     args = parser.parse_args()
+    if args.action != 'plan':
+        route_workspace(__file__, args.workspace)
     if sys.version_info < (3, 12):
         parser.error('Python 3.12+ required for the bundled installer')
     if platform.system() != 'Linux' or platform.machine() not in ['x86_64', 'AMD64']:

@@ -145,6 +145,7 @@ class SchedulerTest(unittest.TestCase):
             [item["serial"] for item in discovered["devices"]],
             ["visible-serial", "fastboot-serial"],
         )
+
         client.call(
             "devices.register", {"id": "visible-phone", "serial": "visible-serial"}
         )
@@ -202,6 +203,32 @@ class SchedulerTest(unittest.TestCase):
             (Path(result["directory"]) / "operation-result.json").read_text()
         )
         self.assertEqual(record["status"], "complete")
+
+    def test_device_discovery_probes_overlap_and_do_not_block_service(self):
+        import concurrent.futures
+
+        command = self.root / "slow-transport"
+        entered = self.root / "probe-entered"
+        command.write_text("#!" + sys.executable + "\nimport time\nfrom pathlib import Path\n"
+                           + "Path(" + repr(str(entered)) + ").touch()\n"
+                           + "time.sleep(.5)\nprint('sample device')\n")
+        command.chmod(0o755)
+        config = json.loads((self.state / "config.json").read_text())
+        config.update(adb=str(command), fastboot=str(command))
+        atomic_json(self.state / "config.json", config)
+        self.proc.terminate()
+        self.proc.wait(timeout=5)
+        self.proc = self.start_service()
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(rpc, self.state, "devices.discover", {}, self.a.token, .85)
+            deadline = time.monotonic() + 2
+            while not entered.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(entered.exists(), "transport probe was not started")
+            self.assertEqual(rpc(self.state, "service.capabilities", timeout=.2)["protocol"], 1)
+            result = future.result(timeout=2)
+        self.assertEqual(len(result["devices"]), 2)
+        self.assertFalse(result["errors"])
 
     def test_scene_logcat_step_is_bounded_and_clear_makes_it_mutating(self):
         directory = self.root / "normalized"
@@ -1044,14 +1071,16 @@ class SchedulerTest(unittest.TestCase):
         self.proc.terminate()
         self.proc.wait()
         self.proc = self.start_service()
-        job = self.a.submit(operation="apkrev.devsh", device="one",
-                            args=["sh", "pm path com.example.fixture", "--serial", "fake-one"])
-        done = self.a.wait(job["id"], 8)
-        self.assertEqual(done["state"], "failed")
-        self.assertTrue(done["result"]["cleanup_ok"])
-        normalized = json.loads((self.state / "jobs" / job["id"] / "normalized.json").read_text())
-        self.assertTrue(normalized["readonly"])
-        self.assertFalse(any(r["status"] == "needs_recovery" for r in self.a.call("resources.state")))
+        for command in ('pm path com.example.fixture','getprop ro.build.version.release'):
+            with self.subTest(command=command):
+                job = self.a.submit(operation="apkrev.devsh", device="one",
+                                    args=["sh", command, "--serial", "fake-one"])
+                done = self.a.wait(job["id"], 8)
+                self.assertEqual(done["state"], "failed")
+                self.assertTrue(done["result"]["cleanup_ok"])
+                normalized = json.loads((self.state / "jobs" / job["id"] / "normalized.json").read_text())
+                self.assertTrue(normalized["readonly"])
+                self.assertFalse(any(r["status"] == "needs_recovery" for r in self.a.call("resources.state")))
         self.assertEqual(self.a.wait(self.submit()["id"], 8)["state"], "succeeded")
 
     def test_local_recovery_repairs_declared_shared_resources(self):

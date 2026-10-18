@@ -1983,8 +1983,10 @@ def preflight(
     timeout: float,
     fastboot_mode: bool = False,
     check_root: bool = False,
+    records: list[dict] | None = None,
 ) -> dict:
-    records: list[dict] = []
+    if records is None:
+        records = []
     result = {
         "schema": 1,
         "utc": utc(),
@@ -2645,6 +2647,7 @@ def main() -> int:
                     fastboot_serial=fastboot_serial,
                     timeout=arguments.timeout,
                     check_root=arguments.check_root,
+                    records=records,
                 )
             )
         elif arguments.command == "flash-verify":

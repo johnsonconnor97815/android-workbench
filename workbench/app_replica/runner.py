@@ -11,6 +11,7 @@ from .backend import BackendError, CapacityError, CodexBackend, HostSlots, build
 from .engine import execute
 from .ids import stable_id
 from .roles import task_prompt
+from .paths import effective_project
 from .store import ReplicaError, Store
 
 
@@ -62,6 +63,7 @@ class Runner:
     def __init__(self, workspace, *, host_capacity, slots_path=None, executable="codex", backend=None):
         self.workspace = Path(workspace).resolve()
         self.store = Store(workspace)
+        self._check_cli_binding()
         snapshot = execute(workspace, {"op": "status", "summary": True})
         project = snapshot["project"]
         execution_root = Path(project.get("execution_root", self.workspace)).resolve()
@@ -71,6 +73,11 @@ class Runner:
         self.backend = backend or CodexBackend(execution_root, self.workspace / "coordination/backend",
                                               HostSlots(slots_path or HostSlots.default_path(), host_capacity),
                                               executable=executable)
+
+    def _check_cli_binding(self):
+        with self.store.locked() as state:
+            if state and state.get("schema") == 3:
+                raise ReplicaError("Relocated CLI Runner/step/run is unsupported; use native-next")
 
     def _launch(self, task, run, project):
         relative = f"coordination/launches/{run['id']}.json"
@@ -125,8 +132,10 @@ class Runner:
                  evidence=[observation.get("paths", {})])
 
     def step(self):
+        self._check_cli_binding()
         events, blocked = [], []
         with dispatch_lock(self.workspace):
+            self._check_cli_binding()
             snapshot = execute(self.workspace, {"op": "status", "summary": True})
             # Reconcile durable launch intents before considering new work.
             for run in snapshot["runs"].values():
@@ -164,6 +173,7 @@ class Runner:
             return {"ok": True, "state": state, "active_run_ids": active, "events": events,
                     "blocked": blocked, "ready_task_ids": final["ready_task_ids"],
                     "task_states": {key: value["state"] for key, value in final["tasks"].items()},
+                    **({"git": final["git"]} if "git" in final else {}),
                     "coverage": execute(self.workspace, {"op": "coverage", "summary": True})}
 
     def run(self, interval=1.0):
@@ -201,7 +211,7 @@ def native_next(workspace, *, external_active, task_id=None):
                                              Path(workspace) / "tasks" / task["id"] / "task.json",
                                              run["model"], run["effort"], target=prior.get("target") if reuse else None,
                                              task_name="replica_" + run["id"].replace("-", "_"),
-                                             message=task_prompt(workspace, snapshot["project"], task, run))
+                                             message=task_prompt(workspace, effective_project(workspace, snapshot), task, run))
         return {"ok": True, "task_id": task["id"], "run_id": run["id"], "directive": directive,
                 "recovery": recovery,
                 "next": "If recovery=true, reconcile actual host launch before repeating. Execute the host directive, then record run.started with the actual handle. Record run.stopped only after the host confirms it and any writer children stopped."}

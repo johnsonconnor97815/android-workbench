@@ -52,9 +52,9 @@ def managed_identity(script):
     return {key: identity[key] for key in keys}
 
 
-def entry(script, argv=None):
+def entry(script, argv=None, project=None):
     script = Path(script).resolve()
-    project = locate_project(script)
+    project = Path(project).expanduser().resolve() if project is not None else locate_project(script)
     if project is None:
         return  # Original standalone behavior outside registered workspaces.
     grant_path = os.environ.get("AWB_INTERNAL_GRANT")

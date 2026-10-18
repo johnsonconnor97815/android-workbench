@@ -947,6 +947,13 @@ def resolve_project_tool(relative: str, explicit: str | None = None) -> Path | N
     if explicit:
         path = Path(explicit).expanduser()
         return path if path.is_file() else None
+    frozen = os.environ.get('AWB_TOOLCHAIN_BINDINGS')
+    if frozen:
+        name = {'analyzeHeadless': 'ghidra', 'd2j-dex2jar': 'dex2jar'}.get(Path(relative).name, Path(relative).name)
+        selected = json.loads(frozen).get(name)
+        if selected:
+            path = Path(selected['workspace']) / relative
+            return path if path.is_file() else None
     found = shutil.which(Path(relative).name)
     if found:
         return Path(found)
@@ -2441,7 +2448,7 @@ def route_request(question: str, has_package: bool, history: list[dict], recon: 
             elif deobfuscate_intent:
                 required_inputs.append("JS recovery: provide a local JS/mjs/cjs input; parser support for TS/JSX does not establish recovery support.")
         elif not tool_management:
-            required_inputs.append("JS engine: provide the explicit local source path and check the selected tool; install through tools.install only when requested.")
+            required_inputs.append("JS engine: provide the explicit local source path; check the selected tool and automatically prepare missing/damaged pinned tools through tools.ensure when toolchain.auto_install is enabled.")
     if layout_intent:
         if any(path.endswith((".so", ".elf", ".bin")) for path in supplied_files):
             additions.append("tools.binary_layout")

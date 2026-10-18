@@ -7,6 +7,8 @@
 
 从目标设备和所需能力开始。当前附带 `17.18.0` 的明确版本案例；其他版本先检查上游，再适配补丁和构建方法。
 
+宿主客户端使用受管 `frida.install_client -- install --version <Frida版本> --tools-version <frida-tools版本>`，检查用 `frida.check_client -- check` 加同样版本参数。客户端放在共享工具工作区的 `Tools/runtime/frida-clients/<版本>/venv/`，保留 pip 制品报告、冻结表和 CLI/import 回执；不会联系手机，也不证明 server 或 Hook 可用。新项目的原生与 App 探针会先排队准备明确指定的客户端，再使用该解释器。已有 `17.18.0` 基线配套 `frida-tools 14.10.4`；其他版本需先核对配套依赖，并在 `toolchain.frida_tools_versions` 显式登记，不能猜版本或覆盖另一版本的客户端。
+
 以 Agent 加载本文件时提供的目录为组件根目录；本文及引用文档中的 `scripts/`、`references/`、`assets/` 均相对于该目录。执行脚本时使用解析后的绝对路径，不假设安装在某个 Agent 的固定目录。
 
 ## 工作流程

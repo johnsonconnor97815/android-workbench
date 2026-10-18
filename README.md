@@ -61,7 +61,7 @@ python3 scripts/workbench.py --project /path/to/analysis run apk.pull --device p
 
 `operations` 列出当前项目实际登记的脚本操作及其参数约定，其中 `static.permission_audit` 提供安装包权限清单、代码证据和待审阅的报告草稿，`apkrev.*` 覆盖 APK 逆向、补丁、重打包、运行时和服务端分析，`analysis.*` 覆盖样本识别、分析阶段与完成检查、请求路由、包证据、Manifest、资源、预览、JADX 反编译、源码导航、知识检索、Python 计算（支持可保存 session 状态）、持久 scratchpad 和宿主执行，`device_manager.*` 覆盖目标手机预检、动态分区检查与修复、设备刷机研究、用户刷机决策、镜像下载与校验、原始镜像与共享存储备份、官方整包回刷、保数据完整 OTA、机型安装步骤与附加包、刷分区、功能验收、中断恢复、root 和 Frida server 安装。截图、设备观察、设备信息采集和有限时长场景是服务提供的操作，不计入脚本操作清单。各组件的原参数与校验过程保留；在已登记项目的工作目录调用内置脚本时，也会转交共享队列。
 
-工具目录、版本锁和受管入口统一见 [Tools](Tools/README.md)。用 `tools.inventory` 查看登记、`tools.check` 核对实际可用性，明确安装请求才使用 `tools.install`。JS 语法树、可读恢复、ELF 布局和有限固件扫描分别使用 `tools.js_ast`、`tools.js_deobfuscate`、`tools.binary_layout`、`tools.firmware_scan`；生成环境在项目 `Tools/runtime/`，原 `.android-static`/`.tools` 原地复用。原字节精确查询、未知问题修订、JS/map/HAR 离线入口和路由条件见 [REA 使用说明](docs/rea-adoption-usage.md)。文件缺失或工具不可用时保留阻塞，不把目录登记当作安装或运行成功。
+工具目录、版本锁和受管入口统一见 [Tools](Tools/README.md)。新项目默认共享同机固定版本工具，项目可以显式覆盖；已有安装原地登记，样本、分析状态和证据仍各自保存。用 `tools.inventory` 查看来源、`tools.check` 核对可用性。默认 `toolchain.auto_install:true`，声明工具依赖的操作自动先排队 `tools.ensure`，补装或修复并复查通过后再开始分析；版本升级另行处理。JS 语法树、可读恢复、ELF 布局和有限固件扫描分别使用 `tools.js_ast`、`tools.js_deobfuscate`、`tools.binary_layout`、`tools.firmware_scan`。原字节精确查询、未知问题修订、JS/map/HAR 离线入口和路由条件见 [REA 使用说明](docs/rea-adoption-usage.md)。修复失败时保留阻塞，不把目录登记或 CLI 启动当作完整样本、真机或 Hook 验证。
 
 Google Play 应用通过 `apk.play_install` 安装，支持紧凑详情卡。未知布局输出 `needs_llm` 和证据，由当前 LLM 离线复现、修复通用解析规则并受管重试；账号、支付或设备政策门槛才交给用户。安装后使用 `apk.pull` 导出全部已安装 split。见 [Google Play 安装与 LLM 修复](skills/android-workbench/components/play-install/README.md)。
 

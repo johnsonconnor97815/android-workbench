@@ -26,7 +26,7 @@ python3 "$COMPONENT_DIR/scripts/mcp_setup.py" check --workspace "$PWD"
 python3 "$COMPONENT_DIR/scripts/mcp_setup.py" configure --workspace "$PWD" --client codex
 ```
 
-可用 `--servers apktool,ghidra,semgrep` 选择子集。安装器自动补装选中服务的引擎依赖，安装位置仍为 `.android-static/`，不会为了 MCP 接入安装 SDK 或接受新的 SDK 条款。不会替换已有 `.envrc`、系统 Java 或已有 Python venv。
+可用 `--servers apktool,ghidra,semgrep` 选择子集。安装器自动补装选中服务的引擎依赖。新项目将固定引擎、MCP Python 环境和不含项目数据路径的启动脚本装入同机共享工具工作区的 `.android-static/`；未更新的旧项目继续使用项目安装位置。不会为了 MCP 接入安装 SDK 或接受新的 SDK 条款，不替换系统 Java 或已有项目 venv。项目自己的 `.android-static/mcp/servers.json` 和客户端模板指向共享启动脚本，并携带该项目专用的 Apktool 解码目录及 Ghidra 工程目录。共享脚本不固化某个分析项目的路径；对已安装的共享服务执行 `configure` 即可为新项目绑定，不必重复下载引擎。
 
 - 下载包校验值在 `assets/mcp.lock.json`；基础引擎版本仍在 `assets/toolchain.lock.json`。
 - 每个 Python MCP 使用独立 venv；首次解析后保存完整依赖版本、制品哈希和 pip report，重建时使用该锁。不能把首次解析描述为跨平台的完整依赖锁。

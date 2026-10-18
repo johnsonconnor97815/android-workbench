@@ -38,6 +38,7 @@ from .policy import Policy
 from .project import device_management_manifest
 from .registry import normalize
 from .store import Store
+from .app_replica.git_sync import GitSync
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULTS = {
@@ -108,6 +109,7 @@ class Service:
         )
         self.store = Store(self.directory / "queue.sqlite3")
         self.lock = threading.RLock()
+        self.discovery_readers = 0
         self.policy = Policy(self.config)
         self.generation = uuid.uuid4().hex
         self.stopping = threading.Event()
@@ -133,6 +135,7 @@ class Service:
                     )
             self.enforce_retention()
         self.thread = threading.Thread(target=self.loop, daemon=True)
+        self.git_sync = GitSync(self.directory, self.stopping)
 
     def public(self, job):
         return {
@@ -546,6 +549,7 @@ class Service:
                     },
                     "managed_boundary": "same Linux account; registered operations only",
                     "runtime_source": str(Path(__file__).resolve().parents[1]),
+                    "replica_git_sync": True,
                 }
             if method == "sessions.open":
                 requested_project = Path(p["project"]).resolve()
@@ -918,13 +922,28 @@ class Service:
                         }
                     return {"stdout": completed.stdout, "error": None}
 
-                probes = {
-                    "adb": probe([self.config.get("adb", "adb"), "devices", "-l"], "adb devices"),
-                    "fastboot": probe(
-                        [self.config.get("fastboot", "fastboot"), "devices"],
-                        "fastboot devices",
-                    ),
+                discovery_resources = [resource("service:adb", "read")]
+                if any(conflict(discovery_resources, j["spec"]["resources"])
+                       for j in self.store.jobs() if j["state"] in ACTIVE | {"queued"}):
+                    return {"devices": [], "errors": {"scheduler": "ADB environment has an active or queued writer; retry discovery after it finishes"}}
+                if any(overlap(h["key"], "service:adb") for h in self.store.rows("SELECT * FROM resources")):
+                    return {"devices": [], "errors": {"scheduler": "ADB environment requires managed recovery"}}
+                commands = {
+                    "adb": ([self.config.get("adb", "adb"), "devices", "-l"], "adb devices"),
+                    "fastboot": ([self.config.get("fastboot", "fastboot"), "devices"], "fastboot devices"),
                 }
+                # Reserve the shared ADB environment while allowing status,
+                # cancellation and unrelated scheduling to continue. Two bounded
+                # transport probes must fit within one RPC's timeout, not add up.
+                self.discovery_readers += 1
+                self.lock.release()
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                        futures = {name: executor.submit(probe, *arguments) for name, arguments in commands.items()}
+                        probes = {name: future.result() for name, future in futures.items()}
+                finally:
+                    self.lock.acquire()
+                    self.discovery_readers -= 1
                 discovered = []
                 registered = {
                     entry["serial"]: identifier
@@ -1384,6 +1403,8 @@ class Service:
         if spec.get("not_before", 0) > time.time():
             return False, "waiting_start_time"
         all_jobs = self.store.jobs()
+        if getattr(self, 'discovery_readers', 0) and conflict(spec["resources"], [resource("service:adb", "read")]):
+            return False, "waiting_device_discovery"
         health = self.store.rows("SELECT * FROM resources")
         for h in health:
             if any(overlap(h["key"], x["key"]) for x in spec["resources"]):
@@ -2082,6 +2103,7 @@ def serve(directory):
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
     service.thread.start()
+    service.git_sync.thread.start()
     atomic_json(
         Path(directory) / "service.json",
         {
@@ -2095,6 +2117,7 @@ def serve(directory):
     finally:
         service.stopping.set()
         service.thread.join(timeout=2)
+        service.git_sync.thread.join(timeout=2)
         server.server_close()
         service.pool.shutdown(wait=True)
         path.unlink(missing_ok=True)

@@ -1,6 +1,7 @@
 """Model selection and source role contracts for the five logical roles."""
 
 from pathlib import Path
+import json
 import shlex
 import sys
 import tomllib
@@ -29,6 +30,9 @@ def profile(role, mode, effort=None):
 
 def source_root(project):
     root = Path(project.get("workbench_source") or Path(__file__).resolve().parents[2]).resolve()
+    if project.get("_path_binding"):
+        from .paths import lexical, no_symlinks
+        root = no_symlinks(lexical(project["workbench_source"]))
     if not (root / "agents/app-replica/app.toml").is_file():
         raise ReplicaError("Set project.workbench_source to the maintained Workbench checkout")
     return root
@@ -46,9 +50,24 @@ def task_prompt(workspace, project, task, run):
         mode_note = "This is class CODE mode: implement/assemble the published structure using Sol."
     elif task["role"] == "analysis" and task["mode"] == "extract":
         mode_note = "This is EXTRACTION mode: source-linked mechanical extraction only, using Luna."
+    binding_note = ""
+    if project.get("_path_binding"):
+        from .paths import PathBindings
+        binding = project["_path_binding"]
+        resolver = PathBindings(workspace, binding["bindings"], binding["revision"])
+        effective_outputs = [str(resolver.path(value)) for value in task["outputs"]]
+        binding_note = f"""This workspace was explicitly adopted for native continuation. A prior CLI handle is historical provenance, not resumed native context.
+Current binding projection: {binding['projection']}
+Effective project roots and sources: {json.dumps({k: v for k, v in project.items() if k in {'execution_root', 'output_path', 'output_paths', 'analysis_root', 'source_paths', 'workbench_source'}}, ensure_ascii=False)}
+Effective assigned outputs: {json.dumps(effective_outputs, ensure_ascii=False)}
+Historical project/task/class/message/source values stay unchanged. Resolve each explicit filesystem operand using {command} resolve --kind path|locator|file_uri --value VALUE before opening it.
+Old embedded source/script/prose paths are not rewritten. A metadata binding does not repair shell commands or build scripts; update actual runtime operands through their existing owner when needed.
+Read any host_adoption message, its bound checkpoint and every listed inherited message ID; prior inbox assignment does not prove handling.
+"""
     return f"""{contract['developer_instructions']}
 
 {mode_note}
+{binding_note}
 Assigned task: {task_path}
 Current run ID: {run['id']}
 New messages assigned to this run: {run.get('inbox_message_ids', [])}. Read their files in messages/ and answer through the same durable protocol.
@@ -66,4 +85,5 @@ Use status --task {task['id']} for the current record, apply --file REQUEST.json
 Do not spawn agents independently. Submit task.add/task.discover; the shared runner uses actual free slots. You are not alone; never revert other writers. Code and evidence stay within your assigned output paths. Additional artifact paths can be reserved by repeating task.add with the same identity and outputs.
 When a request needs an existing task's action, message.send can set wake:true and recipient to its task ID. The runner schedules an idle owner; a still-running owner is never duplicated. An ordinary note does not restart completed work. CLI workers receive such requests in their next assigned turn, not by an unsupported live push.
 You must submit or checkpoint before ending. task.wait/submit records intent, but your process still holds a slot until you finish. Do not poll while waiting for delegated work. Never claim to have stopped your own backend; the runner records real termination. Device/Frida/shared environment actions must use the existing managed queue, not raw bypasses. A host fixture is not Android runtime proof.
+When Git autosave is enabled (see status), submit/wait and confirmed stopping save assigned App engineering files. During long implementation work, use git-checkpoint --task {task['id']} --run {run['id']} after a stable edit or assembly; use repeated --path for a stable subset when other assigned outputs are still being written. You and any writer descendants must leave the selected files unchanged until that synchronous call returns. Use the shared Git entry, not independent git add/commit/switch commands. Failed Git saving is reported separately from task acceptance; do not claim unsaved work was backed up. A Git checkpoint is not a build or runtime check.
 """

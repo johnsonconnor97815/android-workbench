@@ -33,6 +33,7 @@ import subprocess
 import sys
 import uuid
 import zipfile
+from setup import route_workspace
 
 MARKER = 'ANDROID_STATIC_ENV_SMOKE'
 
@@ -48,23 +49,28 @@ def sha256(path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', default='.')
+    parser.add_argument('--output-dir', type=Path)
     parser.add_argument('--apk', type=Path, help='Optional authorized APK; analyzed read-only')
     parser.add_argument('--source', help='Provenance for --apk, such as export record or upstream URL')
     parser.add_argument('--so', type=Path, help='Optional ELF shared library for native smoke tests')
     parser.add_argument('--so-source', help='Provenance for --so')
     parser.add_argument('--so-symbol', help='Exported function to disassemble (sets ARM/Thumb mode from its value)')
     args = parser.parse_args()
+    route_workspace(__file__, args.workspace)
     if args.so and not args.so_source:
         parser.error('--so requires --so-source')
     if args.apk and not args.source:
         parser.error('--apk requires --source so provenance is recorded before parsing')
     workspace = Path(args.workspace).resolve()
     root = workspace / '.android-static'
+    if (workspace / 'workbench.project.json').is_file():
+        from workbench.toolchains import default_workspace
+        root = default_workspace(workspace) / '.android-static'
     manifest = json.loads((root / 'manifest.json').read_text())
     selected = set(manifest['selected'])
     if 'smali' not in selected or manifest['results']['smali']['status'] != 'verified':
         parser.error('A verified smali installation is required to generate the DEX fixture')
-    out = workspace / 'evidence/android-static' / ('smoke-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6])
+    out = args.output_dir.expanduser().resolve() if args.output_dir else workspace / 'evidence/android-static' / ('smoke-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6])
     out.mkdir(parents=True)
     env = dict(os.environ, SEMGREP_SEND_METRICS='off', SEMGREP_ENABLE_VERSION_CHECK='0', PYTHONNOUSERSITE='1',
                XDG_CONFIG_HOME=str(root / 'config'), XDG_CACHE_HOME=str(root / 'cache/xdg'))
@@ -189,7 +195,8 @@ def main():
         records.append({'name': 'quark-apk', 'status': 'not-tested', 'reason': 'No APK provided; engine CLI and pinned rule presence are checked by setup.py'})
     require(sha256(native) == provenance['native']['sha256'], 'Input ELF changed during smoke tests')
     (out / 'inputs.json').write_text(json.dumps(provenance, indent=2, ensure_ascii=False) + '\n')
-    report = {'timestamp_utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'provenance': provenance, 'results': records,
+    report = {'pass': not any(item['status'] == 'failed' for item in records),
+              'timestamp_utc': dt.datetime.now(dt.timezone.utc).isoformat(), 'provenance': provenance, 'results': records,
               'not_covered': ['GUI display and interaction', 'MobSF service startup', 'arbitrary APK compatibility', 'AAB/APKS transformation']}
     (out / 'smoke-report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n')
     print('Report: ' + str(out / 'smoke-report.json'))

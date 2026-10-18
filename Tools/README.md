@@ -1,12 +1,17 @@
 # Tools：统一工具入口
 
-这里登记工具、固定版本和受管调用方法。`Tools/` 内的代码和锁文件随插件发布；下载的 Node/Python/Rust 工具放在工作项目的 `Tools/runtime/`，不进 Git。现有 `.android-static/` 和 `.tools/` 原地复用；统一的是管理入口，不是把已有字节搬到新目录。
+这里登记工具、固定版本和受管调用方法。`Tools/` 内的代码和锁文件随插件发布；新项目的工具默认放在同一 Linux 账户共享的 `$XDG_DATA_HOME/android-workbench/toolchains/<锁文件指纹>/`（未设置 XDG 时为 `~/.local/share/`）。该目录内保留 `.android-static/` 和 `Tools/runtime/` 布局。锁文件变化选择新的目录，避免覆盖正在使用的版本。设置 `ANDROID_WORKBENCH_TOOLCHAINS` 可指定共享目录的父路径；不会修改 shell profile 或全局 Python/Node 环境。样本、项目状态、分析数据库和证据仍属于各分析项目，不放入共享工具目录。
+
+新登记项目包含 `toolchain: {"mode":"shared","auto_install":true,"overrides":{}}`。专用工具环境用 `overrides.<工具名>: {"workspace":"/已有工具工作区"}` 显式登记，保留该工作区的既有布局；也可用 `mode:"project"` 选择项目工具目录。显式覆盖缺失时不退回共享版本。自定义 `version` 没有配套锁定安装器时保留阻塞，不以默认版本代替。旧项目运行 `scripts/configure_project.py --update` 后接入共享默认，并将已登记环境中的现有静态工具原地保存为显式覆盖；不从其他项目猜测工具位置。
+
+缺失或损坏的工具由受管 `tools.ensure` 检查、按固定版本安装/修复、再检查。可恢复的损坏字节保存在工具目录的 `Tools/runtime/repair-backups/`，不会直接删除。准备任务持写锁，所有项目中的使用者持读锁；写入等待使用者退出。客户端为声明 `requires_tools` 的分析操作自动提交准备任务并建立依赖；MCP、CLI 和兼容入口使用同一客户端。准备失败时分析不启动。`inventory/check` 本身保持只读，不触发安装。裸调用共享服务的底层 RPC 不经过客户端自动准备，应自行提交 `tools.ensure`。已运行的 MCP 读锁须先释放，不能在其内部升级为安装任务。
 
 操作都通过共享队列提交。不能直接调用下载目录里的二进制绕过队列。示例中的 `<Workbench>` 是本仓库的实际路径，`<项目>` 是已经登记的分析项目。当前目录可以是任意目录。
 
 ```bash
 python3 <Workbench>/scripts/workbench.py --project <项目> run tools.inventory -- inventory
 python3 <Workbench>/scripts/workbench.py --project <项目> run tools.check -- check --tool babel
+python3 <Workbench>/scripts/workbench.py --project <项目> run tools.ensure -- ensure --tool babel
 python3 <Workbench>/scripts/workbench.py --project <项目> run --timeout 3600 tools.install -- install --tool babel
 python3 <Workbench>/scripts/workbench.py --project <项目> run tools.js_ast -- js-ast --input app.js
 python3 <Workbench>/scripts/workbench.py --project <项目> run tools.js_deobfuscate -- js-deobfuscate --input bundle.js
@@ -30,7 +35,7 @@ python3 <Workbench>/scripts/workbench.py --project <项目> run tools.firmware_s
 | Frida | 调用者明确指定版本 | 原 `frida.fetch` / `frida.build` 等操作 | 登记 `.tools/frida-src` 来源，继续使用既有设备和构建约束；源码存在不证明可运行 |
 | 原静态工具链 | [原锁文件](../skills/android-workbench/components/static-env/assets/toolchain.lock.json) | `--tool jadx` 等 | 复用安装器、版本锁、来源、已有下载及环境，不重新定义它们的功能 |
 
-`tools.inventory` 区分 `installed`（路径存在）、`not_installed` 和 `unsupported`，另列当前检查 `not_checked/passed/failed`；旧安装 manifest 只作历史证据。`tools.check` 对 Babel/Wakaru/ELF/两种扫描器运行固定合成样本；其他既有工具报告 CLI/import 检查范围，完整样本检查继续使用 `static.smoke`。任何未安装、失败或不支持项让整表检查标记 partial，不能把部分通过写成全套完成。按需检查单项可避免把目录项当成必装需求。
+`tools.inventory` 区分 `installed`（路径存在）、`not_installed` 和 `unsupported`，记录每项的 `origin`、`storage_workspace`、`requested_version` 和 `required`，另列当前检查 `not_checked/passed/failed`；旧 manifest 只作历史证据。`tools.check` 对 Babel/Wakaru/ELF/两种扫描器运行固定合成样本；其他工具报告 CLI/import 范围，完整样本检查继续使用 `static.smoke`。整表通过只表示 `required:true` 的 Linux 安装范围通过；Frida、商业参考项、其他平台及需目标版本的条目单列，不计作通用环境已验收。显式检查单项时，该项缺失、失败或不支持仍返回失败。真机与 Hook 始终单独验收。
 
 Babel/Wakaru 用已提交的 npm 完整依赖锁安装，关闭安装脚本，无全局 npm 写入。Unblob 使用独立虚拟环境、固定顶层版本，保留 pip 制品报告及依赖冻结表；转递依赖首次解析不是完全复现锁。Binwalk 使用 `cargo install --version 3.1.0 --locked --root ...`，自动准备固定 Rust 1.90.0 最小工具链，仍依赖宿主 C 编译器及 liblzma 开发库；缺少系统依赖时明确失败，不自动 apt。Rust 三个独立组件从官方固定日期下载，逐项核对 [rust.lock.json](rust.lock.json) 中的官方 SHA-256，再安全解包并运行本地 `install.sh --prefix=<Tools/runtime/rust/1.90.0> --disable-ldconfig`。这不是 GPG 签名验证。Cargo 缓存也在 `Tools/runtime/cargo-home`；编译命令显式设置工具路径，不写 `~/.cargo`、`~/.rustup` 或 shell profile。已安装版本符合检查时复用，不盲目升级。SDK 条款只有传入 `--accept-sdk-licenses` 才接受。
 

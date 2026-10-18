@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 SOURCE = Path(__file__).resolve().parent
 STATIC = SOURCE.parent / 'skills/android-workbench/components/static-env'
@@ -91,6 +92,15 @@ def runtime(workspace):
     return Path(workspace) / 'Tools/runtime'
 
 
+def tool_binding(workspace, name):
+    from workbench.toolchains import binding
+    return binding(workspace, name)
+
+
+def tool_workspace(workspace, name):
+    return Path(tool_binding(workspace, name)['workspace'])
+
+
 def static_module():
     spec = importlib.util.spec_from_file_location('awb_static_setup', STATIC / 'scripts/setup.py')
     module = importlib.util.module_from_spec(spec)
@@ -101,12 +111,12 @@ def static_module():
 def static_args(workspace, tool, action='check', accept_sdk_licenses=False):
     return argparse.Namespace(action=action, workspace=str(workspace), profile='full', only=tool,
         with_mobsf=False, mobsf_image=None, cache_dir=None, install_system_deps=False,
-        accept_sdk_licenses=accept_sdk_licenses)
+        accept_sdk_licenses=accept_sdk_licenses, storage_workspace=True)
 
 
 def path_for(workspace, item):
     name, kind = item['id'], item['kind']
-    root = Path(workspace)
+    root = tool_workspace(workspace, name)
     if kind == 'optional':
         return optional_module().path_for(runtime(root), name)
     if kind == 'node':
@@ -142,24 +152,50 @@ def path_for(workspace, item):
 
 
 def inventory(workspace, only=None):
-    static_manifest = Path(workspace) / '.android-static/manifest.json'
-    previous = json.loads(static_manifest.read_text()) if static_manifest.is_file() else {}
     records = []
     for item in catalog():
         if only and item['id'] != only:
             continue
         location = path_for(workspace, item)
+        binding = tool_binding(workspace, item['id'])
+        storage = Path(binding['workspace'])
+        static_manifest = storage / '.android-static/manifest.json'
+        try:
+            previous = json.loads(static_manifest.read_text()) if static_manifest.is_file() else {}
+            if not isinstance(previous, dict):
+                previous = {}
+        except (OSError, ValueError):
+            previous = {}
         supported = item['kind'] != 'catalog-only' and platform.system() == 'Linux' and platform.machine() in ('x86_64','AMD64')
         present = location is not None and location.exists()
-        record = {**item, 'status': 'installed' if present and supported else 'not_installed' if supported else 'unsupported',
+        record = {**item, 'origin': binding['origin'], 'storage_workspace': str(storage),
+            'requested_version': binding.get('version', item['version']),
+            'required': item['kind'] not in {'catalog-only', 'frida'},
+            'status': 'installed' if present and supported else 'not_installed' if supported else 'unsupported',
             'path': str(location) if location else None, 'observed_version': 'unknown', 'check': {'status':'not_checked'},
             'install': {'operation':'tools.install','args':['install','--tool',item['id']]} if supported else None}
         if item['kind'] == 'node' and present:
-            package = runtime(workspace) / 'node/node_modules' / ('@babel/parser/package.json' if item['id']=='babel' else '@wakaru/cli/package.json')
-            if package.is_file(): record['observed_version'] = json.loads(package.read_text()).get('version','unknown')
+            package = runtime(storage) / 'node/node_modules' / ('@babel/parser/package.json' if item['id']=='babel' else '@wakaru/cli/package.json')
+            if package.is_file():
+                try:
+                    metadata = json.loads(package.read_text())
+                    if not isinstance(metadata, dict):
+                        raise ValueError('Package metadata is not an object')
+                    record['observed_version'] = metadata.get('version','unknown')
+                except (OSError, ValueError) as error:
+                    record['metadata_error'] = str(error)
         if item['kind'] == 'frida':
             record['install'] = {'operation':'frida.fetch','required_args':['--version','--kind source|server|gadget','--destination','--record','--abi (binary only)']}
             record['presence_scope'] = 'Source checkout only; no host/device runtime verification.'
+            clients = []
+            for receipt in sorted((runtime(storage) / 'frida-clients').glob('*/client.json')):
+                try:
+                    client = json.loads(receipt.read_text())
+                    clients.append({key: client.get(key) for key in ('version', 'frida_tools_version', 'python', 'scope', 'checked_at')})
+                except (OSError, ValueError):
+                    clients.append({'receipt': str(receipt), 'status': 'invalid'})
+            record['host_clients'] = clients
+            record['client_operations'] = ['frida.install_client', 'frida.check_client']
         if item['kind'] == 'static-env':
             record['previous_install_check'] = previous.get('results',{}).get(item['id'])
             record['previous_install_check_at'] = previous.get('timestamp_utc')
@@ -198,13 +234,13 @@ def analyze(workspace, action, value, output, tool=None):
         if action == 'js-ast':
             if source.suffix.lower() not in {'.js','.mjs','.cjs','.jsx','.ts','.tsx'}:
                 raise ValueError('JS AST accepts JS/JSX/TypeScript text, not Hermes bytecode')
-            command = [shutil.which('node') or 'node', SOURCE/'adapters/js_ast.cjs',runtime(workspace)/'node',source]
+            command = [shutil.which('node') or 'node', SOURCE/'adapters/js_ast.cjs',runtime(tool_workspace(workspace, 'babel'))/'node',source]
             record = checked_run(command, artifacts, limited=True)
             result['analysis'] = json.loads(record['stdout'])
         elif action == 'js-deobfuscate':
             if source.suffix.lower() not in {'.js','.mjs','.cjs'}:
                 raise ValueError('Wakaru adapter accepts .js/.mjs/.cjs only')
-            executable = runtime(workspace)/'node/node_modules/@wakaru/cli-linux-x64/wakaru'
+            executable = runtime(tool_workspace(workspace, 'wakaru'))/'node/node_modules/@wakaru/cli-linux-x64/wakaru'
             recovered = artifacts/'recovered.js'
             record = checked_run([executable,source,'-o',recovered,'--json'],artifacts,limited=True)
             if not recovered.is_file() or not recovered.stat().st_size:
@@ -215,7 +251,7 @@ def analyze(workspace, action, value, output, tool=None):
         elif action == 'binary-layout':
             if source.read_bytes()[:4] != b'\x7fELF':
                 raise ValueError('Binary layout requires ELF magic; filename alone is not evidence')
-            python = Path(workspace)/'.android-static/venvs/native-python/bin/python'
+            python = tool_workspace(workspace, 'native-python')/'.android-static/venvs/native-python/bin/python'
             record = checked_run([python,SOURCE/'adapters/elf_layout.py',source],artifacts,limited=True)
             result['analysis'] = json.loads(record['stdout'])
         elif action == 'firmware-scan':
@@ -227,9 +263,9 @@ def analyze(workspace, action, value, output, tool=None):
             staged.chmod(0o400)
             report = artifacts/'upstream.json'
             if tool == 'binwalk':
-                argv = [runtime(workspace)/'binwalk/bin/binwalk','--threads','1','--log',report,staged]
+                argv = [runtime(tool_workspace(workspace, tool))/'binwalk/bin/binwalk','--threads','1','--log',report,staged]
             else:
-                argv = [runtime(workspace)/'unblob/bin/unblob','--skip-extraction','--depth','1','--process-num','1',
+                argv = [runtime(tool_workspace(workspace, tool))/'unblob/bin/unblob','--skip-extraction','--depth','1','--process-num','1',
                     '--randomness-depth','0','--extract-dir',artifacts/'carved','--report',report,'--log',artifacts/'unblob.log',staged]
             record = checked_run(argv,artifacts,limited=True)
             if not report.is_file(): raise RuntimeError('Scanner did not produce JSON report')
@@ -255,7 +291,7 @@ def analyze(workspace, action, value, output, tool=None):
 
 
 def package_version(workspace, tool):
-    package = runtime(workspace)/'node/node_modules' / ('@babel/parser/package.json' if tool=='babel' else '@wakaru/cli/package.json')
+    package = runtime(tool_workspace(workspace, tool))/'node/node_modules' / ('@babel/parser/package.json' if tool=='babel' else '@wakaru/cli/package.json')
     return json.loads(package.read_text())['version'] if package.is_file() else 'unknown'
 
 
@@ -280,7 +316,11 @@ def install(workspace, name, accept_sdk_licenses=False):
     if item['kind']=='catalog-only': raise ValueError('Unsupported in this profile: '+name)
     if platform.system()!='Linux' or platform.machine() not in ('x86_64','AMD64'):
         raise ValueError('Installer profile supports Linux x86_64 only')
-    root = runtime(workspace)
+    binding = tool_binding(workspace, name)
+    if binding.get('version', item['version']) != item['version']:
+        raise ValueError('Custom version has no pinned installer; preserve the explicit override: ' + name)
+    storage = Path(binding['workspace'])
+    root = runtime(storage)
     root.mkdir(parents=True,exist_ok=True)
     result = {'schema':1,'tool':name,'requested_version':item['version'],'status':'failed','checks':[]}
     try:
@@ -299,13 +339,14 @@ def install(workspace, name, accept_sdk_licenses=False):
                 result['checks'].append(checked_run(['npm','ci','--ignore-scripts','--no-audit','--no-fund'],target,timeout=900))
             result['lock_sha256']=sha(target/'package-lock.json')
         elif item['kind']=='rust':
-            prefix,receipt=ensure_rust(workspace)
+            prefix,receipt=ensure_rust(storage)
             result['dependency_receipt']=receipt
         elif item['kind']=='cargo':
-            prefix,receipt=ensure_rust(workspace)
+            prefix,receipt=ensure_rust(storage)
             result['dependency_receipt']=receipt
             cargo_env={**os.environ,'PATH':str(prefix/'bin')+os.pathsep+os.environ.get('PATH',os.defpath),
-                'CARGO_HOME':str(root/'cargo-home'),'RUSTC':str(prefix/'bin/rustc'),'CARGO_BUILD_JOBS':'2'}
+                'CARGO_HOME':str(root/'cargo-home'),'CARGO_TARGET_DIR':str(root/'binwalk-build'),
+                'RUSTC':str(prefix/'bin/rustc'),'CARGO_BUILD_JOBS':'2'}
             result['checks'].append(checked_run([prefix/'bin/cargo','install','binwalk','--version',item['version'],'--locked','--root',root/'binwalk'],root,timeout=3600,env=cargo_env))
         elif item['kind']=='python':
             target=root/'unblob'
@@ -319,7 +360,7 @@ def install(workspace, name, accept_sdk_licenses=False):
             # Reuse its pinned downloads, ownership checks and manifests; never apt or accept licenses implicitly.
             stream=io.StringIO()
             with contextlib.redirect_stdout(stream):
-                code=module.Environment(static_args(workspace,name,'install',accept_sdk_licenses)).execute()
+                code=module.Environment(static_args(storage,name,'install',accept_sdk_licenses)).execute()
             result['checks'].append({'adapter':'existing-static-installer','exit_code':code,'stdout':stream.getvalue()})
             if code: raise RuntimeError('Existing static installer failed; inspect its manifest/logs')
         result['status']='success'
@@ -327,7 +368,10 @@ def install(workspace, name, accept_sdk_licenses=False):
         result['error']=str(error)
         if hasattr(error,'record'): result['checks'].append(error.record)
     result['pass'] = result['status']=='success'
-    write_json(root/(name+'-install.json'),result)
+    # rust-install.json belongs to rust_toolchain.ensure and carries ownership
+    # and executable hashes used when another tool reuses the dependency.
+    receipt_name='rust-tool-install.json' if name=='rust' else name+'-install.json'
+    write_json(root/receipt_name,result)
     return result
 
 
@@ -338,6 +382,8 @@ def check(workspace, only=None, output=None):
             if item['status']!='installed': continue
             name=item['id']
             try:
+                if item['requested_version'] != item['version']:
+                    raise ValueError('Custom version requires a compatible pinned installer/checker; the default check cannot validate this override')
                 if name in ('babel','wakaru','native-python','binwalk','unblob'):
                     out=Path(tmp)/(name+'.json')
                     if name=='babel': action,value,tool='js-ast',SOURCE/'fixtures/scope.js',None
@@ -360,11 +406,11 @@ def check(workspace, only=None, output=None):
                     item['check']['evidence_retention']='Embedded JSON retained; scratch files removed after check.'
                     if name=='native-python': item['observed_version']=evidence['analysis']['version']
                 elif item['kind']=='optional':
-                    evidence=optional_module().check(runtime(workspace),item,SOURCE,checked_run,tmp)
+                    evidence=optional_module().check(runtime(Path(item['storage_workspace'])),item,SOURCE,checked_run,tmp)
                     item['observed_version']=evidence['version']
                     item['check']={'status':'passed','scope':evidence['scope'],'commands':evidence['commands']}
                 elif item['kind']=='rust':
-                    prefix=runtime(workspace)/'rust'/item['version']
+                    prefix=runtime(Path(item['storage_workspace']))/'rust'/item['version']
                     fixture=Path(tmp)/'fixture.rs';fixture.write_text('fn main() { let _value: u64 = 42; }\n')
                     records=[checked_run([prefix/'bin/rustc','--version'],tmp),checked_run([prefix/'bin/cargo','--version'],tmp),
                         checked_run([prefix/'bin/rustc',fixture,'-o',Path(tmp)/'fixture'],tmp)]
@@ -376,21 +422,84 @@ def check(workspace, only=None, output=None):
                     item['check']={'status':'passed','scope':'Source commit provenance only; no host/device runtime test','commands':[record]}
                 else:
                     module=static_module()
-                    env=module.Environment(static_args(workspace,name))
+                    env=module.Environment(static_args(Path(item['storage_workspace']),name))
                     env.run_dir=Path(tmp)/('static-'+name); env.run_dir.mkdir()
                     records=env.checks(name)
                     item['check']={'status':'passed','scope':'CLI startup/import only; use static.smoke for sample function checks','commands':records}
             except (OSError,ValueError,RuntimeError,subprocess.SubprocessError) as error:
                 item['check']={'status':'failed','error':str(error)}
-    result['status']='success' if all(x['status']=='installed' and x['check']['status']=='passed' for x in result['tools']) else 'partial'
+    selected = result['tools'] if only else [x for x in result['tools'] if x['required']]
+    result['status']='success' if selected and all(x['status']=='installed' and x['check']['status']=='passed' for x in selected) else 'partial'
     result['pass'] = result['status']=='success'
     if output: write_json(output,result)
     return result
 
 
+def quarantine(workspace, name):
+    """Preserve damaged managed bytes before a single fixed-version repair."""
+    item = next(x for x in catalog() if x['id'] == name)
+    binding = tool_binding(workspace, name)
+    if binding.get('version', item['version']) != item['version']:
+        raise ValueError('Cannot repair an unpinned custom version: ' + name)
+    storage = Path(binding['workspace'])
+    root = storage / '.android-static'
+    targets = []
+    if item['kind'] == 'static-env':
+        if name in {'androguard', 'droidasc', 'apkid', 'quark', 'semgrep', 'native-python'}:
+            targets += [root / 'venvs' / name, root / 'state' / (name + '.json')]
+        elif name not in {'utilities', 'smali', 'sdk'}:
+            targets += [root / 'tools' / name]
+        # SDK state and accepted license files are retained. SDK repair is handled
+        # by the SDK installer; never remove a user's shared SDK automatically.
+    elif item['kind'] == 'node':
+        targets += [runtime(storage) / 'node' / name for name in ('node_modules', 'package.json', 'package-lock.json')]
+    elif item['kind'] in {'optional', 'python', 'cargo'}:
+        targets += [runtime(storage) / name]
+    elif item['kind'] == 'rust':
+        targets += [runtime(storage) / 'rust' / item['version']]
+    moved = []
+    backup = runtime(storage) / 'repair-backups' / (name + '-' + uuid.uuid4().hex)
+    for index, path in enumerate(targets):
+        if path.exists() or path.is_symlink():
+            backup.mkdir(parents=True, exist_ok=True)
+            destination = backup / (str(index) + '-' + path.name)
+            path.rename(destination)
+            moved.append({'original': str(path), 'preserved': str(destination)})
+    return moved
+
+
+def ensure(workspace, only=None, output=None, accept_sdk_licenses=False):
+    names = [only] if only else [x['id'] for x in catalog() if x['kind'] not in {'catalog-only', 'frida'}]
+    repairs = []
+    verdicts = []
+    for name in names:
+        before = check(workspace, name)
+        if not before['pass']:
+            record = {'tool': name, 'before': before}
+            try:
+                record['preserved'] = quarantine(workspace, name)
+                record['installation'] = install(workspace, name, accept_sdk_licenses)
+            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                record['error'] = str(error)
+            repairs.append(record)
+            verdicts.append(check(workspace, name))
+        else:
+            verdicts.append(before)
+    verification = {'pass': all(x['pass'] for x in verdicts),
+                    'tools': [t for v in verdicts for t in v['tools']]}
+    result = {'schema': 1, 'pass': verification['pass'],
+              'status': 'success' if verification['pass'] else 'partial',
+              'workspace': str(Path(workspace).resolve()), 'repairs': repairs,
+              'verification': verification,
+              'scope': 'Pinned installation and declared checks only; device and target compatibility require separate verification.'}
+    if output:
+        write_json(output, result)
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action',choices=['inventory','check','install','js-ast','js-deobfuscate','binary-layout','firmware-scan'])
+    parser.add_argument('action',choices=['inventory','check','install','ensure','js-ast','js-deobfuscate','binary-layout','firmware-scan'])
     parser.add_argument('--workspace',default='.')
     parser.add_argument('--tool')
     parser.add_argument('--input')
@@ -412,6 +521,7 @@ def main():
             result=inventory(workspace,args.tool)
             if args.output: write_json(args.output,result)
         elif args.action=='check': result=check(workspace,args.tool,args.output)
+        elif args.action=='ensure': result=ensure(workspace,args.tool,args.output,args.accept_sdk_licenses)
         elif args.action=='install':
             if not args.tool: raise ValueError('--tool required')
             result=install(workspace,args.tool,args.accept_sdk_licenses)

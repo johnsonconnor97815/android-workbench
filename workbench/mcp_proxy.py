@@ -52,7 +52,7 @@ def proxy(project, directory, command):
     waiting = None
     messages = queue.Queue()
     draining = False
-    provider = {"direct_executable": executable_identity(command[0], cwd=Path.cwd()),
+    provider = {"direct_executable": executable_identity(command[0], cwd=Path(client.project)),
                 "server_info": None, "identity_status": "proxy_reported"}
     initialize_ids = set()
 
@@ -125,6 +125,7 @@ def proxy(project, directory, command):
     try:
         proc = subprocess.Popen(
             command,
+            cwd=client.project,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=sys.stderr,

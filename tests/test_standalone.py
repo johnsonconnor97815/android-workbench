@@ -223,12 +223,13 @@ class ProjectSourceTest(unittest.TestCase):
 
     def test_apk_reverse_component_registers_cli_operations(self):
         names = [name for name in self.manifest["operations"] if name.startswith("apkrev.")]
-        self.assertEqual(len(names), 57)
+        self.assertEqual(len(names), 58)
         for name in (
             "apkrev.preflight",
             "apkrev.repack",
             "apkrev.vmp_compare",
             "apkrev.devsh",
+            "apkrev.recover_readonly_query",
             "apkrev.device_shell",
             "apkrev.dexutil",
             "apkrev.dex_strpatch",

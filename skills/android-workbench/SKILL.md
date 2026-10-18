@@ -4,7 +4,7 @@ description: 统一组织 Android 环境准备、APK 导出、源码索引、App
 license: MIT
 metadata:
   author: johnsonconnor97815
-  version: "0.2.15"
+  version: "0.2.16"
 ---
 
 # Android Workbench
@@ -47,6 +47,10 @@ metadata:
 App 复制先读 [App 复制组件](components/app-replica/README.md)。Main 保存用户要求并交给 Astra App 负责人，按全库盘点、首入口、类声明、方法实现、具体 MVP、其余入口、剩余清单推进。通过新的文件协调 CLI 启动指定模型的 Agent；发现后续依赖才委派，所有任务共享实际并发名额。旧 `replication.*` 流程和角色已删除，不从历史状态恢复。代码交付、构建、运行及原 App 对比的结论分别记录。
 
 插件中的 Agent 只是分工入口，不是资源所有者。设备、ADB、Frida、共享分析工程和输出路径都通过 Workbench MCP 或已登记操作协调；服务不可用时报告阻塞，不退回裸 ADB/Frida。
+
+通用设备连通性和工具能力验收每次以 `devices_discover` 实际发现的接入设备为准，自动登记后逐台受管检查。历史登记不构成固定目标；正常换机无需确认，也不记作故障。已有明确来源的任务保持其设备身份，新设备重新核验状态和权限，不能沿用旧手机的缓存结论。
+
+工具默认在同机同账户的固定版本工作区共享，样本和证据仍属于各分析项目；项目显式覆盖优先。`toolchain.auto_install:true` 时缺失或损坏自动通过 `tools.ensure` 补装/修复，检查通过后继续分析，不为普通补装重复请求确认，也不把升级混入修复。声明了 `requires_tools` 的操作自动建立准备任务依赖；其他必要工具按 [Tools](../../Tools/README.md) 先准备。修复必须在独立受管任务中持写锁，不能在仍持环境读锁的分析/MCP 里安装。通用工具、MCP 实际调用和真机 Hook 分别验收；商业参考项与平台/目标版本限定项不计作已就绪。
 
 Google Play 链接使用 `apk.play_install`，不替换成第三方 APK 镜像。返回 `outcome:needs_llm` 时，当前 LLM 必须读取 `llm-repair.json` 和页面证据，按照 `components/play-install/README.md` 建立离线复现、修复通用规则、通过回归，再以新任务标识受管重试；同一故障最多两轮，每轮必须有可验证的进展。普通 UI 布局变化不要求用户代点。`requires_user` 表示账号、支付、政策或锁屏等真实人工门槛；点击后的 `uncertain` 先核验和恢复，不盲目重放安装。
 

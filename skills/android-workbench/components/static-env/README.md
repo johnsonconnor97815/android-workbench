@@ -29,7 +29,7 @@
 python3 "$COMPONENT_DIR/scripts/setup.py" plan --workspace "$PWD"
 python3 "$COMPONENT_DIR/scripts/setup.py" install --workspace "$PWD" \
   --profile full --install-system-deps --accept-sdk-licenses
-source "$PWD/.android-static/env.sh"
+# 受管执行自动设置工具路径；独立使用时 source 安装结果打印的绝对 env.sh 路径。
 python3 "$COMPONENT_DIR/scripts/setup.py" check --workspace "$PWD" --profile full
 python3 "$COMPONENT_DIR/scripts/smoke.py" --workspace "$PWD"
 ```
@@ -42,8 +42,8 @@ python3 "$COMPONENT_DIR/scripts/smoke.py" --workspace "$PWD"
 
 ## 安装约束
 
-- 工具与 Python 环境安装到 `<workspace>/.android-static/`。每个 Python 工具独立 venv，尤其不能把 APKiD 的 `yara-python-dex` 与普通 `yara-python` 混装。
-- 保留已有 `.envrc`、`.venv`、SDK、shell 启动文件和版本锁。不存在 `.envrc` 时才生成；已有配置的用户单独 `source .android-static/env.sh`。
+- 新登记项目默认将工具与 Python 环境安装到同机共享工具工作区的 `.android-static/`，具体路径与锁文件指纹见 [Tools](../../../../Tools/README.md)。`mode:project` 及未更新的旧登记保留 `<workspace>/.android-static/`。每个 Python 工具独立 venv，尤其不能把 APKiD 的 `yara-python-dex` 与普通 `yara-python` 混装。
+- 保留已有 `.envrc`、`.venv`、SDK、shell 启动文件和版本锁。激活脚本和安装 manifest 属于实际工具工作区；共享模式由受管执行器设置项目进程的工具路径，不要求在每个项目复制激活脚本。共享模式下不要照搬 `$PWD/.android-static/env.sh`；独立命令使用安装结果打印的绝对激活路径。已有 SDK 许可记录可通过 `--reuse-sdk-licenses <已有SDK/licenses目录>` 复用；该参数不会接受新条款。
 - 下载先校验再解包。上游仅提供 SHA-1 时记录算法；上游没有校验值时，记录“首次下载哈希”，不能称为上游签名或来源真实性验证。
 - 保留下载锁、Python 依赖锁及 pip 制品信息。规则库固定 commit；升级规则与升级扫描器分别记录。系统包的版本由发行版仓库决定，不能把整个环境描述为字节级可复现。
 - MobSF 使用明确版本并记录镜像 digest，Compose 只绑定 `127.0.0.1:8000`，保留数据卷。未经任务要求不上传样本到在线服务、不连接设备、不运行 APK 或原生样本。

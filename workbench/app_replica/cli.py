@@ -5,18 +5,30 @@ import hashlib
 import json
 from pathlib import Path
 import sys
+import uuid
 
 from .backend import BackendError
 from .engine import execute, READS
 from .ids import canonical_json, stable_id
 from .inventory import load_inventory
+from .paths import resolve_path, lexical, no_symlinks, read_regular
 from .roles import source_root
 from .runner import Runner, mutation, native_next, seed_app
 from .store import ReplicaError, Store
 
 
-def _json(path):
-    return json.loads(sys.stdin.read() if path == "-" else Path(path).read_text())
+def _operand(workspace, path):
+    with Store(workspace).locked() as state:
+        if state and state.get("schema") == 3:
+            return resolve_path(workspace, state, str(path))
+    return Path(path).expanduser().resolve()
+
+
+def _json(path, workspace=None):
+    if path == "-":
+        return json.loads(sys.stdin.read())
+    target = _operand(workspace, path) if workspace is not None else Path(path)
+    return json.loads(read_regular(target))
 
 
 def _apply(workspace, request):
@@ -61,6 +73,13 @@ def parser():
     migrate = commands.add_parser("migrate", help="Explicit locked schema-1 backup, verification and schema-2 switch")
     migrate.add_argument("--expected-revision", type=int, required=True)
     migrate.add_argument("--expected-sha256", required=True)
+    relocate = commands.add_parser("relocate", help="Guarded native-only schema-2 path adoption")
+    relocate.add_argument("--file", required=True)
+    relocate.add_argument("--dry-run", action="store_true")
+    resolve = commands.add_parser("resolve", help="Resolve one explicit path, locator or file URI")
+    resolve.add_argument("--kind", choices=("path", "locator", "file_uri"), required=True)
+    resolve.add_argument("--value", required=True)
+    resolve.add_argument("--exists", action="store_true")
     lookup = commands.add_parser("object", help="Read one complete inventory object by original ID")
     lookup.add_argument("--id", required=True)
     export = commands.add_parser("export", help="Explicit complete inventory projection, streamed to a file")
@@ -93,6 +112,22 @@ def parser():
     wait.add_argument("--run", required=True)
     wait.add_argument("--requires", required=True, help="JSON wait array; App can use {task_id,when:stopped}")
     wait.add_argument("--checkpoint", required=True, help="Saved checkpoint file")
+    git_enable = commands.add_parser("git-enable", help="Save existing App source and enroll batched remote pushes")
+    git_enable.add_argument("--repo", required=True, type=Path)
+    git_enable.add_argument("--remote", default="origin")
+    git_enable.add_argument("--branch")
+    git_enable.add_argument("--include", action="append", help="Repository-relative source file/directory; default whole App repository")
+    git_enable.add_argument("--exclude", action="append", help="Additional repository-relative exclusion glob")
+    git_enable.add_argument("--push-count", type=int, default=5)
+    git_enable.add_argument("--push-seconds", type=int, default=600)
+    git_enable.add_argument("--service-state", type=Path)
+    git_checkpoint = commands.add_parser("git-checkpoint", help="Synchronously save a stable group of assigned engineering outputs")
+    git_checkpoint.add_argument("--task", required=True)
+    git_checkpoint.add_argument("--run", required=True)
+    git_checkpoint.add_argument("--path", action="append", help="Optional subset of assigned outputs; all must be stable until return")
+    git_checkpoint.add_argument("--request-id", help="Reuse this ID when retrying the same save")
+    for name in ("git-status", "git-flush", "git-disable"):
+        commands.add_parser(name)
     for name in ("step", "run"):
         runner = commands.add_parser(name, help="Dispatch actual tool-enabled Codex workers")
         runner.add_argument("--host-capacity", required=True, type=int)
@@ -108,7 +143,30 @@ def parser():
 
 
 def dispatch(args):
-    workspace = args.workspace.resolve()
+    workspace = no_symlinks(lexical(args.workspace, base=Path.cwd(), strict=False))
+    if args.command.startswith("git-"):
+        from . import git_sync
+        if args.command == "git-enable":
+            result = git_sync.enable(workspace, repo=args.repo, remote=args.remote, branch=args.branch,
+                                     include=args.include, exclude=args.exclude, push_count=args.push_count,
+                                     push_seconds=args.push_seconds, service_state=args.service_state)
+            from ..cli import start
+            try:
+                service = start(Path(result["config"]["service_state"]))
+                result["timer"] = "starting" if service.get("replica_git_sync") else "service_restart_required"
+            except Exception as exc:
+                result["timer"] = "unavailable"
+                result["service_error"] = str(exc)
+            return result
+        if args.command == "git-checkpoint":
+            return execute(workspace, {"op": "git.checkpoint", "request_id": args.request_id or uuid.uuid4().hex,
+                                       "task_id": args.task, "run_id": args.run,
+                                       **({"paths": args.path} if args.path is not None else {})})
+        if args.command == "git-flush":
+            return git_sync.request_push(workspace)
+        if args.command == "git-disable":
+            return git_sync.disable(workspace)
+        return {"ok": True, "git": git_sync.status(workspace)}
     if args.command == "init":
         project = _json(args.project)
         project.setdefault("workbench_source", str(args.workbench_source.resolve()))
@@ -121,7 +179,7 @@ def dispatch(args):
             result["app"] = seed_app(workspace)
         return result
     if args.command == "apply":
-        requests = _json(args.file)
+        requests = _json(args.file, workspace)
         if isinstance(requests, list):
             receipts = []
             for request in requests:
@@ -131,6 +189,15 @@ def dispatch(args):
                     break
             return {"ok": all(item.get("ok") for item in receipts), "receipts": receipts}
         return _apply(workspace, requests)
+    if args.command == "relocate":
+        from .relocation import relocate
+        request = _json(args.file, workspace)
+        if request.get("op") != "workspace.relocate":
+            raise ReplicaError("relocate requires workspace.relocate request")
+        request.setdefault("request_id", stable_id("request", request))
+        return relocate(workspace, request, dry_run=args.dry_run)
+    if args.command == "resolve":
+        return execute(workspace, {"op": "path.resolve", "kind": args.kind, "value": args.value, "exists": args.exists})
     if args.command == "migrate":
         return Store(workspace).migrate(expected_revision=args.expected_revision, expected_sha256=args.expected_sha256)
     if args.command == "object":
@@ -153,9 +220,13 @@ def dispatch(args):
                     "tasks": {key: {field: task[field] for field in ("role", "mode", "state", "run_id")}
                               for key, task in result["tasks"].items()},
                     "ready_task_ids": result["ready_task_ids"], "resumable_task_ids": result["resumable_task_ids"],
-                    "mvp_results": {key: value["current_result"] for key, value in result["mvps"].items()}}
+                    "mvp_results": {key: value["current_result"] for key, value in result["mvps"].items()},
+                    **({"git": result["git"]} if "git" in result else {})}
         return result
     if args.command == "import":
+        with Store(workspace).locked() as state:
+            if state and state.get("schema") == 3:
+                raise ReplicaError("Full reimport on an adopted workspace is unsupported; preserve source IDs")
         inventory = load_inventory(args.index_db, args.manifest, args.recon,
                                    dex_inventory=args.dex_inventory, native_inventory=args.native_inventory,
                                    root=args.root)
@@ -175,34 +246,32 @@ def dispatch(args):
         _, task = _task(workspace, args.task)
         return _reserve_outputs(workspace, task, args.path)
     if args.command == "submit":
-        _, task = _task(workspace, args.task)
+        snapshot, task = _task(workspace, args.task)
         # A declared checks file is already supplied by --checks. Requiring it
         # a second time as --artifact turns a mechanical omission into a retry.
-        check_path = Path(args.checks).resolve()
+        check_path = _operand(workspace, args.checks)
         values = list(args.artifact)
-        if str(check_path) in task["outputs"]:
+        if str(check_path) in {str(resolve_path(workspace, snapshot, value)) for value in task["outputs"]}:
             values.append(str(check_path))
         artifacts = []
         seen = set()
         for value in values:
-            path = Path(value)
-            path = path if path.is_absolute() else workspace / path
-            path = path.resolve()
+            path = resolve_path(workspace, snapshot, value)
             if path not in seen:
-                artifacts.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+                artifacts.append({"path": str(path), "sha256": hashlib.sha256(read_regular(path)).hexdigest()})
                 seen.add(path)
         return _apply(workspace, {"op": "task.submit", "task_id": args.task, "run_id": args.run,
-                                 "artifacts": artifacts, "self_checks": _json(args.checks),
-                                 "unresolved": _json(args.unresolved) if args.unresolved else [],
-                                 "class_revisions": _json(args.class_revisions) if args.class_revisions else {},
-                                 "dependency_revisions": _json(args.dependency_revisions) if args.dependency_revisions else {}})
+                                 "artifacts": artifacts, "self_checks": _json(args.checks, workspace),
+                                 "unresolved": _json(args.unresolved, workspace) if args.unresolved else [],
+                                 "class_revisions": _json(args.class_revisions, workspace) if args.class_revisions else {},
+                                 "dependency_revisions": _json(args.dependency_revisions, workspace) if args.dependency_revisions else {}})
     if args.command == "wait":
-        checkpoint = Path(args.checkpoint).resolve()
+        checkpoint = _operand(workspace, args.checkpoint)
         if not checkpoint.is_file():
             raise ReplicaError("Checkpoint file must exist before waiting")
         return _apply(workspace, {"op": "task.wait", "task_id": args.task, "run_id": args.run,
-                                 "requires": _json(args.requires),
-                                 "checkpoint": {"path": str(checkpoint), "sha256": hashlib.sha256(checkpoint.read_bytes()).hexdigest()}})
+                                 "requires": _json(args.requires, workspace),
+                                 "checkpoint": {"path": str(checkpoint), "sha256": hashlib.sha256(read_regular(checkpoint)).hexdigest()}})
     if args.command == "native-next":
         return native_next(workspace, external_active=args.external_active, task_id=args.task)
     runner = Runner(workspace, host_capacity=args.host_capacity, slots_path=args.slots_file, executable=args.codex)
@@ -211,7 +280,8 @@ def dispatch(args):
     # Progress events only when meaningful state changes, not every poll.
     previous = None
     for result in runner.run(args.interval):
-        signature = canonical_json({key: result[key] for key in ("state", "active_run_ids", "task_states", "blocked")})
+        signature = canonical_json({key: result[key] for key in ("state", "active_run_ids", "task_states", "blocked", "git")
+                                    if key in result})
         if signature != previous:
             print(json.dumps(result, ensure_ascii=False), flush=True)
             previous = signature

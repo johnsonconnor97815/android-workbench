@@ -51,6 +51,21 @@ class DeviceManagerCommandTest(unittest.TestCase):
     def setUp(self):
         self.module = load_module()
 
+    def test_failed_preflight_retains_both_transport_probe_results(self):
+        with tempfile.TemporaryDirectory() as folder:
+            output=Path(folder)/'result.json'
+            def probe(command,**kwargs):
+                if command[-1]=='get-state':
+                    return subprocess.CompletedProcess(command,1,'','error: device not found')
+                raise subprocess.TimeoutExpired(command,10)
+            with patch.object(sys,'argv',['device_manager.py','preflight','--serial','fixture','--output',str(output)]), patch.object(self.module.subprocess,'run',side_effect=probe):
+                code=self.module.main()
+            result=json.loads(output.read_text())
+        self.assertEqual(code,2)
+        self.assertEqual([s['name'] for s in result['steps']],['adb get-state','fastboot devices'])
+        self.assertEqual(result['steps'][0]['returncode'],1)
+        self.assertEqual(result['steps'][1]['returncode'],124)
+
     def test_battery_observations_preserve_conflicting_health_and_temperature(self):
         observed = self.module.battery_observations(
             "Current Battery Service state:\n  level: 72\n  health: 3\n  status: 4\n  temperature: 269\n")

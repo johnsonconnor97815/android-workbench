@@ -247,8 +247,35 @@ class ToolsTest(unittest.TestCase):
         argv,options=calls[0]
         self.assertEqual(argv[0],str(prefix/"bin/cargo"));self.assertIn("--locked",argv)
         self.assertEqual(options["env"]["CARGO_HOME"],str(runtime/"cargo-home"))
+        self.assertEqual(options["env"]["CARGO_TARGET_DIR"],str(runtime/"binwalk-build"))
         self.assertEqual(options["env"]["RUSTC"],str(prefix/"bin/rustc"))
         self.assertEqual(options["env"]["CARGO_BUILD_JOBS"],"2")
+
+    def test_rust_manager_receipt_preserves_dependency_reuse(self):
+        runtime=self.project/"Tools/runtime";prefix=runtime/"rust/1.90.0"
+        (prefix/"bin").mkdir(parents=True)
+        for name in ("cargo","rustc"): (prefix/"bin"/name).write_bytes(name.encode())
+        receipt={"pass":True,"prefix":str(prefix),"lock_sha256":rust.digest(ROOT/"Tools/rust.lock.json"),
+            "executables":{name:rust.digest(prefix/"bin"/name) for name in ("cargo","rustc")}}
+        tools.write_json(runtime/"rust-install.json",receipt)
+        def fake_run(argv,cwd,**kw):
+            return {"argv":[str(x) for x in argv],"exit_code":0,"stdout":"fixture 1.90.0","stderr":""}
+        with patch.object(tools,"checked_run",side_effect=fake_run):
+            result=tools.install(self.project,"rust")
+        self.assertTrue(result["pass"])
+        with patch.object(rust,"download",side_effect=AssertionError("must reuse verified Rust")):
+            found,record=rust.ensure(runtime,ROOT/"Tools/rust.lock.json",fake_run,tools.write_json)
+        self.assertEqual(found,prefix)
+        self.assertTrue(record["reused_existing"])
+        self.assertEqual(json.loads((runtime/"rust-tool-install.json").read_text())["tool"],"rust")
+
+    def test_rejected_unmanaged_rust_prefix_never_gains_ownership_receipt(self):
+        runtime=self.project/"Tools/runtime";prefix=runtime/"rust/1.90.0"
+        prefix.mkdir(parents=True);marker=prefix/"user-data";marker.write_bytes(b"preserve me")
+        with self.assertRaisesRegex(RuntimeError,"Unmanaged Rust prefix"):
+            rust.ensure(runtime,ROOT/"Tools/rust.lock.json",None,tools.write_json)
+        self.assertFalse((runtime/"rust-install.json").exists())
+        self.assertEqual(marker.read_bytes(),b"preserve me")
 
     def test_jdk_inventory_uses_installer_state_not_wrapper_or_global_java(self):
         # The managed JDK is an extracted tree, not .android-static/bin/java.

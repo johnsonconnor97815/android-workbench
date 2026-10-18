@@ -15,10 +15,12 @@ import uuid
 
 from .ids import canonical_json, object_id, stable_id, task_id as make_task_id
 from .roles import DEFAULT_MODELS
+from .paths import PathBindings, resolve_path, effective_project, effective_writer_index
+from .paths import lexical, no_symlinks, read_regular
 from .store import ReplicaError, Store
 
 
-READS = {"status", "recover", "coverage", "inventory.get", "inventory.export"}
+READS = {"status", "recover", "coverage", "inventory.get", "inventory.export", "path.resolve"}
 DISPOSITIONS = {"copy", "reuse", "platform", "exclude", "unknown"}
 ROLES = {"main", "app", "analysis", "class", "function"}
 
@@ -184,15 +186,12 @@ def _class(state, identifier):
 
 
 def _output_path(store, state, value):
-    path = Path(_text(value, "output path")).expanduser()
-    if not path.is_absolute():
-        path = store.workspace / path
-    path = path.resolve()
+    path = resolve_path(store.workspace, state, _text(value, "output path"))
     artifact_root = (store.workspace / "artifacts").resolve()
     if not artifact_root.is_relative_to(store.workspace):
         raise ReplicaError("Artifacts directory escapes workspace")
     roots = [artifact_root]
-    project = state["project"]
+    project = effective_project(store.workspace, state)
     configured = project.get("output_paths", [])
     if isinstance(configured, str):
         configured = [configured]
@@ -259,10 +258,14 @@ def _task_add(store, state, raw):
     existing = state["tasks"].get(identifier)
     owner = spec.get("owner", existing["owner"] if existing else identifier)
     _id(owner, "task owner")
+    writer_index = effective_writer_index(store.workspace, state)
+    stored_outputs = []
     for path in outputs:
-        previous = state["writers"].get(path)
-        if previous and previous != identifier:
+        previous = writer_index.get(path)
+        if previous and previous[1] != identifier:
             raise ReplicaError(f"Output already has a logical writer: {path}")
+        stored_outputs.append(previous[0] if previous else path)
+    outputs = list(dict.fromkeys(stored_outputs))
     if existing:
         if existing["owner"] != owner:
             raise ReplicaError("A canonical task cannot change logical owner")
@@ -314,7 +317,7 @@ def _artifact(store, state, raw):
     item = deepcopy(_mapping(raw, "artifact"))
     path = _output_path(store, state, item.get("path"))
     try:
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ReplicaError(f"Artifact is not a regular file: {path}")
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
@@ -325,6 +328,63 @@ def _artifact(store, state, raw):
         raise ReplicaError(f"Artifact SHA-256 missing or mismatched: {path}")
     item.update(path=path, sha256=digest)
     return item
+
+
+def _requirement_evidence(store, state, raw):
+    item = deepcopy(_mapping(raw, "requirement evidence"))
+    value = _text(item.get("path"), "requirement evidence path")
+    # Unbound paths otherwise resolve symlinks before the regular-file check.
+    if state.get("schema") != 3:
+        no_symlinks(lexical(value, base=store.workspace, strict=False))
+    path = resolve_path(store.workspace, state, value)
+    if not path.is_relative_to(store.workspace):
+        path = Path(_output_path(store, state, value))
+    try:
+        digest = hashlib.sha256(read_regular(path)).hexdigest()
+    except OSError as exc:
+        raise ReplicaError(f"Cannot read requirement evidence: {path}: {exc}") from exc
+    if item.get("sha256") != digest:
+        raise ReplicaError(f"Requirement evidence SHA-256 missing or mismatched: {path}")
+    item.update(path=str(path), sha256=digest)
+    return item
+
+
+def _replace_requirements(store, state, request):
+    actor = _get(state, "tasks", request.get("actor"))
+    if actor["role"] != "app" or actor["mode"] != "plan":
+        raise ReplicaError("Requirement replacement needs an App planning actor")
+    task = _get(state, "tasks", request.get("task_id"))
+    if task["run_id"] or any(run["task_id"] == task["id"] and run["state"] != "stopped"
+                              for run in state["runs"].values()):
+        raise ReplicaError("Cannot replace requirements with a live or unconfirmed run")
+    if task["state"] not in {"queued", "waiting", "failed"}:
+        raise ReplicaError("Requirement replacement needs idle queued, waiting or failed work")
+    if _integer(request.get("expected_revision"), "expected_revision", 1) != task["revision"]:
+        raise ReplicaError(f"Stale task revision; current revision is {task['revision']}")
+    previous = _requirements(state, request.get("expected_requires"))
+    if previous != task["requires"]:
+        raise ReplicaError("Stale expected_requires; current requirements differ")
+    requirements = _requirements(state, request.get("requires"))
+    if requirements == previous:
+        raise ReplicaError("Replacement requirements must differ")
+    if task.get("class_id") and (task["role"] == "function" or
+                                 (task["role"] == "class" and task["mode"] == "code")):
+        if not any(item.get("class_id") == task["class_id"] for item in requirements):
+            raise ReplicaError("Implementation must retain its own class declaration prerequisite")
+    reason = _text(request.get("reason"), "requirement replacement reason")
+    evidence = [_requirement_evidence(store, state, item) for item in
+                _array(request.get("evidence"), "requirement replacement evidence")]
+    if not evidence:
+        raise ReplicaError("Requirement replacement needs existing file evidence")
+    correction = {"previous_requires": previous, "requires": requirements,
+                  "previous_revision": task["revision"], "actor": actor["id"],
+                  "reason": reason, "evidence": evidence,
+                  "request_id": request["request_id"], "recorded_at": _now()}
+    task["requires"] = requirements
+    task.setdefault("requires_corrections", []).append(correction)
+    _touch(task)
+    return {"task_id": task["id"], "task_revision": task["revision"],
+            "requires": task["requires"], "correction": correction}
 
 
 def _remove_directory_outputs(store, state, request):
@@ -340,12 +400,14 @@ def _remove_directory_outputs(store, state, request):
                 _array(request.get("evidence"), "directory correction evidence")]
     if not evidence:
         raise ReplicaError("Directory correction needs existing file evidence")
+    index = effective_writer_index(store.workspace, state)
     paths = [_output_path(store, state, value) for value in
              _array(request.get("directories"), "directories")]
+    raw_paths = [index.get(value, (value, None))[0] for value in paths]
     if not paths or len(set(paths)) != len(paths):
         raise ReplicaError("Directory correction needs nonempty unique paths")
-    for value in paths:
-        if value not in task["outputs"] or state["writers"].get(value) != task["id"]:
+    for value, raw in zip(paths, raw_paths):
+        if raw not in task["outputs"] or state["writers"].get(raw) != task["id"]:
             raise ReplicaError(f"Directory is not assigned to this task: {value}")
         path = Path(value)
         if not path.is_dir():
@@ -353,14 +415,14 @@ def _remove_directory_outputs(store, state, request):
         for child in path.rglob("*"):
             if child.is_symlink() or (not child.is_dir() and not child.is_file()):
                 raise ReplicaError(f"Directory contains an unsupported filesystem entry: {child}")
-            if child.is_file() and (str(child) not in task["outputs"]
-                                    or state["writers"].get(str(child)) != task["id"]):
+            if child.is_file() and (index.get(str(child), (None, None))[0] not in task["outputs"]
+                                    or index.get(str(child), (None, None))[1] != task["id"]):
                 raise ReplicaError(f"Every child file must remain assigned to this task: {child}")
     correction = {"directories": paths, "reason": reason, "evidence": evidence,
                   "owner": task["owner"], "previous_revision": task["revision"],
                   "recorded_at": _now()}
-    task["outputs"] = [value for value in task["outputs"] if value not in paths]
-    for value in paths:
+    task["outputs"] = [value for value in task["outputs"] if value not in raw_paths]
+    for value in raw_paths:
         del state["writers"][value]
     task.setdefault("output_directory_corrections", []).append(correction)
     _touch(task)
@@ -380,7 +442,7 @@ def _delivery_issues(store, state, task, delivery):
     issues = []
     if (task["role"] == "function" or (task["role"] == "class" and task["mode"] == "code")) and not delivery["artifacts"]:
         issues.append("Implementation delivery has no code artifact")
-    if set(task["outputs"]) != {item["path"] for item in delivery["artifacts"]}:
+    if {str(resolve_path(store.workspace, state, value)) for value in task["outputs"]} != {str(resolve_path(store.workspace, state, item["path"])) for item in delivery["artifacts"]}:
         issues.append("Delivery does not contain every assigned output")
     if task["role"] == "class" and task["mode"] == "structure" and task.get("class_id"):
         if not state["classes"][task["class_id"]]["revision"]:
@@ -610,6 +672,8 @@ def _dispatch(store, state, request):
             raise ReplicaError("Project update requires changes and evidence")
         protected = {"id", "identity", "source", "source_path", "source_paths", "source_dir",
                      "output", "output_path", "output_paths", "output_dir", "analysis_root", "history"}
+        if state.get("schema") == 3:
+            protected.update({"execution_root", "workbench_source"})
         if protected.intersection(changes):
             raise ReplicaError("Project origin identity/source/output paths and history are immutable")
         previous = {key: deepcopy(state["project"].get(key)) for key in changes}
@@ -686,6 +750,8 @@ def _dispatch(store, state, request):
         return {"task_id": task["id"], "task": task}
     if op == "task.outputs.remove_directories":
         return _remove_directory_outputs(store, state, request)
+    if op == "task.requires.replace":
+        return _replace_requirements(store, state, request)
     if op == "task.discover":
         caller = _get(state, "tasks", request.get("task_id"))
         target = request.get("target")
@@ -740,6 +806,8 @@ def _dispatch(store, state, request):
         backend = deepcopy(request.get("backend"))
         if not backend:
             raise ReplicaError("Claim needs backend identity")
+        if state.get("schema") == 3 and backend != "native":
+            raise ReplicaError("Relocated workspace supports native claims only; CLI execution is unsupported")
         external = request.get("external_active", 0)
         if isinstance(external, list):
             external = len(external)
@@ -816,11 +884,13 @@ def _dispatch(store, state, request):
         if run["state"] not in {"running", "waiting_pending_stop", "delivery_pending_stop"}:
             raise ReplicaError("Only a running task can submit")
         artifacts = [_artifact(store, state, item) for item in _array(request.get("artifacts"), "artifacts")]
+        writer_index = effective_writer_index(store.workspace, state)
+        assigned = {str(resolve_path(store.workspace, state, value)) for value in task["outputs"]}
         for artifact in artifacts:
             path = artifact["path"]
-            if path not in task["outputs"]:
+            if path not in assigned:
                 raise ReplicaError("Artifact was not assigned to this logical writer")
-            if state["writers"].get(path) != task["id"]:
+            if writer_index.get(path, (None, None))[1] != task["id"]:
                 raise ReplicaError("Artifact is owned by a different writer")
         checks = _checks(request.get("self_checks"))
         unresolved = deepcopy(_array(request.get("unresolved"), "unresolved"))
@@ -947,14 +1017,11 @@ def _observation(store, state, raw):
     value = deepcopy(_mapping(raw, "paired observation"))
     # Observations may live outside code outputs, but must be explicit regular
     # files within the workspace (or declared output roots), with real hashes.
-    path = Path(_text(value.get("path"), "observation path")).expanduser()
-    if not path.is_absolute():
-        path = store.workspace / path
-    path = path.resolve()
+    path = resolve_path(store.workspace, state, _text(value.get("path"), "observation path"))
     if not path.is_relative_to(store.workspace):
         _output_path(store, state, str(path))
     try:
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), "rb") as handle:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as handle:
             if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                 raise ReplicaError("Observation must be a regular file")
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
@@ -1001,8 +1068,11 @@ def _mvp_record(store, state, request):
                 raise ReplicaError("Goal observation reference needs a path or path#location")
             path = path.split("#", 1)[0]
             actual = Path(paired[side]["path"])
-            referenced = Path(path)
-            if referenced != actual and (store.workspace / referenced).resolve() != actual and path != actual.name:
+            resolved = PathBindings.from_state(store.workspace, state).resolve("locator", path)
+            if resolved["local_path"] is None:
+                raise ReplicaError("Goal reference requires a filesystem locator")
+            referenced = Path(resolved["local_path"])
+            if referenced != actual and not (state.get("schema") != 3 and path == actual.name):
                 raise ReplicaError("Goal reference does not identify its paired observation file")
     tasks = {identifier: state["tasks"][identifier] for identifier in mvp["required_task_ids"]}
     ready = all(_delivery_current(store, state, task) for task in tasks.values())
@@ -1036,6 +1106,61 @@ def _mvp_current(store, state, mvp):
 
 
 def execute(workspace, request):
+    """Keep optional Git I/O outside the authority lock and task revisions."""
+    from . import git_sync
+
+    op = request.get("op") if isinstance(request, dict) else None
+    git_result = None
+    task = None
+    if op == "git.status":
+        return {"ok": True, "git": git_sync.status(workspace)}
+    if op == "git.checkpoint" or (op in {"task.submit", "task.wait", "run.stopped"}
+                                  and git_sync.configured(workspace)):
+        store = Store(workspace)
+        with store.locked() as state:
+            if state is None:
+                raise ReplicaError("Replica workspace is not initialized")
+            request_id = _id(request.get("request_id"), "request_id")
+            replay = request_id in state["receipts"]
+            if op == "git.checkpoint" and replay:
+                raise ReplicaError("request_id already used by a metadata operation")
+            if not replay:
+                if op == "git.checkpoint":
+                    task, run = _live_run(state, request.get("task_id"), request.get("run_id"))
+                    if run["state"] == "reserved":
+                        raise ReplicaError("Start the actual writer before saving progress")
+                else:
+                    # Validate before any Git side effect. These three handlers
+                    # only read artifacts and mutate this disposable copy.
+                    preview = deepcopy(state)
+                    data = _dispatch(store, preview, deepcopy(request))
+                    _check_wait_cycles(preview)
+                    task = state["tasks"][data["task"]["id"]]
+        if not replay:
+            try:
+                git_result = git_sync.save_task(workspace, state, task, request_id,
+                                                paths=request.get("paths") if op == "git.checkpoint" else None)
+            except (OSError, ValueError) as exc:
+                if op == "git.checkpoint":
+                    raise
+                git_result = {"ok": False, "state": "error", "error": str(exc)}
+        if op == "git.checkpoint":
+            return {"ok": git_result["ok"], "git": git_result}
+    result = _execute(workspace, request)
+    if git_result is not None:
+        result["git"] = git_result
+    if op in {"status", "recover"}:
+        result["git"] = git_sync.status(workspace)
+    if (op == "run.stopped" and task and task["role"] == "app"
+            and request.get("outcome") == "delivered"):
+        try:
+            git_sync.request_push(workspace)
+        except (OSError, ValueError) as exc:
+            result["git_push_error"] = str(exc)
+    return result
+
+
+def _execute(workspace, request):
     """Apply one idempotent request; a committed receipt survives view failure."""
     request = deepcopy(_mapping(request, "request"))
     op = _text(request.get("op"), "op")
@@ -1043,8 +1168,21 @@ def execute(workspace, request):
         fingerprint = hashlib.sha256(canonical_json(request).encode("utf-8")).hexdigest()
     except (TypeError, ValueError) as exc:
         raise ReplicaError(f"Request must contain finite JSON values: {exc}") from exc
+    if op == "workspace.relocate":
+        from .relocation import relocate
+        return relocate(workspace, request)
     store = Store(workspace)
     with store.locked() as stored:
+        if op == "path.resolve":
+            if stored is None:
+                raise ReplicaError("Replica workspace is not initialized")
+            return {"ok": True, **PathBindings.from_state(store.workspace, stored).resolve(
+                request.get("kind"), request.get("value"), exists=bool(request.get("exists", False)))}
+        if stored and stored.get("schema") == 3:
+            if op == "inventory.import":
+                raise ReplicaError("Full reimport on an adopted workspace is unsupported; preserve source IDs")
+            if op == "task.claim" and request.get("backend") != "native":
+                raise ReplicaError("Relocated workspace supports native claims only; CLI execution is unsupported")
         if op in READS:
             if stored is None:
                 raise ReplicaError("Replica workspace is not initialized")

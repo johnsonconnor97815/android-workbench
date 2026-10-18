@@ -70,14 +70,15 @@ def ensure(runtime, lock_path, run, write_json):
     reusable=(old.get('pass') is True and old.get('lock_sha256')==expected_lock and
               all(path.is_file() and old.get('executables',{}).get(name)==digest(path)
                   for name,path in [('cargo',cargo),('rustc',rustc)]))
+    # Reject before writing anything: a failed ownership check must not create
+    # the very receipt that would authorize overwriting this prefix on retry.
+    if not reusable and prefix.exists() and old.get('prefix')!=str(prefix):
+        raise RuntimeError('Unmanaged Rust prefix exists; preserve and inspect before installation')
     record={'schema':1,'version':lock['version'],'prefix':str(prefix),'source':lock['source'],
             'lock_sha256':expected_lock,'checks':[],'components':{},'pass':False,'reused_existing':reusable,
             'verification':'Official manifest SHA-256 over HTTPS; GPG signature not checked.'}
     try:
         if not reusable:
-            # A receipt is needed to distinguish resumable managed prefixes from user data.
-            if prefix.exists() and old.get('prefix')!=str(prefix):
-                raise RuntimeError('Unmanaged Rust prefix exists; preserve and inspect before installation')
             write_json(receipt,record)
             for name,spec in lock['components'].items():
                 cache=runtime/'downloads'/Path(spec['url']).name
