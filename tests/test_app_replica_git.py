@@ -25,6 +25,7 @@ from workbench.app_replica import git_sync
 from workbench.app_replica.store import Store
 from workbench.app_replica.cli import main
 from workbench.common import rpc, WorkbenchError
+from scripts import replica_git_notify
 
 
 class ReplicaGitTest(unittest.TestCase):
@@ -98,6 +99,58 @@ class ReplicaGitTest(unittest.TestCase):
         git_sync.request_push(self.workspace)
         git_sync.push_due(self.workspace)
         self.assertEqual(self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'refs/heads/replica/fixture', repo=self.remote))
+
+    def test_monitor_notifies_about_stalled_changes_without_touching_git(self):
+        self.enable()
+        git_sync.request_push(self.workspace)
+        git_sync.push_due(self.workspace)
+        (self.service / 'replica-git-health.json').write_text(json.dumps({'checked_at': time.time()}))
+        self.write('A.kt', 'pending source\n')
+        self.write('B.kt', 'manually staged\n')
+        self.git('add', 'B.kt')
+        self.write('evidence/private.apk', 'not source')
+        before = (self.git('rev-parse', 'HEAD'), self.git('diff', '--cached'), self.git('diff'))
+        notices = []
+        send = lambda thread, prompt: notices.append((thread, prompt)) or 'accepted'
+        initial = replica_git_notify.check(self.workspace, 'reviewer', now=100, sender=send)
+        self.assertEqual([], initial['issues'])
+        result = replica_git_notify.check(self.workspace, 'reviewer', now=701, sender=send)
+        self.assertEqual(['source_changes_waiting'], result['issues'])
+        self.assertEqual({'A.kt', 'B.kt'}, {p['path'] for p in result['changes']})
+        self.assertEqual(1, len(notices))
+        self.assertEqual(before, (self.git('rev-parse', 'HEAD'), self.git('diff', '--cached'), self.git('diff')))
+
+    def test_monitor_disabled_notification_retry_and_rate_limit(self):
+        self.enable()
+        git_sync.disable(self.workspace)
+        before = (self.workspace / git_sync.CONFIG).read_bytes()
+        def failed(thread, prompt):
+            raise RuntimeError('queue unavailable')
+        first = replica_git_notify.check(self.workspace, 'reviewer', now=100, sender=failed)
+        self.assertIn('notification_error', first)
+        notices = []
+        send = lambda thread, prompt: notices.append(thread) or 'accepted'
+        result = replica_git_notify.check(self.workspace, 'reviewer', now=160, sender=send)
+        self.assertIn('autosave_disabled', result['issues'])
+        replica_git_notify.check(self.workspace, 'reviewer', now=220, sender=send)
+        self.assertEqual(1, len(notices))
+        replica_git_notify.check(self.workspace, 'reviewer', now=1961, sender=send)
+        self.assertEqual(2, len(notices))
+        self.assertEqual(before, (self.workspace / git_sync.CONFIG).read_bytes())
+
+    def test_monitor_due_push_is_only_a_notification(self):
+        self.enable(push_count=1)
+        git_sync.request_push(self.workspace)
+        git_sync.push_due(self.workspace)
+        old_remote = self.git('rev-parse', 'refs/heads/replica/fixture', repo=self.remote)
+        writer = self.writer()
+        self.write('A.kt', 'saved but not pushed\n')
+        self.save(writer)
+        notices = []
+        result = replica_git_notify.check(self.workspace, 'reviewer', sender=lambda *args: notices.append(args))
+        self.assertIn('push_due_based_on_local_refs', result['issues'])
+        self.assertEqual(1, len(notices))
+        self.assertEqual(old_remote, self.git('rev-parse', 'refs/heads/replica/fixture', repo=self.remote))
 
     def test_baseline_excludes_artifacts_and_keeps_existing_source_together(self):
         self.write("A.kt", "existing edits\n")

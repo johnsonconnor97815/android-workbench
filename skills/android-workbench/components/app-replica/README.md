@@ -145,9 +145,17 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work git-disable
 ```
 
-`git-flush` 只登记后台推送请求，返回不代表远端已经同步；`git-disable` 停止后续自动保存/推送，不撤销已生成历史或切换分支，已经发出的网络请求可能完成。恢复配置用 `git-enable`。schema 3 的工程路径通过已有绑定解析，搬迁后的首次保存会更新服务登记；Git 自身的 linked-worktree 路径仍需按其实际仓库布局处理。
+`git-flush` 只登记后台推送请求，返回不代表远端已经同步；`git-disable` 停止后续自动保存/推送，不撤销已生成历史或切换分支，已经发出的网络请求可能完成。恢复原配置用 `git-resume`；重新设置策略才用 `git-enable`。schema 3 的工程路径通过已有绑定解析，搬迁后的首次保存会更新服务登记；Git 自身的 linked-worktree 路径仍需按其实际仓库布局处理。
 
 本次实现包含自动保存和批量备份；验证后自动发布开发分支仍是后续独立功能。保存成功不表示 MVP 通过。设计取舍见 [Git 保存方案](../../../../docs/app-replica-git-design.md)。
+
+用户要求中断时由助手核对后处理，可定时调用检查脚本：
+
+```bash
+python3 /path/android-workbench/scripts/replica_git_notify.py --workspace /path/project/replica-work --thread REVIEWER_SESSION_UUID
+```
+
+脚本只检查和通过 `codex queue` 向指定的既有会话排入提醒，**不会提交、推送或重新启用自动保存**。检查报告和消息回执在 `coordination/git-notify.json`；同一问题限频提醒，队列失败下次重试。助手收到消息后重新核对差异及写入归属，再决定提交；远端跟踪引用只是本地观察，实际推送结果仍需核实。运行方式与限制见上述设计记录末节。
 
 ## MVP 与恢复
 
