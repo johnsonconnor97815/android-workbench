@@ -37,7 +37,7 @@ class Store:
         return path
 
     @contextmanager
-    def locked(self, *, allow_legacy=False):
+    def locked(self, *, allow_legacy=False, allow_relocation=False):
         path = self.metadata_path("coordination/state.lock")
         self._mkdir(path.parent)
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -61,7 +61,9 @@ class Store:
                     raise ReplicaError("Legacy schema 1 requires explicit migrate before reads/writes")
                 if state["schema"] in {2, 3}:
                     from .paths import PathBindings
-                    PathBindings.from_state(self.workspace, state)
+                    bound_workspace = (state.get('relocation', {}).get('target_workspace', self.workspace)
+                                       if allow_relocation else self.workspace)
+                    PathBindings.from_state(bound_workspace, state)
                     from .snapshot import Inventory, Scopes
                     state["inventory"] = Inventory(self, state["inventory_ref"], Scopes(self, state["scope_ref"]))
             yield state

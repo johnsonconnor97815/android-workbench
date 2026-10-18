@@ -1,4 +1,4 @@
-"""One guarded schema-2 adoption. No lifecycle reconciliation or model execution."""
+"""Guarded workspace relocation. No lifecycle reconciliation or model execution."""
 from contextlib import contextmanager, ExitStack
 from copy import deepcopy
 import fcntl
@@ -49,18 +49,35 @@ def lock_file(path):
         os.close(fd)
 
 
+def composed_bindings(state, request):
+    """Flatten historical aliases onto the new roots; never rewrite provenance."""
+    rules = deepcopy(request['bindings'])
+    resolver = PathBindings(request['target_workspace'], rules, 1)
+    for previous in state.get('relocation', {}).get('bindings', []):
+        target = str(resolver.path(previous['to'], operational=False))
+        alias = {'from': previous['from'], 'to': target}
+        existing = next((r for r in rules if r['from'] == alias['from']), None)
+        if existing and existing != alias:
+            raise ReplicaError('Historical binding conflicts with requested relocation')
+        if existing is None:
+            rules.append(alias)
+    return rules
+
+
 def validate_plan(store, state, request, source):
-    if type(request.get('expected_schema')) is not int or request['expected_schema'] != 2:
-        raise ReplicaError('Relocation expected_schema must be exactly 2')
-    if state.get('schema') != 2:
-        raise ReplicaError('Second relocation of an adopted workspace is unsupported')
+    if (type(request.get('expected_schema')) is not int or request['expected_schema'] not in {2, 3}
+            or state.get('schema') != request['expected_schema']):
+        raise ReplicaError('Relocation expected_schema must match current schema 2 or 3')
     if (type(request.get('expected_revision')) is not int or request['expected_revision'] < 0
             or state['revision'] != request['expected_revision']
             or not re.fullmatch('[0-9a-f]{64}', str(request.get('expected_sha256', '')))
             or digest(source) != request['expected_sha256']):
         raise ReplicaError('Exact relocation source revision/SHA-256 guard failed')
-    if type(request.get('expected_binding_revision')) is not int or request['expected_binding_revision'] != 0:
-        raise ReplicaError('Initial relocation requires binding revision 0')
+    revision = state.get('relocation', {}).get('binding_revision', 0)
+    if type(request.get('expected_binding_revision')) is not int or request['expected_binding_revision'] != revision:
+        raise ReplicaError('Relocation requires the exact current binding revision')
+    if state['schema'] == 3 and request.get('origin_workspace') != state['relocation']['target_workspace']:
+        raise ReplicaError('Relocation origin must equal the previous target workspace')
     for key in ('origin_workspace', 'target_workspace'):
         if not isinstance(request.get(key), str) or str(lexical(request[key])) != request[key]:
             raise ReplicaError(f'{key} must be a normalized absolute path')
@@ -73,7 +90,10 @@ def validate_plan(store, state, request, source):
     rules = request.get('bindings')
     if not isinstance(rules, list) or not rules:
         raise ReplicaError('Relocation requires directory bindings')
+    if request['origin_workspace'] == request['target_workspace']:
+        raise ReplicaError('Relocation requires a different target workspace')
     roots = []
+    rules = composed_bindings(state, request)
     for rule in rules:
         if not isinstance(rule, dict) or set(rule) != {'from', 'to'}:
             raise ReplicaError('Bindings require only from and to roots')
@@ -86,11 +106,11 @@ def validate_plan(store, state, request, source):
         roots.append((old, new))
     for i, (old, new) in enumerate(roots):
         for j, (other_old, other_new) in enumerate(roots):
-            if i != j and (old.is_relative_to(other_old) or new == other_new):
+            if i != j and old.is_relative_to(other_old):
                 raise ReplicaError('Conflicting or ambiguous directory bindings')
             if new.is_relative_to(other_old) or other_old.is_relative_to(new):
                 raise ReplicaError('Binding chains/cycles are unsupported')
-    resolver = PathBindings(store.workspace, rules, 1)
+    resolver = PathBindings(store.workspace, rules, revision + 1)
     if resolver.path(request['origin_workspace']) != store.workspace:
         raise ReplicaError('Origin workspace does not bind to target workspace')
     evidence = request.get('evidence')
@@ -227,8 +247,8 @@ def verify_snapshot_references(store, state, request, resolver):
         inventory.scopes.cache.clear()
     for receipt in state['receipts'].values():
         store.receipt(receipt)
-    adopted = {**state, 'schema': 3, 'relocation': {'format': 1, 'binding_revision': 1,
-        'target_workspace': str(store.workspace), 'bindings': request['bindings'], 'continuation_backend': 'native'}}
+    adopted = {**state, 'schema': 3, 'relocation': {'format': 1, 'binding_revision': resolver.revision,
+        'target_workspace': str(store.workspace), 'bindings': composed_bindings(state, request), 'continuation_backend': 'native'}}
     project = effective_project(store.workspace, adopted)
     index = effective_writer_index(store.workspace, adopted)
     from .engine import _output_path
@@ -286,17 +306,22 @@ def verify_snapshot_references(store, state, request, resolver):
 
 
 def verify_replay(store, state, request, fingerprint):
-    binding = state.get('relocation', {})
+    binding = store.receipt(state['receipts'][request['request_id']])['response']['relocation']
+    if (state.get('relocation', {}).get('request_id') == request['request_id']
+            and state['relocation'] != binding):
+        raise ReplicaError('Relocation receipt does not match current binding integrity')
     if binding.get('request_id') != request['request_id'] or binding.get('fingerprint') != fingerprint:
         raise ReplicaError('Relocation receipt does not match binding integrity')
     store.verify_backup(binding['backup'], binding['source_guard']['sha256'])
     plan = store.read_blob(binding['plan_ref'], 'relocations/plans')
     report = store.read_blob(binding['report_ref'], 'relocations/reports')
-    guard = {'schema': 2, 'revision': request['expected_revision'], 'sha256': request['expected_sha256']}
+    guard = {'schema': request['expected_schema'], 'revision': request['expected_revision'], 'sha256': request['expected_sha256']}
+    previous = json.loads(read_regular(store.metadata_path(binding['backup'])))
     if (plan != request or binding.get('source_guard') != guard
             or binding.get('backup') != f'coordination/relocations/backups/{request["expected_sha256"]}.json'
             or binding.get('source_run_ids') != report.get('fence', {}).get('active_run_ids')
-            or any(binding.get(key) != request.get(key) for key in ('origin_workspace', 'target_workspace', 'bindings', 'continuation_backend'))):
+            or binding['bindings'] != composed_bindings(previous, request)
+            or any(binding.get(key) != request.get(key) for key in ('origin_workspace', 'target_workspace', 'continuation_backend'))):
         raise ReplicaError('Relocation plan/binding integrity mismatch')
     with os.fdopen(os.open(store.authority, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
         os.fsync(stream.fileno())
@@ -315,7 +340,7 @@ def relocate(workspace, request, *, dry_run=False):
         for directory in sorted(store.metadata_path('coordination/backend').glob('*')):
             if directory.is_dir():
                 stack.enter_context(lock_file(directory / 'launch.lock'))
-        state = stack.enter_context(store.locked())
+        state = stack.enter_context(store.locked(allow_relocation=True))
         if state is None:
             raise ReplicaError('Replica workspace is not initialized')
         if identifier in state['receipts']:
@@ -351,10 +376,10 @@ def relocate(workspace, request, *, dry_run=False):
             store.verify_backup(backup, request['expected_sha256'])
         plan_ref = store.write_blob('relocations/plans', request)
         report_ref = store.write_blob('relocations/reports', report)
-        binding = {'format': 1, 'binding_revision': 1, 'request_id': identifier, 'fingerprint': fingerprint,
+        binding = {'format': 1, 'binding_revision': resolver.revision, 'request_id': identifier, 'fingerprint': fingerprint,
             'origin_workspace': request['origin_workspace'], 'target_workspace': request['target_workspace'],
-            'bindings': deepcopy(request['bindings']), 'continuation_backend': 'native',
-            'source_guard': {'schema': 2, 'revision': request['expected_revision'], 'sha256': request['expected_sha256']},
+            'bindings': composed_bindings(state, request), 'continuation_backend': 'native',
+            'source_guard': {'schema': request['expected_schema'], 'revision': request['expected_revision'], 'sha256': request['expected_sha256']},
             'backup': backup, 'plan_ref': plan_ref, 'report_ref': report_ref,
             'source_run_ids': fence['active_run_ids'], 'fence_scope': fence['scope']}
         state['schema'] = 3

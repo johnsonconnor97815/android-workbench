@@ -57,7 +57,8 @@ class PathBindings:
     def from_state(cls, workspace, state):
         binding = (state or {}).get('relocation', {})
         if state and state.get('schema') == 3:
-            if (binding.get('format') != 1 or binding.get('binding_revision') != 1
+            if (binding.get('format') != 1 or type(binding.get('binding_revision')) is not int
+                    or binding['binding_revision'] < 1
                     or binding.get('target_workspace') != str(lexical(workspace, base=Path.cwd(), strict=False))
                     or binding.get('continuation_backend') != 'native'):
                 raise ReplicaError('Bound state requires its exact target workspace and valid native binding')

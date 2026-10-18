@@ -82,6 +82,23 @@ class ReplicaGitTest(unittest.TestCase):
     def save(self, writer, **fields):
         return self.call("git.checkpoint", task_id=writer[0], run_id=writer[1], **fields)["git"]
 
+    def test_resume_preserves_history_and_waits_for_a_writer_checkpoint(self):
+        self.enable()
+        writer = self.writer()
+        before = self.git('rev-parse', 'HEAD')
+        identity = json.loads((self.workspace / git_sync.CONFIG).read_text())['id']
+        git_sync.disable(self.workspace)
+        self.assertEqual('disabled', git_sync.status(self.workspace)['state'])
+        self.write('A.kt', 'active writer has not reached a checkpoint\n')
+        result = git_sync.resume(self.workspace)
+        self.assertTrue(result['ok'])
+        self.assertEqual(before, self.git('rev-parse', 'HEAD'))
+        self.assertEqual(identity, json.loads((self.workspace / git_sync.CONFIG).read_text())['id'])
+        self.assertEqual('saved', self.save(writer)['state'])
+        git_sync.request_push(self.workspace)
+        git_sync.push_due(self.workspace)
+        self.assertEqual(self.git('rev-parse', 'HEAD'), self.git('rev-parse', 'refs/heads/replica/fixture', repo=self.remote))
+
     def test_baseline_excludes_artifacts_and_keeps_existing_source_together(self):
         self.write("A.kt", "existing edits\n")
         self.write("resources/icon.png", "fixture bitmap")

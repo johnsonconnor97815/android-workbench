@@ -277,8 +277,25 @@ def disable(workspace):
     store = Store(workspace)
     config = _read(store, CONFIG)
     if config:
-        store.write_json(CONFIG, {**config, "enabled": False})
+        store.write_json(CONFIG, {**config, "enabled": False, "disabled_at": time.time()})
     return {"ok": True, "enabled": False}
+
+
+def resume(workspace):
+    """Resume an existing policy without capturing files an active writer owns."""
+    store = Store(workspace)
+    config = _read(store, CONFIG)
+    if not config:
+        raise ReplicaError("No prior Git configuration; use git-enable first")
+    with store.locked() as state:
+        config = {**config, "repo": str(resolve_path(workspace, state, config['repo']))}
+    with _lock(_common(config['repo']) / 'replica-commit.lock'):
+        _check_repo(config)
+        _check_history(config['repo'], config, _head(config['repo']))
+        config.update(enabled=True, resumed_at=time.time())
+        store.write_json(CONFIG, config)
+    register(workspace, config)
+    return {'ok': True, 'state': 'resumed', 'git': status(workspace)}
 
 
 def checkpoint(store, config, paths, request_id, label, *, baseline=False):
@@ -368,7 +385,9 @@ def status(workspace):
     try:
         config = _config(store)
         if not config:
-            return {"enabled": False, "state": "not_enabled"}
+            saved = _read(store, CONFIG, {})
+            return {"enabled": False, "state": "disabled" if saved else "not_enabled",
+                    **({"disabled_at": saved.get('disabled_at')} if saved else {})}
         _check_repo(config)
         pending = _pending(store, config)
         heartbeat = Path(config["service_state"]) / "replica-git-health.json"

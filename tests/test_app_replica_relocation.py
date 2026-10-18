@@ -131,7 +131,7 @@ class RelocationTests(unittest.TestCase):
         self.assertEqual(committed, self.adopt())
         self.assertEqual(latest, (self.workspace / 'coordination/state.json').read_bytes())
         changed = deepcopy(self.plan); changed['request_id'] = 'second'
-        with self.assertRaisesRegex(ReplicaError, 'Second relocation'):
+        with self.assertRaisesRegex(ReplicaError, 'expected_schema'):
             relocate(self.workspace, changed)
         altered = deepcopy(self.plan); altered['reason'] = 'different raw request'
         with self.assertRaisesRegex(ReplicaError, 'different content'):
@@ -162,6 +162,56 @@ class RelocationTests(unittest.TestCase):
         shutil.copytree(self.workspace, copied)
         with self.assertRaisesRegex(ReplicaError, 'exact target'):
             execute(copied, {'op': 'status'})
+
+    def test_repeated_relocation_preserves_old_and_intermediate_aliases(self):
+        import shutil
+        self.adopt()
+        first_plan = deepcopy(self.plan)
+        # New outputs written after the first adoption use the current root.
+        self.call('task.add', task={'id': 'later-writer', 'role': 'class', 'mode': 'code',
+            'description': 'New path since first adoption', 'outputs': [str(self.clone / 'output/later.txt')]})
+        (self.clone / 'output/later.txt').write_text('new material')
+        previous_root = self.clone
+        self.clone = self.root / 'second-clone'
+        shutil.copytree(previous_root, self.clone)
+        self.workspace = self.clone / 'workflow'
+        source = self.disk()
+        self.plan = self.make_plan()
+        self.plan.update(request_id='relocate-second', expected_schema=3, expected_binding_revision=1,
+                         origin_workspace=str(previous_root / 'workflow'),
+                         bindings=[{'from': str(previous_root), 'to': str(self.clone)}])
+        before = (self.workspace / 'coordination/state.json').read_bytes()
+        self.assertTrue(relocate(self.workspace, self.plan, dry_run=True)['prepared'])
+        self.assertEqual(before, (self.workspace / 'coordination/state.json').read_bytes())
+        result = self.adopt()
+        self.assertEqual(2, result['relocation']['binding_revision'])
+        self.assertEqual(source['tasks'], self.disk()['tasks'])
+        for alias in (self.old, previous_root, self.clone):
+            self.assertEqual(self.clone / 'output/code.txt', resolve_path(self.workspace, self.disk(), str(alias / 'output/code.txt')))
+        self.assertEqual(result, self.adopt())
+        self.assertTrue(relocate(self.workspace, first_plan)['committed'])
+        self.assertEqual(2, self.disk()['relocation']['binding_revision'])
+        self.assertEqual('new material', resolve_path(self.workspace, self.disk(), str(previous_root / 'output/later.txt')).read_text())
+        self.assertTrue(self.call('status')['ok'])
+
+    def test_second_relocation_rejects_stale_binding_and_active_native_writer(self):
+        import shutil
+        self.adopt()
+        self.call('task.claim', backend='native', task_id='app-owner')
+        previous_root = self.clone
+        self.clone = self.root / 'second-clone'
+        shutil.copytree(previous_root, self.clone)
+        self.workspace = self.clone / 'workflow'
+        self.plan = self.make_plan()
+        self.plan.update(request_id='relocate-second', expected_schema=3, expected_binding_revision=0,
+                         origin_workspace=str(previous_root / 'workflow'),
+                         bindings=[{'from': str(previous_root), 'to': str(self.clone)}])
+        with self.assertRaisesRegex(ReplicaError, 'binding revision'):
+            self.adopt()
+        self.plan['expected_binding_revision'] = 1
+        self.plan['fence']['active_runs'] = [{'run_id': r['id']} for r in self.disk()['runs'].values() if r['state'] != 'stopped']
+        with self.assertRaisesRegex(ReplicaError, 'native writer'):
+            self.adopt()
 
     def test_R03_relative_unmoved_workspace_remains_supported(self):
         import contextlib, io

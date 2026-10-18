@@ -73,7 +73,7 @@ def parser():
     migrate = commands.add_parser("migrate", help="Explicit locked schema-1 backup, verification and schema-2 switch")
     migrate.add_argument("--expected-revision", type=int, required=True)
     migrate.add_argument("--expected-sha256", required=True)
-    relocate = commands.add_parser("relocate", help="Guarded native-only schema-2 path adoption")
+    relocate = commands.add_parser("relocate", help="Guarded native-only schema-2/3 workspace relocation")
     relocate.add_argument("--file", required=True)
     relocate.add_argument("--dry-run", action="store_true")
     resolve = commands.add_parser("resolve", help="Resolve one explicit path, locator or file URI")
@@ -126,7 +126,7 @@ def parser():
     git_checkpoint.add_argument("--run", required=True)
     git_checkpoint.add_argument("--path", action="append", help="Optional subset of assigned outputs; all must be stable until return")
     git_checkpoint.add_argument("--request-id", help="Reuse this ID when retrying the same save")
-    for name in ("git-status", "git-flush", "git-disable"):
+    for name in ("git-status", "git-flush", "git-disable", "git-resume"):
         commands.add_parser(name)
     for name in ("step", "run"):
         runner = commands.add_parser(name, help="Dispatch actual tool-enabled Codex workers")
@@ -166,6 +166,12 @@ def dispatch(args):
             return git_sync.request_push(workspace)
         if args.command == "git-disable":
             return git_sync.disable(workspace)
+        if args.command == "git-resume":
+            result = git_sync.resume(workspace)
+            from ..cli import start
+            service = start(Path(git_sync._read(Store(workspace), git_sync.CONFIG)['service_state']))
+            result['timer'] = 'starting' if service.get('replica_git_sync') else 'service_restart_required'
+            return result
         return {"ok": True, "git": git_sync.status(workspace)}
     if args.command == "init":
         project = _json(args.project)
@@ -191,7 +197,9 @@ def dispatch(args):
         return _apply(workspace, requests)
     if args.command == "relocate":
         from .relocation import relocate
-        request = _json(args.file, workspace)
+        # A restored schema-3 clone still names its previous directory. Read
+        # the explicit local plan before attempting ordinary bound operations.
+        request = _json(args.file)
         if request.get("op") != "workspace.relocate":
             raise ReplicaError("relocate requires workspace.relocate request")
         request.setdefault("request_id", stable_id("request", request))
