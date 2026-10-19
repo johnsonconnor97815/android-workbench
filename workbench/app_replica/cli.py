@@ -107,6 +107,11 @@ def parser():
     submit.add_argument("--unresolved", help="JSON unresolved array, defaults []")
     submit.add_argument("--class-revisions", help="JSON class-ID:revision map actually used")
     submit.add_argument("--dependency-revisions", help="JSON dependency-task-ID:revision map actually used")
+    submit.add_argument("--dependency-tokens", help="JSON dependency-task-ID:delivery_token map saved when reading inputs")
+    submit.add_argument("--scope", choices=("task", "source"), default="task")
+    submit.add_argument("--followups", help="JSON downstream obligations with stage, responsible task and hashed evidence")
+    submit.add_argument("--addresses-followups", help="JSON followup IDs explicitly covered by this delivery")
+    submit.add_argument("--inputs", help="JSON path/sha256 records for analysis, configuration or check inputs actually used")
     wait = commands.add_parser("wait")
     wait.add_argument("--task", required=True)
     wait.add_argument("--run", required=True)
@@ -222,6 +227,7 @@ def dispatch(args):
             return {"ok": result["ok"], "revision": result["revision"], "task": result["tasks"][args.task]}
         if args.command == "status" and args.summary:
             return {"ok": result["ok"], "revision": result["revision"], "project": result["project"],
+                    "delivery_protocol": result["delivery_protocol"], "occupied": result["occupied"],
                     "capacity": result["capacity"], "dispatch_policy": result["dispatch_policy"],
                     "inventory_status": result["inventory_status"],
                     "counts": result["counts"], "inventory_counts_by_kind": result["inventory_counts_by_kind"],
@@ -229,6 +235,7 @@ def dispatch(args):
                               for key, task in result["tasks"].items()},
                     "ready_task_ids": result["ready_task_ids"], "resumable_task_ids": result["resumable_task_ids"],
                     "mvp_results": {key: value["current_result"] for key, value in result["mvps"].items()},
+                    "followup_counts": result["followup_counts"], "followups": result["followups"],
                     **({"git": result["git"]} if "git" in result else {})}
         return result
     if args.command == "import":
@@ -272,7 +279,12 @@ def dispatch(args):
                                  "artifacts": artifacts, "self_checks": _json(args.checks, workspace),
                                  "unresolved": _json(args.unresolved, workspace) if args.unresolved else [],
                                  "class_revisions": _json(args.class_revisions, workspace) if args.class_revisions else {},
-                                 "dependency_revisions": _json(args.dependency_revisions, workspace) if args.dependency_revisions else {}})
+                                 "dependency_revisions": _json(args.dependency_revisions, workspace) if args.dependency_revisions else {},
+                                 "dependency_tokens": _json(args.dependency_tokens, workspace) if args.dependency_tokens else {},
+                                 "scope": args.scope,
+                                 "followups": _json(args.followups, workspace) if args.followups else [],
+                                 "inputs": _json(args.inputs, workspace) if args.inputs else [],
+                                 "addresses_followups": _json(args.addresses_followups, workspace) if args.addresses_followups else []})
     if args.command == "wait":
         checkpoint = _operand(workspace, args.checkpoint)
         if not checkpoint.is_file():

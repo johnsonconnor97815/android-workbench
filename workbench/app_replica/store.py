@@ -219,6 +219,8 @@ class Store:
         if state.get("schema") == 3:
             project("coordination/path-bindings.json", state["relocation"])
         project("project.json", state["project"])
+        if "followups" in state:
+            project("coordination/followups.json", {"followups": state["followups"]})
         project("inventory/manifest.json", {"reference": state["inventory_ref"], "scope_reference": state["scope_ref"],
                 "count": len(state["inventory"]),
                 "counts_by_kind": state["inventory"].manifest["counts_by_kind"]})

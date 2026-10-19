@@ -467,6 +467,28 @@ with patch.object(HostSlots, 'default_path', return_value=Path(slots)), patch('o
         self.assertTrue(result['delivery']['accepted'], result['delivery'])
         self.assertEqual(outputs, self.disk()['tasks']['writer']['outputs'])
 
+    def test_delivery_tokens_followups_and_inputs_use_adopted_paths(self):
+        self.adopt()
+        self.call('task.add', task={'id': 'assembly', 'role': 'class', 'mode': 'code',
+            'description': 'Downstream fixture writer', 'outputs': []})
+        run = self.call('task.claim', backend='native', task_id='writer', external_active=1)['run']
+        self.call('run.started', run_id=run['id'], backend_handle={'target': 'fixture-worker'})
+        artifacts = [{'path': path, 'sha256': sha(resolve_path(self.workspace, self.disk(), path).read_bytes())}
+                     for path in self.disk()['tasks']['writer']['outputs']]
+        result = self.call('task.submit', task_id='writer', run_id=run['id'], artifacts=artifacts,
+            self_checks=[{'name': 'source', 'result': 'pass', 'evidence': ['host fixture']}], unresolved=[],
+            scope='source', inputs=[artifacts[1]], followups=[{'id': 'compile', 'stage': 'build',
+                'task_id': 'assembly', 'description': 'Compile adopted source', 'evidence': [artifacts[1]]}])
+        self.assertTrue(result['delivery']['accepted'])
+        self.assertEqual(result['delivery']['inputs'][0]['path'], str(self.clone / 'output/checks.json'))
+        self.call('run.stopped', run_id=run['id'], outcome='delivered',
+                  observation={'confirmed': True, 'writers_stopped': True, 'evidence': ['host fixture']})
+        status = self.call('status')
+        self.assertIsNotNone(status['tasks']['writer']['delivery_token'])
+        self.assertEqual(status['followup_counts']['open'], 1)
+        (self.clone / 'output/checks.json').write_text('changed check proof')
+        self.assertIsNone(self.call('status')['tasks']['writer']['delivery_token'])
+
     def test_R09_directory_alias_correction_retains_child_owner(self):
         directory = self.clone / 'output/directory'
         directory.mkdir(parents=True)

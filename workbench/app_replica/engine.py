@@ -438,8 +438,38 @@ def _revisions(state, mapping, collection):
     return result
 
 
-def _delivery_issues(store, state, task, delivery):
+def _task_contract(task):
+    # Lifecycle revision, callers, inbox and timestamps are not source inputs.
+    return {key: deepcopy(task.get(key)) for key in
+            ("role", "mode", "object_id", "class_id", "outputs", "requires")}
+
+
+def _delivery_token(task, delivery):
+    """Content identity, not acceptance. Callers must validate currentness too."""
+    content = {key: delivery.get(key) for key in (
+        "artifacts", "self_checks", "unresolved", "class_revisions", "dependency_revisions",
+        "dependency_tokens", "inputs", "scope", "addresses_followups")}
+    content["contract"] = delivery.get("task_contract", _task_contract(task))
+    return "delivery-v1:" + hashlib.sha256(canonical_json(content).encode()).hexdigest()
+
+
+def _tokens(state, raw):
+    result = deepcopy(_mapping(raw, "dependency tokens"))
+    for identifier, token in result.items():
+        _get(state, "tasks", identifier)
+        if not isinstance(token, str) or not re.fullmatch(r"delivery-v1:[0-9a-f]{64}", token):
+            raise ReplicaError("Invalid dependency delivery token")
+    return result
+
+
+def _delivery_issues(store, state, task, delivery, *, visiting=(), cache=None):
+    cache = {} if cache is None else cache
+    if task["id"] in visiting:
+        return ["Delivery dependencies form a cycle"]
+    visiting = (*visiting, task["id"])
     issues = []
+    if "task_contract" in delivery and delivery["task_contract"] != _task_contract(task):
+        issues.append("Task implementation contract changed")
     if (task["role"] == "function" or (task["role"] == "class" and task["mode"] == "code")) and not delivery["artifacts"]:
         issues.append("Implementation delivery has no code artifact")
     if {str(resolve_path(store.workspace, state, value)) for value in task["outputs"]} != {str(resolve_path(store.workspace, state, item["path"])) for item in delivery["artifacts"]}:
@@ -455,7 +485,7 @@ def _delivery_issues(store, state, task, delivery):
             issues.append(f"Missing required class revision: {identifier}")
     for req in task["requires"]:
         if "task_id" in req and req.get("when", "delivered") == "delivered":
-            if req["task_id"] not in delivery["dependency_revisions"]:
+            if req["task_id"] not in delivery["dependency_revisions"] and req["task_id"] not in delivery.get("dependency_tokens", {}):
                 issues.append(f"Missing required task revision: {req['task_id']}")
     run = state["runs"][delivery["run_id"]]
     if any(run.get("reported_" + field) not in {None, run[field]} for field in ("model", "effort")):
@@ -464,19 +494,198 @@ def _delivery_issues(store, state, task, delivery):
         for identifier, revision in delivery[key].items():
             if state[collection].get(identifier, {}).get("revision") != revision:
                 issues.append(f"Stale {collection} revision: {identifier}")
+    for identifier, token in delivery.get("dependency_tokens", {}).items():
+        dependency = state["tasks"].get(identifier)
+        if (not dependency or not _delivery_current(store, state, dependency, visiting=visiting, cache=cache)
+                or _delivery_token(dependency, dependency["deliveries"][-1]) != token):
+            issues.append(f"Stale dependency delivery: {identifier}")
     for artifact in delivery["artifacts"]:
         try:
             _artifact(store, state, artifact)
         except ReplicaError as exc:
             issues.append(str(exc))
+    for item in delivery.get("inputs", []):
+        try:
+            _requirement_evidence(store, state, item)
+        except ReplicaError as exc:
+            issues.append(str(exc))
     return issues
 
 
-def _delivery_current(store, state, task):
+def _delivery_current(store, state, task, *, visiting=(), cache=None):
+    cache = {} if cache is None else cache
+    if task["id"] in visiting:
+        return False
+    if task["id"] in cache:
+        return cache[task["id"]]
     if task["state"] != "delivered" or task["run_id"] or not task["deliveries"]:
         return False
     delivery = task["deliveries"][-1]
-    return delivery["accepted"] and not _delivery_issues(store, state, task, delivery)
+    current = delivery["accepted"] and not _delivery_issues(store, state, task, delivery,
+                                                           visiting=visiting, cache=cache)
+    cache[task["id"]] = current
+    return current
+
+
+def _followups(store, state, task, request):
+    result = []
+    for raw in _array(request.get("followups", []), "followups"):
+        item = deepcopy(_mapping(raw, "followup"))
+        identifier = stable_id("followup", task["id"], _id(item.get("id"), "local followup id"))
+        if any(value["id"] == identifier for value in result):
+            raise ReplicaError("Duplicate followup id")
+        if item.get("stage") not in {"assembly", "build", "runtime"}:
+            raise ReplicaError("Followup stage must be assembly, build or runtime")
+        owner = _get(state, "tasks", item.get("task_id"))
+        if owner["id"] == task["id"]:
+            raise ReplicaError("Downstream followup needs a different responsible task")
+        evidence = [_requirement_evidence(store, state, value) for value in
+                    _array(item.get("evidence"), "followup evidence")]
+        if not evidence:
+            raise ReplicaError("Followup needs evidence")
+        record = {"id": identifier, "source_task_id": task["id"], "task_id": owner["id"],
+                  "stage": item["stage"], "description": _text(item.get("description"), "followup description"),
+                  "evidence": evidence}
+        if item["stage"] == "runtime":
+            scope = deepcopy(_mapping(item.get("runtime_scope"), "followup runtime_scope"))
+            _text(scope.get("kind"), "followup runtime kind")
+            if not scope.get("conditions"):
+                raise ReplicaError("Runtime followup needs explicit observation conditions")
+            record["runtime_scope"] = scope
+        previous = state.get("followups", {}).get(identifier)
+        if previous and {key: previous[key] for key in record} != record:
+            raise ReplicaError("Followup definition is immutable; use a new local id")
+        result.append(record)
+    if result and request.get("scope") != "source":
+        raise ReplicaError("Downstream followups require explicit source delivery scope")
+    return result
+
+
+def _register_followups(state, followups):
+    for item in followups:
+        if item["id"] in state.get("followups", {}):
+            continue
+        state.setdefault("followups", {})[item["id"]] = {**deepcopy(item), "resolutions": []}
+
+
+def _notify_followups(store, state, task):
+    # Do not wake an assembler before source is actually usable. The ledger
+    # already preserves the obligation even for a failed/unfinished source run.
+    if not _delivery_current(store, state, task):
+        return
+    delivery = task["deliveries"][-1]
+    token = _delivery_token(task, delivery)
+    for record in state.get("followups", {}).values():
+        if record["source_task_id"] != task["id"] or record.get("notified_source_token") == token:
+            continue
+        item = {key: value for key, value in record.items()
+                if key not in {"resolutions", "notified_source_token", "notification_message_id", "notification_error"}}
+        message_id = stable_id("followup-message", item["id"], delivery["id"])
+        message = {"id": message_id, "type": "downstream_followup",
+            "sender": item["source_task_id"], "recipient": item["task_id"],
+            "task_id": item["source_task_id"], "related_request_id": None,
+            "payload": {**deepcopy(item), "source_token": token}, "evidence": deepcopy(item["evidence"]), "wake": True}
+        if message_id in state["messages"] and state["messages"][message_id] != message:
+            # Preserve immutable messages and the truthful stop acknowledgement.
+            record["notification_error"] = f"Immutable message already exists: {message_id}"
+            continue
+        state["messages"][message_id] = message
+        record.pop("notification_error", None)
+        record.update(notified_source_token=token, notification_message_id=message_id)
+
+
+def _followup_current(store, state, followup, *, cache=None):
+    cache = {} if cache is None else cache
+    if not followup["resolutions"]:
+        return "open"
+    record = followup["resolutions"][-1]
+    for key, identifier in (("source_token", followup["source_task_id"]), ("owner_token", followup["task_id"])):
+        task = state["tasks"][identifier]
+        if not _delivery_current(store, state, task, cache=cache) or _delivery_token(task, task["deliveries"][-1]) != record[key]:
+            return "stale"
+    try:
+        for item in record["evidence"]:
+            _requirement_evidence(store, state, item)
+    except ReplicaError:
+        return "stale"
+    if followup["stage"] == "runtime":
+        mvp = state["mvps"][record["mvp_id"]]
+        if mvp["records"][-1]["id"] != record["mvp_record_id"] or _mvp_current(store, state, mvp, cache=cache) != "pass":
+            return "stale"
+    return "resolved"
+
+
+def _followup_summary(store, state):
+    counts = {key: 0 for key in ("open", "resolved", "stale")}
+    cache = {}
+    for item in state.get("followups", {}).values():
+        counts[_followup_current(store, state, item, cache=cache)] += 1
+    return counts
+
+
+def _resolve_followup(store, state, request):
+    followup = _get(state, "followups", request.get("followup_id"))
+    if request.get("actor") != followup["task_id"]:
+        raise ReplicaError("Only the responsible task can resolve a followup")
+    source = state["tasks"][followup["source_task_id"]]
+    owner = state["tasks"][followup["task_id"]]
+    for key, task in (("source_token", source), ("owner_token", owner)):
+        if (not _delivery_current(store, state, task)
+                or request.get(key) != _delivery_token(task, task["deliveries"][-1])):
+            raise ReplicaError("Followup resolution needs current, stopped source and owner delivery tokens")
+    delivery = owner["deliveries"][-1]
+    if delivery.get("dependency_tokens", {}).get(source["id"]) != request["source_token"]:
+        raise ReplicaError("Owner delivery must bind the source delivery token actually checked")
+    if followup["id"] not in delivery.get("addresses_followups", []):
+        raise ReplicaError("Owner delivery does not explicitly address this followup")
+    evidence = [_requirement_evidence(store, state, item) for item in
+                _array(request.get("evidence"), "followup resolution evidence")]
+    if not evidence:
+        raise ReplicaError("Followup resolution needs evidence")
+    if not any(check.get("stage") == followup["stage"] and check["result"] == "pass"
+               for check in delivery["self_checks"]):
+        raise ReplicaError("Owner delivery needs a passing check for the followup stage")
+    record = {"source_token": request["source_token"], "owner_token": request["owner_token"],
+              "evidence": evidence, "recorded_at": _now()}
+    if followup["stage"] == "runtime":
+        mvp = _get(state, "mvps", request.get("mvp_id"))
+        # Require the exact source and responsible observation task in this
+        # bounded scenario. A passing unrelated scene cannot discharge it.
+        if not {source["id"], owner["id"]}.issubset(mvp["required_task_ids"]):
+            raise ReplicaError("Runtime followup MVP must cover source and owner tasks")
+        if _mvp_current(store, state, mvp) != "pass":
+            raise ReplicaError("Runtime followup needs a current passing paired MVP")
+        observed = mvp["records"][-1]["runtime_scope"]
+        if any(observed.get(key) != value for key, value in followup["runtime_scope"].items()):
+            raise ReplicaError("Paired MVP does not match the followup runtime scope")
+        record.update(mvp_id=mvp["id"], mvp_record_id=mvp["records"][-1]["id"])
+    followup["resolutions"].append(record)
+    return {"followup": followup, "current_status": "resolved"}
+
+
+def _settle_followups(store, state, task):
+    """Settle explicit assembly/build claims after real stop, without an LLM turn.
+
+    Runtime observations remain separate and use followup.resolve after the
+    paired MVP. Missing/failed proof leaves obligations open, never loses them.
+    """
+    results = {}
+    if not _delivery_current(store, state, task):
+        return results
+    delivery = task["deliveries"][-1]
+    for identifier in delivery.get("addresses_followups", []):
+        followup = state["followups"][identifier]
+        if followup["stage"] == "runtime" or _followup_current(store, state, followup) == "resolved":
+            continue
+        try:
+            _resolve_followup(store, state, {
+                "followup_id": identifier, "actor": task["id"],
+                "source_token": delivery.get("dependency_tokens", {}).get(followup["source_task_id"]),
+                "owner_token": _delivery_token(task, delivery), "evidence": delivery["artifacts"]})
+            results[identifier] = {"status": "resolved"}
+        except ReplicaError as exc:
+            results[identifier] = {"status": "open", "reason": str(exc)}
+    return results
 
 
 def _ready(store, state, task):
@@ -622,6 +831,8 @@ def _checks(raw):
             raise ReplicaError("Self-check result must be pass, fail or unknown")
         if not check.get("evidence"):
             raise ReplicaError("Self-check needs evidence")
+        if "stage" in check and check["stage"] not in {"source", "assembly", "build", "runtime"}:
+            raise ReplicaError("Self-check stage must be source, assembly, build or runtime")
     return result
 
 
@@ -640,10 +851,13 @@ def _coverage_summary(store, state):
             counts["copy_delivered"] += 1
     counts["copy_pending"] = scopes["copy"] - counts["copy_delivered"]
     residual = counts["copy_pending"] + counts["unknown"]
+    followups = _followup_summary(store, state)
+    source_complete = bool(state["inventory_status"]["complete"] and not residual)
     return {"counts": counts, "residual_count": residual,
             "inventory_complete": state["inventory_status"]["complete"],
             "limitations": state["inventory_status"]["limitations"],
-            "scope_complete": bool(state["inventory_status"]["complete"] and not residual),
+            "source_scope_complete": source_complete, "followup_counts": followups,
+            "scope_complete": source_complete and not (followups["open"] or followups["stale"]),
             "runtime_verified": False}
 
 
@@ -657,15 +871,22 @@ def _coverage(store, state):
             disposition = "copy_delivered" if tasks and all(_delivery_current(store, state, task) for task in tasks) else "copy_pending"
         groups[disposition].append(identifier)
     residual = groups["copy_pending"] + groups["unknown"]
+    followups = _followup_summary(store, state)
+    source_complete = bool(state["inventory_status"]["complete"] and not residual)
     return {"groups": groups, "counts": {key: len(value) for key, value in groups.items()},
             "residual": residual, "inventory_complete": state["inventory_status"]["complete"],
             "limitations": state["inventory_status"]["limitations"],
-            "scope_complete": bool(state["inventory_status"]["complete"] and not residual),
+            "source_scope_complete": source_complete, "followup_counts": followups,
+            "scope_complete": source_complete and not (followups["open"] or followups["stale"]),
             "runtime_verified": False}
 
 
 def _dispatch(store, state, request):
     op = request["op"]
+    if op == "followup.resolve":
+        if request.get("followup_id") not in state.get("followups", {}):
+            raise ReplicaError("Unknown followup id")
+        return _resolve_followup(store, state, request)
     if op == "project.update":
         changes = deepcopy(_mapping(request.get("changes"), "project changes"))
         if not changes or not request.get("evidence"):
@@ -894,15 +1115,39 @@ def _dispatch(store, state, request):
                 raise ReplicaError("Artifact is owned by a different writer")
         checks = _checks(request.get("self_checks"))
         unresolved = deepcopy(_array(request.get("unresolved"), "unresolved"))
+        scope = request.get("scope", "task")
+        if scope not in {"task", "source"}:
+            raise ReplicaError("Delivery scope must be task or source")
+        if scope == "source" and not (task["role"] == "function" or
+                                      (task["role"] == "class" and task["mode"] == "code")):
+            raise ReplicaError("Source delivery scope is only for implementation tasks")
+        followups = _followups(store, state, task, request)
+        tokens = _tokens(state, request.get("dependency_tokens", {}))
+        revisions = _revisions(state, request.get("dependency_revisions", {}), "tasks")
+        if tokens.keys() & revisions.keys():
+            raise ReplicaError("Use a delivery token or a legacy revision per dependency, not both")
+        addressed = deepcopy(_array(request.get("addresses_followups", []), "addresses_followups"))
+        for identifier in addressed:
+            _id(identifier, "followup id")
+        if len(set(addressed)) != len(addressed):
+            raise ReplicaError("Duplicate addressed followup")
+        for identifier in addressed:
+            if state.get("followups", {}).get(identifier, {}).get("task_id") != task["id"]:
+                raise ReplicaError("Addressed followup must belong to this responsible task")
         delivery = {"id": stable_id("delivery", run["id"], request["request_id"]), "run_id": run["id"],
                     "artifacts": artifacts, "self_checks": checks, "unresolved": unresolved,
                     "class_revisions": _revisions(state, request.get("class_revisions", {}), "classes"),
-                    "dependency_revisions": _revisions(state, request.get("dependency_revisions", {}), "tasks"),
+                    "dependency_revisions": revisions, "dependency_tokens": tokens,
+                    "inputs": [_requirement_evidence(store, state, item) for item in
+                               _array(request.get("inputs", []), "delivery inputs")],
+                    "format": 2, "scope": scope, "task_contract": _task_contract(task),
+                    "followups": followups, "addresses_followups": addressed,
                     "submitted_at": _now()}
         issues = _delivery_issues(store, state, task, delivery)
         delivery.update(stale=bool(issues), stale_reasons=issues,
                         accepted=bool(checks) and all(check["result"] == "pass" for check in checks) and not unresolved and not issues)
         task["deliveries"].append(delivery)
+        _register_followups(state, followups)
         task["state"] = "delivered"
         run["state"] = "delivery_pending_stop"
         _touch(task)
@@ -943,7 +1188,9 @@ def _dispatch(store, state, request):
         elif task["state"] != "waiting" or outcome != "waiting":
             task["state"] = "failed"
         _touch(task)
-        return {"run": run, "task": task, "released": True}
+        _notify_followups(store, state, task)
+        followups = _settle_followups(store, state, task)
+        return {"run": run, "task": task, "released": True, "followup_results": followups}
     if op == "task.resume":
         task = _get(state, "tasks", request.get("task_id"))
         if task["run_id"]:
@@ -1080,6 +1327,8 @@ def _mvp_record(store, state, request):
     record = {"id": stable_id("observation", request["request_id"]), "versions": versions,
               "runtime_scope": scope, "observations": paired, "results": results, "result": result,
               "task_revisions": {identifier: task["revision"] for identifier, task in tasks.items()},
+              "task_tokens": {identifier: _delivery_token(task, task["deliveries"][-1])
+                              for identifier, task in tasks.items()} if ready else None,
               "artifacts": [deepcopy(artifact) for task in tasks.values() if task["deliveries"]
                             for artifact in task["deliveries"][-1]["artifacts"]], "recorded_at": _now()}
     mvp["records"].append(record)
@@ -1087,11 +1336,17 @@ def _mvp_record(store, state, request):
     return {"mvp": mvp, "record": record, "implementation_ready": ready}
 
 
-def _mvp_current(store, state, mvp):
+def _mvp_current(store, state, mvp, *, cache=None):
+    cache = {} if cache is None else cache
     if not mvp["records"]:
         return "unknown"
     record = mvp["records"][-1]
-    if any(state["tasks"][identifier]["revision"] != revision for identifier, revision in record["task_revisions"].items()):
+    if record.get("task_tokens") is not None:
+        for identifier, token in record["task_tokens"].items():
+            task = state["tasks"][identifier]
+            if not task["deliveries"] or _delivery_token(task, task["deliveries"][-1]) != token:
+                return "stale"
+    elif any(state["tasks"][identifier]["revision"] != revision for identifier, revision in record["task_revisions"].items()):
         return "stale"
     try:
         for item in record["artifacts"]:
@@ -1100,7 +1355,7 @@ def _mvp_current(store, state, mvp):
             _observation(store, state, item)
     except ReplicaError:
         return "stale"
-    if not all(_delivery_current(store, state, state["tasks"][identifier]) for identifier in mvp["required_task_ids"]):
+    if not all(_delivery_current(store, state, state["tasks"][identifier], cache=cache) for identifier in mvp["required_task_ids"]):
         return "stale"
     return record["result"]
 
@@ -1201,15 +1456,22 @@ def _execute(workspace, request):
                 data = {"objects": dict(stored["inventory"])}
             else:
                 data = {key: deepcopy(value) for key, value in stored.items() if key not in {"receipts", "inventory"}}
+                data["delivery_protocol"] = 2
                 data["counts"] = {key: len(stored[key]) for key in ("inventory", "entries", "classes", "tasks", "runs")}
                 data["inventory_counts_by_kind"] = dict(stored["inventory"].manifest["counts_by_kind"])
                 if request.get("full") or request.get("summary") is False:
                     data["inventory"] = dict(stored["inventory"])
+                delivery_cache = {}
                 for task in data["tasks"].values():
-                    task["current_delivery"] = _delivery_current(store, stored, task)
-                    task["current_delivery_issues"] = _delivery_issues(store, stored, task, task["deliveries"][-1]) if task["deliveries"] else []
+                    task["current_delivery"] = _delivery_current(store, stored, task, cache=delivery_cache)
+                    task["current_delivery_issues"] = _delivery_issues(store, stored, task, task["deliveries"][-1], cache=delivery_cache) if task["deliveries"] else []
+                    task["delivery_token"] = _delivery_token(task, task["deliveries"][-1]) if task["current_delivery"] else None
+                data["followups"] = deepcopy(stored.get("followups", {}))
+                for item in data["followups"].values():
+                    item["current_status"] = _followup_current(store, stored, item, cache=delivery_cache)
+                data["followup_counts"] = _followup_summary(store, stored)
                 for mvp in data["mvps"].values():
-                    mvp["current_result"] = _mvp_current(store, stored, mvp)
+                    mvp["current_result"] = _mvp_current(store, stored, mvp, cache=delivery_cache)
                 data["occupied"] = sum(run["state"] != "stopped" for run in stored["runs"].values())
                 data["dispatch_policy"] = deepcopy(_dispatch_policy(stored))
                 data["ready_task_ids"] = [task["id"] for task in _ready_tasks(store, stored)]

@@ -113,6 +113,50 @@ class CliTests(unittest.TestCase):
         self.assertEqual(len(fixed["delivery"]["artifacts"]), 2)
         self.assertTrue(fixed["stop_pending"])
 
+    def test_source_followup_cli_flags_status_and_bound_inputs(self):
+        import hashlib
+
+        def request(value):
+            path = self.root / "operation.json"
+            path.write_text(json.dumps(value))
+            return self.call("apply", "--file", str(path))
+
+        def file(name, content):
+            path = self.workspace / "artifacts" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            return path
+
+        source = file("method.kt", "fixture method")
+        check = file("checks.json", json.dumps([{"name": "fixture source", "result": "pass", "evidence": ["host"]}]))
+        evidence = file("input.json", "fixture check configuration")
+        reference = {"path": str(evidence), "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()}
+        for identifier in ("method", "assembly"):
+            request({"op": "task.add", "task": {"id": identifier, "role": "function", "mode": "code",
+                     "description": "CLI source handoff fixture", "outputs": [str(source)] if identifier == "method" else []}})
+        claim = request({"op": "task.claim", "task_id": "method", "backend": "host_fixture"})
+        run = claim["run"]["id"]
+        request({"op": "run.started", "run_id": run, "backend_handle": "fixture"})
+        followups = file("followups.json", json.dumps([{"id": "compile", "stage": "build", "task_id": "assembly",
+                       "description": "Compile this fragment in the candidate", "evidence": [reference]}]))
+        inputs = file("inputs.json", json.dumps([reference]))
+        empty_map = file("tokens.json", "{}")
+        empty_list = file("addressed.json", "[]")
+        result = self.call("submit", "--task", "method", "--run", run, "--scope", "source",
+                           "--artifact", str(source), "--checks", str(check), "--followups", str(followups),
+                           "--inputs", str(inputs), "--dependency-tokens", str(empty_map),
+                           "--addresses-followups", str(empty_list))
+        self.assertTrue(result["delivery"]["accepted"])
+        self.assertEqual(result["delivery"]["scope"], "source")
+        self.assertEqual(result["delivery"]["inputs"], [reference])
+        summary = self.call("status", "--summary")
+        self.assertEqual(summary["delivery_protocol"], 2)
+        self.assertEqual(summary["occupied"], 1)
+        self.assertEqual(summary["followup_counts"]["open"], 1)
+        request({"op": "run.stopped", "run_id": run, "outcome": "delivered",
+                 "observation": {"confirmed": True, "writers_stopped": True, "evidence": ["host fixture"]}})
+        self.assertTrue(self.call("status", "--task", "method")["task"]["delivery_token"].startswith("delivery-v1:"))
+
     def test_recursive_runtime_fingerprint_and_checker_detect_subpackage_change(self):
         source = self.root / "source"
         nested = source / "workbench/app_replica"

@@ -103,6 +103,36 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 
 输出登记应指向文件。误把现有目录登记为输出时，先让任务实际停止，再通过 `apply` 提交 `task.outputs.remove_directories`，提供 `task_id`、原 `owner`、当前 `expected_revision`、待撤销的 `directories`、`reason` 和带 SHA-256 的文件 `evidence`。每个目录内的文件必须已逐个登记给同一任务；符号链接或特殊文件会拒绝。此操作只撤销指定目录的登记，保留文件、子文件负责人、依赖和交付历史，并记录修正及新任务版本。它不能撤销普通文件、尚不存在的产物或其他任务的登记，也不会自动通过交付。随后由原负责人继续正常提交。
 
+### 按内容复用交付与后续验证
+
+新版 `status --summary` 返回 `delivery_protocol:2`、`occupied` 和 `followup_counts`；`status --task TASK_ID` 的 `task.delivery_token` 是当前已通过且实际停止的交付内容标识，不可用时为 `null`。读取依赖产物时保存这个标识，提交时用 `--dependency-tokens used-tokens.json`，文件形如 `{"DEPENDENCY_TASK_ID":"delivery-v1:实际64位散列"}`。不能临提交时抄最新标识冒充之前使用的输入。同一依赖使用 token 或旧 `--dependency-revisions` 之一；类声明仍使用实际读过的 `--class-revisions`。
+
+任务暂停、恢复、领取和停止不改变内容标识。产物、检查内容、声明版本、真正的前置条件或依赖交付改变时仍会失效；正在写入、失败和未知交付不可复用。`--inputs used-inputs.json` 可以绑定工作流或已声明输出根目录内相关分析、构建设置及检查输入的 `{path,sha256}`；改动后旧检查失效。已有分析只在原载体散列、对象、问题和条件仍适用时复用；新疑点和反例仍需调查。
+
+方法/类代码可用 `--scope source` 明确交付源代码。尚未实现的逻辑、占位、失败/未知检查、影响当前代码正确性的疑点继续放在 `--unresolved`；它们仍阻止交付通过。后续组装、构建或成对运行验证可放在 `--followups followups.json`，例如：
+
+```json
+[
+  {
+    "id": "assemble-and-build",
+    "stage": "build",
+    "task_id": "EXISTING_FINAL_WRITER_TASK_ID",
+    "description": "将本方法组装到候选工程并验证对应编译目标",
+    "evidence": [{"path": "artifacts/method/build-requirement.md", "sha256": "实际文件散列"}]
+  }
+]
+```
+
+`stage` 是 `assembly`、`build` 或 `runtime`。运行待办还须提供 `runtime_scope`，明确 `kind` 和 `conditions`（需要时包括设备等限制）；结项 MVP 必须匹配，`host_fixture` 不能结项要求 `android` 的待办。责任任务必须已经登记且不同于来源任务；证据必须是实际文件。程序保存稳定的全局 followup ID，在源任务交付可用且确认停止后，向责任任务发送可唤醒消息，不提前或另行唤醒 App。同一来源任务的局部 `id` 定义不可修改；相同内容重复提交不重复通知，实际内容变化则再通知责任人处理过期验证。后续源代码提交即使省略 followups，已登记待办也不会消失，也不会仅因省略待办定义改变代码内容标识。
+
+责任任务读取共享待办，用 `--addresses-followups addressed.json` 列出本次实际覆盖的全局 ID，绑定所检查来源的 `dependency_tokens`，并提交具有对应 `stage` 的通过检查和真实产物。例如检查项增加 `"stage":"build"`。**组装/构建待办在程序确认责任任务成功停止后自动结项**；缺少绑定、对应检查或证据时仍保留待办及原因，无需为了报完成再启动一个模型回合。
+
+运行待办必须在成对观察完成后通过 `apply --file` 提交 `followup.resolve`：`followup_id`、`actor`（责任任务 ID）、实际检查的 `source_token`、`owner_token`、带 SHA-256 的 `evidence` 和 `mvp_id`。MVP 必须明确包含来源与责任任务，版本/条件/证据当前有效且观察通过；宿主模拟的通过仍只代表宿主场景。组装/构建待办也可用同一操作补交明确证据，但不能省略责任任务的绑定和阶段检查。依据改变后结项显示 `stale`，必须重新处理受影响部分。
+
+`coordination/followups.json` 是不可手改的待办视图，`status` 给出当前 open/resolved/stale 状态。`coverage.source_scope_complete` 只表示源码覆盖；`scope_complete` 还要求所有登记后续待办当前结项；两者都不能代替指定范围的 Android 构建、安装或成对运行证明。不要把普通源代码完成都通知 App；有范围/SDK 决策、跨负责人冲突或实际阻塞时才唤醒它。
+
+schema 2/3 无需批量迁移。旧交付的失败/未知、旧 revision 绑定和历史记录保持原样；它们不会自动转换或变成通过。只有原负责人有实际证据地重新交付时，才使用新字段。升级、备份和给同事的分阶段提示词见[交付流程升级手册](../../../../docs/app-replica-delivery-upgrade.md)。运行中的旧协调器不会热更新；接入新协议后不得混用旧程序读写或直接降级。
+
 需要等待时先保存 checkpoint，再 `wait --task TASK_ID --run RUN_ID --requires /path/requires.json --checkpoint /path/checkpoint.md` 并结束本轮。实现前置一般为 `["TASK_ID"]` 或 `[{"class_id":"CLASS_ID","revision":1}]`；App 要在依赖失败后也恢复处理时用 `[{"task_id":"TASK_ID","when":"stopped"}]`。具体答复可等待 `[{"message_id":"REPLY_ID"}]`。程序确认执行进程及其写入后代结束才释放名额；仅请求等待不会释放。
 
 旧的等待条件确需修正时，由 App 明确决定，再通过 `apply` 提交 `task.requires.replace`。请求包含 App/plan 任务 ID `actor`、目标 `task_id`、当前 `expected_revision`、完整有序的 `expected_requires`、替换后的 `requires`、`reason` 和带 SHA-256 的文件 `evidence`。证据可来自工作流内的文件（包括不可变消息）或已声明的工程输出根目录；只读校验，不登记输出，拒绝符号链接。任务必须处于空闲的 queued/waiting/failed 状态，且没有仍占用的运行；实现任务保留自身类声明前置。版本或旧条件不符、证据无效或依赖成环时拒绝。该操作保存修正历史并增加任务版本，不改变执行状态、交付结论或文件负责人；继续运行仍走正常调度。`task.add` 和 `task.wait` 仍只合并前置条件，不能删除旧条件。
