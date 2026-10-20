@@ -69,7 +69,7 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work apply --file /path/request.json
 ```
 
-`status --task TASK_ID` 直接读当前正式记录，只核对该任务及其所用依赖的产物、输入、类版本和内容标识；不遍历无关交付、MVP 或全局派发候选，也不修复视图。需要修复视图时使用 `recover`，全局进度仍使用 `status --summary`。单任务查询和全局状态返回 `coordination_protocol:1`，交付协议仍为 `delivery_protocol:2`。机械核对不能证明代码语义一致；语义自查仍由责任人执行，Main 针对具体缺口或变化复核，不为普通交接重复原版分析。
+`status --task TASK_ID` 直接读当前正式记录，只核对该任务及其所用依赖的产物、输入、类版本和内容标识；不遍历无关交付、MVP 或全局派发候选，也不修复视图。需要修复视图时使用 `recover`，全局进度仍使用 `status --summary`。单任务查询和全局状态返回 `coordination_protocol:2`，交付协议仍为 `delivery_protocol:2`。机械核对不能证明代码语义一致；语义自查仍由责任人执行，Main 针对具体缺口或变化复核，不为普通交接重复原版分析。
 
 `apply` 接受一个 JSON 请求或按顺序执行的请求数组。数组不是一个事务；每个请求有独立 receipt。省略 `request_id` 时按完整内容生成稳定 ID，相同文件重试不会重复执行。需要同样内容作为新事件时显式给新 ID。已提交但视图写出失败时保留 `committed:true`，先 `recover`，不要重做代码/外部动作。
 
