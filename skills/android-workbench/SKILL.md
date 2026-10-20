@@ -4,7 +4,7 @@ description: 统一组织 Android 环境准备、APK 导出、源码索引、App
 license: MIT
 metadata:
   author: johnsonconnor97815
-  version: "0.2.16"
+  version: "0.2.17"
 ---
 
 # Android Workbench
