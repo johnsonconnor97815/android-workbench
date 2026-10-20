@@ -7,12 +7,14 @@ import json
 import os
 from pathlib import Path
 import queue
+import signal
 import subprocess
 import sys
 import threading
 import time
 import uuid
 from .client import Client
+from .leases import retry_lease_call
 from .analysis_evidence import executable_identity
 from .mcp_evidence import SCHEMA as MCP_CALL_SCHEMA, MAX_RETAINED_RESPONSE, redact_request
 from .common import (
@@ -32,25 +34,13 @@ def proxy(project, directory, command):
         return nested_proxy(project, command)
     client = Client(project, directory, "mcp-proxy-" + uuid.uuid4().hex)
     owner = process_identity(os.getpid())
-    environment = client.submit(
-        operation="host.lease",
-        lease_owner=owner,
-        lease_mode="environment",
-        timeout=86400,
-        purpose="Live analysis MCP environment",
-    )
-    while True:
-        status = client.call("jobs.status", {"id": environment["id"]})
-        if status["state"] == "running":
-            break
-        if status["state"] in {"failed", "cancelled", "expired", "needs_recovery"}:
-            raise WorkbenchError("Cannot acquire analysis environment")
-        time.sleep(0.1)
+    environment = None
     proc = None
     incoming = deque()
     pending = {}
     waiting = None
     messages = queue.Queue()
+    input_closed = threading.Event()
     draining = False
     provider = {"direct_executable": executable_identity(command[0], cwd=Path(client.project)),
                 "server_info": None, "identity_status": "proxy_reported"}
@@ -71,6 +61,7 @@ def proxy(project, directory, command):
                 line, buffered = buffered.split(b"\n", 1)
                 messages.put(("input", line + b"\n"))
         messages.put(("eof", None))
+        input_closed.set()
 
     def output_reader():
         while True:
@@ -83,8 +74,15 @@ def proxy(project, directory, command):
             messages.put(("output", line))
         messages.put(("upstream_eof", None))
 
+    def call(method, params):
+        return retry_lease_call(client.call, method, params)
+
+    def submit(**spec):
+        spec["request_key"] = uuid.uuid4().hex
+        return retry_lease_call(client.submit, **spec)
+
     def release(job):
-        client.call("leases.release", {"id": job["id"]})
+        call("leases.release", {"id": job["id"]})
 
     def record_call(job, raw=b"", outcome="incomplete"):
         if job.get("_mcp_recorded"):
@@ -95,7 +93,7 @@ def proxy(project, directory, command):
                          "retained_base64": base64.b64encode(raw[:MAX_RETAINED_RESPONSE]).decode("ascii"),
                          "truncated": len(raw) > MAX_RETAINED_RESPONSE, "outcome": outcome},
         }
-        client.call("leases.record_mcp", {"id": job["id"], "record": record})
+        call("leases.record_mcp", {"id": job["id"], "record": record})
         job["_mcp_recorded"] = True
 
     def respond_busy(message):
@@ -122,7 +120,32 @@ def proxy(project, directory, command):
         proc.stdin.write(raw)
         proc.stdin.flush()
 
+    class ProxyStopped(Exception):
+        pass
+
+    def stop_proxy(signum, frame):
+        raise ProxyStopped()
+
+    previous_signals = {signum: signal.signal(signum, stop_proxy)
+                        for signum in (signal.SIGTERM, signal.SIGINT)}
     try:
+        threading.Thread(target=input_reader, daemon=True).start()
+        environment = submit(
+            operation="host.lease",
+            lease_owner=owner,
+            lease_mode="environment",
+            timeout=86400,
+            purpose="Live analysis MCP environment",
+        )
+        while True:
+            if input_closed.is_set():
+                return
+            status = call("jobs.status", {"id": environment["id"]})
+            if status["state"] == "running":
+                break
+            if status["state"] in {"failed", "cancelled", "expired", "needs_recovery"}:
+                raise WorkbenchError("Cannot acquire analysis environment")
+            time.sleep(0.1)
         proc = subprocess.Popen(
             command,
             cwd=client.project,
@@ -131,17 +154,16 @@ def proxy(project, directory, command):
             stderr=sys.stderr,
             start_new_session=True,
         )
-        client.call(
+        call(
             "leases.track",
             {"id": environment["id"], "identity": process_identity(proc.pid)},
         )
-        threading.Thread(target=input_reader, daemon=True).start()
         threading.Thread(target=output_reader, daemon=True).start()
         last_poll = 0
         while True:
             if time.monotonic() - last_poll > 0.2:
                 last_poll = time.monotonic()
-                environment_state = client.call(
+                environment_state = call(
                     "leases.state", {"id": environment["id"]}
                 )
                 draining = environment_state.get("draining")
@@ -150,7 +172,7 @@ def proxy(project, directory, command):
                         "Analysis environment lease ended unexpectedly"
                     )
                 for active in pending.values():
-                    state = client.call("leases.state", {"id": active["id"]})
+                    state = call("leases.state", {"id": active["id"]})
                     if state["state"] != "running":
                         raise WorkbenchError(
                             "Analysis call exceeded its lease; upstream will be stopped"
@@ -158,14 +180,16 @@ def proxy(project, directory, command):
                 if waiting:
                     job, message, raw = waiting
                     if draining:
-                        client.call("jobs.cancel", {"id": job["id"]})
+                        call("jobs.cancel", {"id": job["id"]})
                         respond_busy(message)
                         waiting = None
                     else:
-                        state = client.call("jobs.status", {"id": job["id"]})["state"]
+                        state = call("jobs.status", {"id": job["id"]})["state"]
                         if state == "running":
                             job["_mcp_request"] = redact_request(message)
                             pending[encode(message.get("id"))] = job
+                            call("leases.expect_mcp", {"id": job["id"], "environment": environment["id"]})
+                            job["_mcp_expected_confirmed"] = True
                             send(raw)
                             waiting = None
                         elif state in {
@@ -182,7 +206,7 @@ def proxy(project, directory, command):
                     break
             if incoming and not pending and not waiting and not draining:
                 message, raw = incoming.popleft()
-                job = client.submit(
+                job = submit(
                     operation="host.lease",
                     lease_owner=owner,
                     lease_mode="analysis",
@@ -231,17 +255,47 @@ def proxy(project, directory, command):
                     initialize_ids.discard(encode(message.get("id")))
                 sys.stdout.buffer.write(raw)
                 sys.stdout.buffer.flush()
+    except ProxyStopped:
+        pass
     finally:
-        if proc:
-            stop_group(proc)
-        if waiting:
-            client.call("jobs.cancel", {"id": waiting[0]["id"]})
-        if not descendants(os.getpid()):
-            for job in pending.values():
-                record_call(job)
-                release(job)
-            release(environment)
-        # If descendants survive, owner death leaves a recovery block instead of a false release.
+        # Cleanup operations are independent: one unavailable RPC must not
+        # prevent the other call leases or the environment from being closed.
+        errors = []
+
+        def cleanup(function, *args):
+            try:
+                function(*args)
+            except BaseException as error:
+                errors.append(error)
+
+        try:
+            if proc:
+                cleanup(stop_group, proc)
+            if waiting:
+                cleanup(call, "jobs.cancel", {"id": waiting[0]["id"]})
+            try:
+                tree_clear = not descendants(os.getpid(), strict=True)
+            except BaseException as error:
+                errors.append(error)
+                tree_clear = False
+            if tree_clear:
+                if environment:
+                    cleanup(call, "leases.close", {"id": environment["id"]})
+                for job in pending.values():
+                    cleanup(record_call, job)
+                    if job.get("_mcp_recorded") or job.get("_mcp_expected_confirmed"):
+                        cleanup(release, job)
+                    else:
+                        errors.append(WorkbenchError("MCP call expectation and receipt unconfirmed; lease retained"))
+                if environment:
+                    cleanup(release, environment)
+                    cleanup(call, "jobs.cancel", {"id": environment["id"]})
+            # Surviving or unreadable descendants retain the recovery block.
+            if errors:
+                print("Analysis proxy cleanup incomplete: " + "; ".join(str(error) for error in errors), file=sys.stderr)
+        finally:
+            for signum, handler in previous_signals.items():
+                signal.signal(signum, handler)
 
 
 def nested_proxy(project, command):

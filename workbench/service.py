@@ -31,6 +31,8 @@ from .common import (
     overlap,
     path_resource,
     process_identity,
+    process_status,
+    descendants,
     resource,
     same_process,
 )
@@ -667,37 +669,80 @@ class Service:
                     )
                     self.store.event(job["id"], "cancel_requested", {})
                 return self.public(self.store.job(job["id"]))
-            if method in ("leases.release", "leases.state", "leases.track", "leases.record_mcp"):
+            if method in ("leases.release", "leases.close", "leases.state", "leases.track", "leases.expect_mcp", "leases.record_mcp"):
                 job = self.own(p["id"], session)
                 if job["spec"]["operation"] != "host.lease":
                     raise WorkbenchError("Not a lease job")
+                if method == "leases.expect_mcp":
+                    spec = job["spec"]
+                    if job["state"] != "running" or spec.get("lease_mode") != "analysis" or spec.get("lease_released"):
+                        raise WorkbenchError("MCP call requires a running unreleased analysis lease")
+                    environment = self.own(p["environment"], session)
+                    if (environment["spec"]["operation"] != "host.lease"
+                            or environment["spec"].get("lease_mode") != "environment"
+                            or environment["state"] != "running"
+                            or environment["spec"].get("lease_tree_closed")
+                            or environment["spec"].get("lease_owner") != spec.get("lease_owner")
+                            or spec.get("lease_environment", environment["id"]) != environment["id"]):
+                        raise WorkbenchError("MCP call requires its owner's active environment lease")
+                    spec["mcp_expected"] = True
+                    spec["lease_environment"] = environment["id"]
+                    self.store.update(job["id"], spec=spec)
+                    atomic_json(Path(spec["directory"]) / "normalized.json", spec)
+                    return {"expected": True}
                 if method == "leases.record_mcp":
                     if (job["state"] != "running" or job["spec"].get("lease_mode") != "analysis"
-                            or job["spec"].get("lease_released") or job["spec"].get("mcp_receipt")):
+                            or job["spec"].get("lease_released")):
                         raise WorkbenchError("MCP recording requires an owned running unreleased analysis lease")
                     from .mcp_evidence import record_mcp_call
                     spec = job["spec"]
+                    record_digest = digest(p.get("record"))
+                    if spec.get("mcp_receipt"):
+                        if spec.get("mcp_record_digest") != record_digest:
+                            raise WorkbenchError("MCP receipt retry differs from the recorded request")
+                        return spec["mcp_receipt"]
                     spec["mcp_receipt"] = record_mcp_call(spec["directory"], p.get("record"))
+                    spec["mcp_record_digest"] = record_digest
+                    spec["mcp_incomplete"] = p["record"]["response"]["outcome"] == "incomplete"
                     self.store.update(job["id"], spec=spec)
                     atomic_json(Path(spec["directory"]) / "normalized.json", spec)
                     return spec["mcp_receipt"]
-                if method == "leases.release":
+                if method in ("leases.release", "leases.close"):
+                    from .leases import verify_lease_tree
+
                     spec = job["spec"]
-                    tracked = spec.get("lease_process")
-                    if tracked and same_process(tracked):
-                        raise WorkbenchError(
-                            "Upstream process is still alive; stop it before release"
-                        )
-                    spec["lease_released"] = True
+                    if spec.get("mcp_expected") and (not spec.get("mcp_receipt") or spec.get("mcp_incomplete")):
+                        environment = self.store.job(spec["lease_environment"])
+                        if not environment["spec"].get("lease_tree_closed"):
+                            raise WorkbenchError("Incomplete MCP call requires supervised upstream tree closure")
+                        verify_lease_tree(environment["spec"])
+                    if spec.get("lease_mode") == "environment":
+                        verify_lease_tree(spec)
+                    spec["lease_tree_closed"] = True
+                    if method == "leases.release":
+                        spec["lease_released"] = True
                     self.store.update(job["id"], spec=spec)
                     atomic_json(
                         Path(spec["directory"]) / "normalized.json",
                         spec,
                     )
-                    return {"released": True}
+                    return {"released": spec.get("lease_released", False), "closed": True}
                 if method == "leases.track":
-                    if not same_process(p["identity"]):
+                    if job["spec"].get("lease_mode") != "environment":
+                        raise WorkbenchError("Only an environment lease tracks the upstream process tree")
+                    if job["spec"].get("lease_tree_closed"):
+                        raise WorkbenchError("Lease process tree is already closed")
+                    if job["state"] != "running" or job["spec"].get("lease_released"):
+                        raise WorkbenchError("Upstream tracking requires a running unreleased lease")
+                    tracked = job["spec"].get("lease_process")
+                    if tracked is not None and tracked != p.get("identity"):
+                        raise WorkbenchError("Tracked upstream identity cannot be replaced")
+                    if process_status(p.get("identity")) != "alive":
                         raise WorkbenchError("Upstream process not alive")
+                    owner = job["spec"].get("lease_owner")
+                    if (process_status(owner) != "alive" or p["identity"] not in descendants(owner["pid"], strict=True)
+                            or p["identity"]["group"] != p["identity"]["pid"]):
+                        raise WorkbenchError("Upstream must be an isolated descendant of the lease owner")
                     spec = job["spec"]
                     spec["lease_process"] = p["identity"]
                     self.store.update(job["id"], spec=spec)
@@ -1753,6 +1798,7 @@ class Service:
                 return {"released": spec.get("device_released", False)}
             if method == "worker.lease_state":
                 return {"released": job["spec"].get("lease_released", False),
+                        "mcp_expected": job["spec"].get("mcp_expected", False),
                         "mcp_receipt": job["spec"].get("mcp_receipt")}
             if method in ("worker.validate_entry", "worker.validate_mcp"):
                 ident = process_identity(p["pid"])

@@ -40,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from workbench.common import same_process
+from workbench.common import process_status, process_group_status
 
 
 def read_json(path):
@@ -84,11 +84,17 @@ def main():
                 if any(r.get("mode") != "read" for r in normalized.get("resources", [])):
                     raise RuntimeError("Host lease reserved a writable resource")
                 lease_owner = normalized.get("lease_owner")
-                if same_process(lease_owner):
+                owner_status = process_status(lease_owner)
+                if owner_status == "alive":
                     raise RuntimeError("Original lease owner is still alive")
+                if owner_status != "dead":
+                    raise RuntimeError("Original lease owner state is unknown")
                 lease_process = normalized.get("lease_process")
-                if same_process(lease_process):
-                    raise RuntimeError("Tracked upstream process is still alive")
+                if lease_process is not None and process_group_status(lease_process) != "dead":
+                    raise RuntimeError("Tracked upstream process tree is alive or unknown")
+                if not (normalized.get("lease_tree_closed") is True
+                        or (normalized.get("lease_released") is True and lease_process is not None)):
+                    raise RuntimeError("Host lease process tree closure is unknown; vanished roots do not prove cleanup")
             else:
                 old_result = read_json(folder / "result.json")
                 if old_result.get("state") != "failed":
@@ -108,13 +114,13 @@ def main():
                     continue
                 data = read_json(path)
                 identities = data if isinstance(data, list) else [data.get("identity")]
-                if any(same_process(x) for x in identities if x):
-                    raise RuntimeError("Old host-lease process is still alive")
+                if not identities or any(process_status(x) != "dead" for x in identities):
+                    raise RuntimeError("Old host-lease process is alive or unknown")
 
             result["checked_jobs"].append(identifier)
         result["checks"] = [
             "host_lease_read_only",
-            "lease_explicitly_released_or_dead_owner_reconciled",
+            "lease_explicitly_released_or_supervised_tree_closed",
             "original_owner_absent",
             "tracked_upstream_absent",
             "old_processes_absent",

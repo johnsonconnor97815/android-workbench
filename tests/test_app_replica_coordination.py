@@ -213,7 +213,7 @@ class CoordinationTests(unittest.TestCase):
         self.assertNotIn(other_input["path"], reads)
         Path(source["path"]).write_text("changed configuration")
         self.assertIsNone(self.call("status", task_id=second["id"])["task"]["delivery_token"])
-        self.assertEqual(current["coordination_protocol"], 1)
+        self.assertEqual(current["coordination_protocol"], 2)
 
     def test_native_stop_next_preserves_stop_gate_and_replays_pending_reservation(self):
         first, second = self.task("first"), self.task("second")

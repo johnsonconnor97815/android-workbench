@@ -142,6 +142,9 @@ def parser():
     native.add_argument("--external-active", required=True, type=int,
                         help="Observed host agents outside this workflow, including Main if it uses a slot")
     native.add_argument("--task")
+    native.add_argument("--group", help="Select a recorded related-class group; one actual run at a time")
+    native.add_argument("--focus-output", action="append",
+                        help="Exact assigned output identity to expand in this run's prompt; does not change ownership")
     native.add_argument("--stopped-file", help="One run.stopped JSON request with actual native host stop evidence")
     return result
 
@@ -229,6 +232,7 @@ def dispatch(args):
                     "delivery_protocol": result["delivery_protocol"],
                     "coordination_protocol": result["coordination_protocol"], "occupied": result["occupied"],
                     "capacity": result["capacity"], "dispatch_policy": result["dispatch_policy"],
+                    "task_groups": result.get("task_groups", {}),
                     "inventory_status": result["inventory_status"],
                     "counts": result["counts"], "inventory_counts_by_kind": result["inventory_counts_by_kind"],
                     "tasks": {key: {field: task[field] for field in ("role", "mode", "state", "run_id")}
@@ -294,6 +298,7 @@ def dispatch(args):
                                  "checkpoint": {"path": str(checkpoint), "sha256": hashlib.sha256(read_regular(checkpoint)).hexdigest()}})
     if args.command == "native-next":
         return native_next(workspace, external_active=args.external_active, task_id=args.task,
+                           group_id=args.group, focus_outputs=args.focus_output,
                            stopped=_json(args.stopped_file, workspace) if args.stopped_file else None)
     runner = Runner(workspace, host_capacity=args.host_capacity, slots_path=args.slots_file, executable=args.codex)
     if args.command == "step":

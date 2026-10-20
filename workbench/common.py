@@ -17,6 +17,10 @@ class WorkbenchError(RuntimeError):
     pass
 
 
+class SchedulerUnavailable(WorkbenchError):
+    """Transport failure; only callers with idempotent requests may retry it."""
+
+
 def state_dir(value=None):
     return (
         Path(
@@ -101,6 +105,67 @@ def same_process(identity):
     return bool(identity) and process_identity(identity["pid"]) == identity
 
 
+def process_status(identity):
+    """Lease checks must distinguish a dead process from an unreadable identity."""
+    if (not isinstance(identity, dict) or type(identity.get("pid")) is not int
+            or identity["pid"] <= 0 or type(identity.get("group")) is not int
+            or identity["group"] <= 0 or not isinstance(identity.get("start"), str)
+            or not identity["start"].isascii() or not identity["start"].isdigit() or not isinstance(identity.get("boot"), str)
+            or not identity["boot"]):
+        return "unknown"
+    try:
+        if str(uuid.UUID(identity["boot"])) != identity["boot"]:
+            return "unknown"
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if not boot or str(uuid.UUID(boot)) != boot:
+            return "unknown"
+        if boot != identity["boot"]:
+            return "dead"
+        stat = Path(f"/proc/{identity['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+        if stat[0] == "Z" or stat[19] != identity["start"]:
+            return "dead"
+        return "alive" if int(stat[2]) == identity["group"] else "unknown"
+    except (FileNotFoundError, ProcessLookupError):
+        # A missing boot-id file does not establish process death.
+        if "boot" in locals():
+            try:
+                os.kill(identity["pid"], 0)
+            except ProcessLookupError:
+                return "dead"
+            except OSError:
+                pass
+        return "unknown"
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+
+
+def process_group_status(identity):
+    """Check an isolated upstream group even after its original leader exited."""
+    status = process_status(identity)
+    if status != "dead":
+        return status
+    if identity["group"] != identity["pid"]:
+        return "unknown"
+    try:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if not boot or str(uuid.UUID(boot)) != boot:
+            return "unknown"
+        if boot != identity["boot"]:
+            return "dead"
+        for path in Path("/proc").iterdir():
+            if not path.name.isdigit():
+                continue
+            try:
+                fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+                if fields[0] != "Z" and int(fields[2]) == identity["group"]:
+                    return "alive"
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+        return "dead"
+    except (OSError, ValueError, IndexError):
+        return "unknown"
+
+
 def is_adb_server(identity):
     if not identity:
         return False
@@ -144,8 +209,10 @@ def rpc(directory, method, params=None, token=None, timeout=10):
             with client.makefile("rb") as stream:
                 data = stream.readline(MAX_MESSAGE + 1)
         except OSError as error:
-            raise WorkbenchError(f"Scheduler unavailable: {error}") from error
-    if not data or len(data) > MAX_MESSAGE:
+            raise SchedulerUnavailable(f"Scheduler unavailable: {error}") from error
+    if not data:
+        raise SchedulerUnavailable("Scheduler unavailable: connection closed before response")
+    if len(data) > MAX_MESSAGE:
         raise WorkbenchError("Invalid scheduler response")
     result = json.loads(data)
     if "error" in result:
@@ -178,7 +245,7 @@ def resource(key, mode="write"):
     return {"key": key, "mode": mode}
 
 
-def descendants(pid):
+def descendants(pid, strict=False):
     """Identify only processes descended from this known supervisor."""
     processes = {}
     for path in Path("/proc").iterdir():
@@ -188,8 +255,11 @@ def descendants(pid):
             fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
             if fields[0] != "Z":
                 processes[int(path.name)] = int(fields[1])
-        except (OSError, ValueError):
+        except (FileNotFoundError, ProcessLookupError):
             continue
+        except (OSError, ValueError, IndexError):
+            if strict:
+                raise WorkbenchError("Descendant process state is unknown")
     owned = {pid}
     while True:
         extra = {
@@ -201,6 +271,10 @@ def descendants(pid):
     remaining = []
     for child in owned - {pid}:
         identity = process_identity(child)
+        if strict and identity is None and Path(f"/proc/{child}").exists():
+            status = Path(f"/proc/{child}/stat").read_text().rsplit(")", 1)[1].split()[0]
+            if status != "Z":
+                raise WorkbenchError("Descendant process identity is unknown")
         if identity and not is_adb_server(identity):
             remaining.append(identity)
     return remaining

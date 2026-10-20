@@ -382,7 +382,7 @@ class Runner:
         self.directory = Path(self.spec["directory"])
         self.started = time.monotonic()
         self.cleanup_errors = []
-        self.uncertain = False
+        self.uncertain = self.spec["operation"] == "host.lease"
         self.active = None
         self.device = device or Device(self)
         self.lock_fd = None
@@ -394,13 +394,19 @@ class Runner:
         self.analysis_status = {}
 
     def call(self, method, **values):
-        return rpc(
-            self.grant["state"],
-            "worker." + method,
-            {"id": self.grant["job"], **values},
-            self.grant["token"],
-            timeout=125 if method == "checkpoint" else 10,
-        )
+        def request():
+            return rpc(
+                self.grant["state"],
+                "worker." + method,
+                {"id": self.grant["job"], **values},
+                self.grant["token"],
+                timeout=125 if method == "checkpoint" else 10,
+            )
+        if self.spec["operation"] == "host.lease" and method in {"ready", "authorize", "lease_state", "finished"}:
+            from .leases import retry_lease_call
+
+            return retry_lease_call(request)
+        return request()
 
     def authorize(self, cleanup=False):
         if self.signal_cancel and not cleanup:

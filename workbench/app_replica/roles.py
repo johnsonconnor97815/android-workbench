@@ -7,6 +7,7 @@ import sys
 import tomllib
 
 from .store import ReplicaError
+from .prompt_manifest import output_prompt
 
 
 DEFAULT_MODELS = {
@@ -45,6 +46,7 @@ def task_prompt(workspace, project, task, run):
     command = shlex.join([sys.executable, str(root / "scripts/app_replica.py"),
                           "--workspace", str(workspace)])
     task_path = workspace / "tasks" / task["id"] / "task.json"
+    outputs_note = output_prompt(workspace, project, task, run)
     mode_note = ""
     if task["role"] == "class" and task["mode"] == "code":
         mode_note = "This is class CODE mode: implement/assemble the published structure using Sol."
@@ -52,15 +54,12 @@ def task_prompt(workspace, project, task, run):
         mode_note = "This is EXTRACTION mode: source-linked mechanical extraction only, using Luna."
     binding_note = ""
     if project.get("_path_binding"):
-        from .paths import PathBindings
         binding = project["_path_binding"]
-        resolver = PathBindings(workspace, binding["bindings"], binding["revision"])
-        effective_outputs = [str(resolver.path(value)) for value in task["outputs"]]
         binding_note = f"""This workspace was explicitly adopted for native continuation. A prior CLI handle is historical provenance, not resumed native context.
 Current binding projection: {binding['projection']}
 Effective project roots and sources: {json.dumps({k: v for k, v in project.items() if k in {'execution_root', 'output_path', 'output_paths', 'analysis_root', 'source_paths', 'workbench_source'}}, ensure_ascii=False)}
-Effective assigned outputs: {json.dumps(effective_outputs, ensure_ascii=False)}
-Historical project/task/class/message/source values stay unchanged. Resolve each explicit filesystem operand using {command} resolve --kind path|locator|file_uri --value VALUE before opening it.
+Historical project/task/class/message/source values stay unchanged. Resolve each App filesystem operand using {command} resolve --kind path|locator|file_uri --value VALUE before opening it.
+The current Workbench source role contract and documentation under {root} are a direct-read exception: read those maintained source files as given, without the App operand resolver.
 Old embedded source/script/prose paths are not rewritten. A metadata binding does not repair shell commands or build scripts; update actual runtime operands through their existing owner when needed.
 Read any host_adoption message, its bound checkpoint and every listed inherited message ID; prior inbox assignment does not prove handling.
 """
@@ -68,6 +67,7 @@ Read any host_adoption message, its bound checkpoint and every listed inherited 
 
 {mode_note}
 {binding_note}
+{outputs_note}
 Assigned task: {task_path}
 Current run ID: {run['id']}
 New messages assigned to this run: {run.get('inbox_message_ids', [])}. Read their files in messages/ and answer through the same durable protocol.

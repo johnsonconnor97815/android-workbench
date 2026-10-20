@@ -2,20 +2,48 @@
 
 import json
 from pathlib import Path
+import time
 
 from .common import (
     resource,
     path_resource,
-    same_process,
     WorkbenchError,
     file_hash,
+    SchedulerUnavailable,
+    process_status,
+    process_group_status,
+    descendants,
 )
+
+
+def retry_lease_call(function, *args, **kwargs):
+    """Retry transport failures only; callers must supply an idempotent operation."""
+    for attempt in range(3):
+        try:
+            return function(*args, **kwargs)
+        except SchedulerUnavailable:
+            if attempt == 2:
+                raise
+            time.sleep(0.2)
+
+
+def verify_lease_tree(spec):
+    """A close checkpoint cannot excuse a currently live or unreadable tree."""
+    tracked = spec.get("lease_process")
+    if tracked is not None and process_group_status(tracked) != "dead":
+        raise WorkbenchError("Upstream process tree is alive or unknown; stop it before release")
+    owner = spec.get("lease_owner")
+    owner_status = process_status(owner)
+    if owner_status == "unknown" or (owner_status == "dead" and not spec.get("lease_tree_closed")):
+        raise WorkbenchError("Lease owner is absent or unknown; supervised tree closure required")
+    if owner_status == "alive" and descendants(owner["pid"], strict=True):
+        raise WorkbenchError("Lease owner descendants are still alive")
 
 
 def normalize_lease(spec, project, root):
     mode = spec.pop("lease_mode", "environment")
     owner = spec.pop("lease_owner", None)
-    if not owner or not same_process(owner):
+    if process_status(owner) != "alive":
         raise WorkbenchError("Live lease owner required")
     spec["lease_owner"] = owner
     spec["readonly"] = True
@@ -41,8 +69,15 @@ def execute_lease(runner):
             runner.authorize()
             state = runner.call("lease_state")
             if state.get("released"):
+                # The service separately confirmed physical cleanup. A missing
+                # or invalid call receipt must not turn that into a stale lock.
+                runner.uncertain = False
                 receipt = state.get("mcp_receipt")
                 if receipt is None:
+                    if state.get("mcp_expected"):
+                        runner.analysis_status = {"mcp_call_outcome": "incomplete",
+                                                  "semantic_review_required": True}
+                        return "partial"
                     return None  # Ordinary environment/analysis leases retain their behavior.
                 path = Path(receipt["path"])
                 if (path != runner.directory / "mcp-call.json" or not path.is_file()
@@ -62,12 +97,22 @@ def execute_lease(runner):
                                           "response_truncated": data["response"]["truncated"],
                                           "semantic_review_required": True}
                 return receipt["outcome"]
-            if not same_process(runner.spec["lease_owner"]):
+            owner_status = process_status(runner.spec["lease_owner"])
+            if owner_status == "unknown":
+                raise WorkbenchError("External tool owner state is unknown; process tree remains unconfirmed")
+            if owner_status == "dead":
                 raise WorkbenchError(
                     "External tool owner died without releasing its process tree"
                 )
             runner.sleep(0.2)
     except BaseException:
         # Worker lifetime and actual analysis-server lifetime are different.
-        runner.uncertain = True
+        # A release may have reached the service while the worker's read timed
+        # out. Its durable close checkpoint is independent of RPC availability.
+        try:
+            latest = json.loads((runner.directory / "normalized.json").read_text())
+            runner.uncertain = not (latest.get("lease_released") is True
+                                    and latest.get("lease_tree_closed") is True)
+        except (OSError, ValueError):
+            runner.uncertain = True
         raise

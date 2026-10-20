@@ -55,6 +55,8 @@ CLI 是本地文件协调程序，不新增长期占用项目锁的队列任务�
 
 若当前会话有原生子 Agent 工具，可用 `native-next --external-active N`。N 是刚观察到的本工作区以外活跃 Agent 数（包括占位的 Main）。返回 `spawn_agent` 或 `followup_task` 的实际参数，由宿主执行，再 `apply` 提交 `run.started` 和真实 handle。重试时 `recovery:true` 表示已有未确认预约，必须先查宿主实际任务，不能直接重复启动。宿主确认结束及其写入子进程结束后提交 `run.stopped`；仅收到文本“做完了”不够。原生续跑工具不能改变模型，配置不匹配时以新任务运行交接，旧运行必须已确认停止。
 
+`coordination_protocol:2` 提供完整输出清单引用与 `task.group`。提示只展开当前新增/明确指定的路径，完整授权仍保留在可核验清单和正式状态中；`--focus-output` 不改变权限。实际相关、尚未启动的同角色简单类可以通过 `native-next --group GROUP` 依次复用原生线程，保留每类的唯一负责人、原依赖和独立验收。不能跨角色、跳过真实停止或借组名取得别人的文件。具体字段、复用检查格式与升级边界见[执行流程更新](../../../../docs/app-replica-execution-upgrade.md)。
+
 确认真实停止后，可把**一个**原有 `run.stopped` 请求保存为 JSON 文件，使用 `native-next --external-active N --stopped-file STOP.json`。它在同一派发锁下登记停止、处理后续待办，再预约下一项，返回 `stopped` 回执及原有启动指令。文件保留真实 `run_id`、`outcome`、`observation.confirmed:true`、`writers_stopped:true` 和实际证据；不能以提交通过代替停止观察。未提供 `request_id` 时按内容生成稳定 ID，重试不会重复停止；已有预约按 `recovery:true` 恢复，仍须核对宿主是否已启动。停止和下一次预约分别持久提交，不是一个事务：后续派发失败不撤销真实停止，先查状态再重试；没有就绪任务也保留停止回执。该选项仅适用于原生后端，不执行宿主启动工具。
 
 ## Agent 文件交互

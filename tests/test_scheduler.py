@@ -40,6 +40,12 @@ class SchedulerTest(unittest.TestCase):
         self.proc = self.start_service()
         self.a = Client(self.project, self.state, "a")
         self.b = Client(self.project, self.state, "b")
+        self.external_owners = []
+
+    def external_owner(self):
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        self.external_owners.append(owner)
+        return process_identity(owner.pid)
 
     def start_service(self):
         proc = subprocess.Popen(
@@ -86,6 +92,10 @@ class SchedulerTest(unittest.TestCase):
                             pass
             time.sleep(0.25)
         finally:
+            for owner in self.external_owners:
+                if owner.poll() is None:
+                    owner.terminate()
+                owner.wait(timeout=5)
             self.proc.terminate()
             try:
                 self.proc.wait(timeout=5)
@@ -1140,13 +1150,13 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.a.wait(pending["id"], 8)["state"], "succeeded")
         self.assertEqual(self.a.call("resources.state"), [])
 
-    def test_dead_host_lease_can_recover_without_explicit_release(self):
-        child = subprocess.Popen([sys.executable, "-c", "pass"])
+    def test_dead_host_lease_recovery_requires_tree_closure(self):
+        child = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(.05)"], start_new_session=True)
         dead_identity = process_identity(child.pid)
         child.wait()
         alive_identity = process_identity(os.getpid())
 
-        def run_recovery(owner):
+        def run_recovery(owner, closed=False):
             job = self.state / "jobs" / "old-lease"
             job.mkdir(parents=True, exist_ok=True)
             atomic_json(
@@ -1155,6 +1165,7 @@ class SchedulerTest(unittest.TestCase):
                     "operation": "host.lease",
                     "readonly": True,
                     "lease_released": False,
+                    "lease_tree_closed": closed,
                     "lease_owner": owner,
                     "lease_process": owner,
                     "resources": [{"mode": "read"}],
@@ -1165,7 +1176,7 @@ class SchedulerTest(unittest.TestCase):
                 grant,
                 {"state": str(self.state), "spec": {"recovery_targets": ["old-lease"]}},
             )
-            output = self.root / ("recovery-" + ("dead" if owner is dead_identity else "alive"))
+            output = self.root / ("recovery-" + ("dead" if owner is dead_identity else "alive") + str(closed))
             environment = {
                 **os.environ,
                 "PYTHONPATH": str(ROOT),
@@ -1186,9 +1197,13 @@ class SchedulerTest(unittest.TestCase):
             ), json.loads((output / "result.json").read_text())
 
         dead_process, dead_result = run_recovery(dead_identity)
-        self.assertEqual(dead_process.returncode, 0, dead_process.stderr)
-        self.assertTrue(dead_result["pass"])
-        self.assertEqual(dead_result["reconciled_without_release"], ["old-lease"])
+        self.assertEqual(dead_process.returncode, 1, dead_process.stderr)
+        self.assertIn("process tree closure is unknown", dead_result["cleanup_errors"][0])
+
+        closed_process, closed_result = run_recovery(dead_identity, closed=True)
+        self.assertEqual(closed_process.returncode, 0, closed_process.stderr)
+        self.assertTrue(closed_result["pass"])
+        self.assertEqual(closed_result["reconciled_without_release"], ["old-lease"])
 
         alive_process, alive_result = run_recovery(alive_identity)
         self.assertEqual(alive_process.returncode, 1)
@@ -1393,7 +1408,7 @@ class SchedulerTest(unittest.TestCase):
         (self.project / "workbench.project.json").write_text(json.dumps(manifest))
         j = self.a.submit(
             operation="host.lease",
-            lease_owner=process_identity(os.getpid()),
+            lease_owner=self.external_owner(),
             lease_mode="environment",
             timeout=5,
         )
@@ -1443,7 +1458,7 @@ class SchedulerTest(unittest.TestCase):
         (self.project / "workbench.project.json").write_text(json.dumps(manifest))
         j = self.a.submit(
             operation="host.lease",
-            lease_owner=process_identity(os.getpid()),
+            lease_owner=self.external_owner(),
             lease_mode="environment",
             timeout=5,
         )
@@ -1451,6 +1466,222 @@ class SchedulerTest(unittest.TestCase):
         self.a.call("leases.release", {"id": j["id"]})
         normalized = json.loads((Path(j["directory"]) / "normalized.json").read_text())
         self.assertTrue(normalized["lease_released"])
+
+    def test_proxy_exit_and_transport_retry_advance_next_environment_writer(self):
+        from workbench.common import path_resource
+
+        manifest = json.loads((self.project / "workbench.project.json").read_text())
+        manifest["mcp_environments"] = ["environment"]
+        atomic_json(self.project / "workbench.project.json", manifest)
+        provider = self.project / "lease-provider.py"
+        provider.write_text("import json,sys\nfor line in sys.stdin:\n r=json.loads(line)\n print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':{}}),flush=True)\n")
+        for mode in ("eof", "sigterm", "acquire_timeout", "record_timeout"):
+            with self.subTest(mode=mode):
+                code = '''import sys
+from workbench.client import Client
+from workbench.common import SchedulerUnavailable
+from workbench.mcp_proxy import proxy
+original = Client.call
+attempts = 0
+def call(self, method, params=None):
+    global attempts
+    if sys.argv[3] == "acquire_timeout" and method == "jobs.status" and attempts == 0:
+        attempts += 1
+        raise SchedulerUnavailable("fixture acquisition timeout")
+    if sys.argv[3] == "record_timeout" and method == "leases.record_mcp":
+        raise SchedulerUnavailable("fixture receipt timeout")
+    return original(self, method, params)
+Client.call = call
+proxy(sys.argv[1], sys.argv[2], [sys.executable, sys.argv[4]])
+'''
+                process = subprocess.Popen([sys.executable, "-c", code, str(self.project), str(self.state), mode, str(provider)],
+                                           cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize"}) + "\n")
+                    process.stdin.flush()
+                    self.assertEqual(json.loads(process.stdout.readline())["id"], 1)
+                    if mode == "record_timeout":
+                        process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "fixture"}}) + "\n")
+                        process.stdin.flush()
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            calls = [j for j in self.a.call("jobs.list") if j["purpose"] == "Analysis MCP tool fixture"]
+                            if calls and json.loads((Path(calls[0]["directory"]) / "normalized.json").read_text()).get("mcp_expected"):
+                                break
+                            time.sleep(.03)
+                        self.assertTrue(calls)
+                    next_job = self.submit(seconds=.05, test_resources=[{"key": path_resource(self.project / "environment"), "mode": "write"}])
+                    self.assertEqual(next_job["state"], "queued")
+                    if mode == "sigterm":
+                        process.terminate()
+                    elif mode != "record_timeout":
+                        process.stdin.close()
+                    self.assertEqual(process.wait(timeout=8), 1 if mode == "record_timeout" else 0, process.stderr.read())
+                    advanced = self.a.wait(next_job["id"], 8)
+                    self.assertEqual(advanced["state"], "succeeded", advanced)
+                    self.assertEqual(self.a.call("resources.state"), [])
+                    if mode == "record_timeout":
+                        incomplete = self.a.wait(calls[0]["id"], 5)
+                        self.assertEqual(incomplete["state"], "partial", incomplete)
+                        self.assertTrue(incomplete["result"]["cleanup_ok"])
+                        self.assertEqual(incomplete["result"]["analysis_status"]["mcp_call_outcome"], "incomplete")
+                finally:
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout=5)
+                    for stream in (process.stdin, process.stdout, process.stderr):
+                        stream.close()
+
+    def test_abrupt_proxy_exit_keeps_unknown_tree_and_next_writer_blocked(self):
+        from workbench.common import path_resource
+
+        manifest = json.loads((self.project / "workbench.project.json").read_text())
+        manifest["mcp_environments"] = ["environment"]
+        atomic_json(self.project / "workbench.project.json", manifest)
+        owner = self.external_owner()
+        lease = self.a.submit(operation="host.lease", lease_owner=owner, lease_mode="environment", timeout=10)
+        self.wait_state(lease, {"running"})
+        self.external_owners[-1].kill()
+        self.external_owners[-1].wait(timeout=5)
+        failed = self.a.wait(lease["id"], 8)
+        self.assertFalse(failed["result"]["cleanup_ok"])
+        self.assertIn("External tool owner died", failed["result"]["reason"])
+        next_job = self.submit(seconds=.05, test_resources=[{"key": path_resource(self.project / "environment"), "mode": "write"}])
+        time.sleep(.3)
+        self.assertEqual(self.a.call("jobs.status", {"id": next_job["id"]})["state"], "queued")
+        self.assertTrue(self.a.call("resources.state"))
+        with self.assertRaisesRegex(WorkbenchError, "supervised tree closure required"):
+            self.a.call("leases.release", {"id": lease["id"]})
+
+    def test_tree_close_checkpoint_allows_managed_recovery_and_queue_advancement(self):
+        from workbench.common import path_resource
+        from workbench.project import generate
+
+        manifest = generate(self.project, ROOT, Path(sys.executable))
+        manifest["mcp_environments"] = manifest["environments"] = ["environment"]
+        atomic_json(self.project / "workbench.project.json", manifest)
+        owner = self.external_owner()
+        lease = self.a.submit(operation="host.lease", lease_owner=owner, lease_mode="environment", timeout=10)
+        self.wait_state(lease, {"running"})
+        self.a.call("leases.close", {"id": lease["id"]})
+        self.a.call("leases.close", {"id": lease["id"]})
+        self.external_owners[-1].kill()
+        self.external_owners[-1].wait(timeout=5)
+        failed = self.a.wait(lease["id"], 8)
+        self.assertFalse(failed["result"]["cleanup_ok"])
+        next_job = self.submit(seconds=.05, test_resources=[{"key": path_resource(self.project / "environment"), "mode": "write"}])
+        self.assertEqual(next_job["state"], "queued")
+        repair = self.a.submit(operation="environment.recover_host_lease", recovery_jobs=[lease["id"]], request_key="closed-tree-recovery")
+        recovered = self.a.wait(repair["id"], 8)
+        self.assertEqual(recovered["state"], "succeeded", recovered)
+        self.assertIn(lease["id"], recovered["result"]["reconciled_jobs"])
+        self.assertEqual(self.a.wait(next_job["id"], 8)["state"], "succeeded")
+        self.assertEqual(self.a.call("resources.state"), [])
+
+    def test_incomplete_mcp_and_duplicate_receipts_require_safe_release(self):
+        owner = self.external_owner()
+        environment = self.a.submit(operation="host.lease", lease_owner=owner, lease_mode="environment", timeout=10)
+        self.wait_state(environment, {"running"})
+        call = self.a.submit(operation="host.lease", lease_owner=owner, lease_mode="analysis", timeout=10)
+        self.wait_state(call, {"running"})
+        params = {"id": call["id"], "environment": environment["id"]}
+        self.a.call("leases.expect_mcp", params)
+        self.a.call("leases.expect_mcp", params)
+        record = {"schema": "workbench.mcp-call/v1", "request": {"method": "tools/call", "id": 7, "params": {"name": "fixture"}},
+                  "provider": {}, "response": {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest(),
+                                                 "retained_base64": "", "truncated": False, "outcome": "incomplete"}}
+        receipt = self.a.call("leases.record_mcp", {"id": call["id"], "record": record})
+        self.assertEqual(self.a.call("leases.record_mcp", {"id": call["id"], "record": record}), receipt)
+        changed = {**record, "provider": {"different": True}}
+        with self.assertRaisesRegex(WorkbenchError, "retry differs"):
+            self.a.call("leases.record_mcp", {"id": call["id"], "record": changed})
+        with self.assertRaisesRegex(WorkbenchError, "upstream tree closure"):
+            self.a.call("leases.release", {"id": call["id"]})
+        self.a.call("leases.close", {"id": environment["id"]})
+        self.a.call("leases.release", {"id": call["id"]})
+        self.a.call("leases.release", {"id": call["id"]})
+        self.assertEqual(self.a.wait(call["id"], 5)["state"], "partial")
+        self.a.call("leases.release", {"id": environment["id"]})
+        self.a.call("leases.release", {"id": environment["id"]})
+        self.assertEqual(self.a.wait(environment["id"], 5)["state"], "succeeded")
+
+    def test_closed_lease_still_checks_new_live_owner_descendants(self):
+        import signal
+
+        trigger, child_record = self.root / "spawn", self.root / "child-pid"
+        code = "import pathlib,subprocess,sys,time\ntrigger,record=map(pathlib.Path,sys.argv[1:])\nwhile not trigger.exists():time.sleep(.01)\nchild=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\nrecord.write_text(str(child.pid))\nchild.wait()\ntime.sleep(30)\n"
+        owner = subprocess.Popen([sys.executable, "-c", code, str(trigger), str(child_record)], start_new_session=True)
+        self.external_owners.append(owner)
+        child_pid = None
+        try:
+            lease = self.a.submit(operation="host.lease", lease_owner=process_identity(owner.pid), lease_mode="environment", timeout=10)
+            self.wait_state(lease, {"running"})
+            self.a.call("leases.close", {"id": lease["id"]})
+            trigger.touch()
+            deadline = time.monotonic() + 3
+            while not child_record.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            child_pid = int(child_record.read_text())
+            with self.assertRaisesRegex(WorkbenchError, "descendants are still alive"):
+                self.a.call("leases.release", {"id": lease["id"]})
+            normalized = json.loads((Path(lease["directory"]) / "normalized.json").read_text())
+            self.assertFalse(normalized.get("lease_released", False))
+            os.kill(child_pid, signal.SIGTERM)
+            child_pid = None
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    self.a.call("leases.release", {"id": lease["id"]})
+                    break
+                except WorkbenchError:
+                    time.sleep(.03)
+            self.assertEqual(self.a.wait(lease["id"], 5)["state"], "succeeded")
+        finally:
+            if child_pid is not None:
+                os.kill(child_pid, signal.SIGTERM)
+
+    def test_exhausted_proxy_acquisition_timeout_cleans_up_and_advances_queue(self):
+        from workbench.common import path_resource
+
+        manifest = json.loads((self.project / "workbench.project.json").read_text())
+        manifest["mcp_environments"] = ["environment"]
+        atomic_json(self.project / "workbench.project.json", manifest)
+        code = '''import sys,time
+from workbench.client import Client
+from workbench.common import SchedulerUnavailable
+from workbench.mcp_proxy import proxy
+original = Client.call
+def call(self, method, params=None):
+    if method == "jobs.status":
+        time.sleep(.2)
+        raise SchedulerUnavailable("fixture exhausted acquisition timeout")
+    return original(self, method, params)
+Client.call = call
+proxy(sys.argv[1], sys.argv[2], [sys.executable, "-c", "raise SystemExit('upstream must not start')"])
+'''
+        process = subprocess.Popen([sys.executable, "-c", code, str(self.project), str(self.state)],
+                                   cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            leases = []
+            while time.monotonic() < deadline:
+                leases = [job for job in self.a.call("jobs.list") if job["operation"] == "host.lease"]
+                if leases:
+                    break
+                time.sleep(.01)
+            self.assertTrue(leases)
+            next_job = self.submit(seconds=.05, test_resources=[{"key": path_resource(self.project / "environment"), "mode": "write"}])
+            self.assertEqual(next_job["state"], "queued")
+            self.assertEqual(process.wait(timeout=8), 1)
+            self.assertIn(b"fixture exhausted acquisition timeout", process.stderr.read())
+            self.assertEqual(self.a.wait(next_job["id"], 8)["state"], "succeeded")
+            self.assertEqual(self.a.call("resources.state"), [])
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                stream.close()
 
     def test_analysis_mcp_proxies_queue_shared_workspace(self):
         script = self.project / "fake_mcp.py"

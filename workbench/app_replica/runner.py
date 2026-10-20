@@ -13,6 +13,7 @@ from .ids import stable_id
 from .roles import task_prompt
 from .paths import effective_project
 from .store import ReplicaError, Store
+from .groups import prompt_note
 
 
 def mutation(workspace, op, request_id=None, **fields):
@@ -188,7 +189,7 @@ class Runner:
             time.sleep(interval)
 
 
-def native_next(workspace, *, external_active, task_id=None, stopped=None):
+def native_next(workspace, *, external_active, task_id=None, stopped=None, group_id=None, focus_outputs=None):
     """Record an observed stop, optionally, then reserve one host action."""
     with dispatch_lock(workspace):
         if type(external_active) is not int or external_active < 0:
@@ -213,10 +214,16 @@ def native_next(workspace, *, external_active, task_id=None, stopped=None):
         if pending:
             run = pending[0]
             task = snapshot["tasks"][run["task_id"]]
+            if group_id and run.get("group_id") != group_id:
+                raise ReplicaError("Existing reservation belongs to a different group; reconcile it first")
+            if focus_outputs is not None and run.get("focus_outputs") != list(dict.fromkeys(focus_outputs)):
+                raise ReplicaError("Cannot change focused outputs on an existing reservation")
             recovery = True
         else:
             result = mutation(workspace, "task.claim", backend="native", external_active=external_active,
-                              **({"task_id": task_id} if task_id else {}))
+                              **({"task_id": task_id} if task_id else {}),
+                              **({"group_id": group_id} if group_id else {}),
+                              **({"focus_outputs": focus_outputs} if focus_outputs is not None else {}))
             if not result.get("task"):
                 return {**result, **stop_result}
             run, task, recovery = result["run"], result["task"], False
@@ -226,8 +233,11 @@ def native_next(workspace, *, external_active, task_id=None, stopped=None):
                                              Path(workspace) / "tasks" / task["id"] / "task.json",
                                              run["model"], run["effort"], target=prior.get("target") if reuse else None,
                                              task_name="replica_" + run["id"].replace("-", "_"),
-                                             message=task_prompt(workspace, effective_project(workspace, snapshot), task, run))
+                                             message=task_prompt(workspace, effective_project(workspace, snapshot), task, run)
+                                                     + prompt_note(workspace, run))
         return {"ok": True, "task_id": task["id"], "run_id": run["id"], "directive": directive,
                 **stop_result,
+                **({"group_id": run["group_id"], "group_continuation_from_run": run.get("group_continuation_from_run")}
+                   if run.get("group_id") else {}),
                 "recovery": recovery,
                 "next": "If recovery=true, reconcile actual host launch before repeating. Execute the host directive, then record run.started with the actual handle. Record run.stopped only after the host confirms it and any writer children stopped."}

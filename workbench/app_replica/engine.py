@@ -707,6 +707,10 @@ def _settle_followups(store, state, task):
 def _ready(store, state, task):
     if task["state"] != "queued" or task["run_id"]:
         return False
+    from .groups import active, for_task
+    group = for_task(state, task["id"])
+    if group and active(state, group):
+        return False
     identifier = task.get("object_id")
     if identifier and (task["role"] == "function" or (task["role"] == "class" and task["mode"] == "code")):
         # Task creation already validates the immutable object identity. Read
@@ -899,6 +903,9 @@ def _coverage(store, state):
 
 def _dispatch(store, state, request):
     op = request["op"]
+    if op == "task.group":
+        from .groups import register
+        return register(store, state, request)
     if op == "followup.resolve":
         if request.get("followup_id") not in state.get("followups", {}):
             raise ReplicaError("Unknown followup id")
@@ -1073,6 +1080,7 @@ def _dispatch(store, state, request):
         _touch(record)
         return {"class": record}
     if op == "task.claim":
+        from .groups import claim_context, selection
         backend = deepcopy(request.get("backend"))
         if not backend:
             raise ReplicaError("Claim needs backend identity")
@@ -1085,20 +1093,32 @@ def _dispatch(store, state, request):
         occupied = sum(run["state"] != "stopped" for run in state["runs"].values())
         if occupied + external >= state["capacity"]:
             return {"task": None, "run": None, "reason": "capacity", "occupied": occupied, "external_active": external}
+        group = None
+        if request.get("group_id"):
+            group = state.get("task_groups", {}).get(_id(request["group_id"], "group id"))
+            if group is None:
+                raise ReplicaError("Unknown task group")
+            if request.get("task_id") and request["task_id"] not in group["task_ids"]:
+                raise ReplicaError("Requested task is outside the selected group")
         if request.get("task_id"):
             candidate = _get(state, "tasks", request["task_id"])
             task = candidate if _ready(store, state, candidate) else None
+        elif group:
+            task = next((state["tasks"][value] for value in group["task_ids"]
+                         if _ready(store, state, state["tasks"][value])), None)
         else:
             task = next(iter(_ready_tasks(store, state)), None)
         if task is None:
             return {"task": None, "run": None, "reason": "no_ready_task"}
-        model_key = task["role"]
-        if task["role"] == "class" and task["mode"] == "code":
-            model_key = "class.code"
-        elif task["role"] == "analysis" and task["mode"] == "extract":
-            model_key = "analysis.extract"
-        model = task.get("model") or state["models"][model_key]["model"]
-        effort = task.get("effort") or state["models"][model_key]["effort"]
+        profile = selection(state, task)
+        model, effort = profile["model"], profile["effort"]
+        group_context = claim_context(store, state, task, backend, profile)
+        focus = None
+        if "focus_outputs" in request:
+            focus = _array(request["focus_outputs"], "focus_outputs")
+            if any(value not in task["outputs"] for value in focus):
+                raise ReplicaError("Focused outputs must be exact assigned output identities")
+            focus = list(dict.fromkeys(focus))
         identifier = "run-" + uuid.uuid4().hex
         prior = state["runs"][task["runs"][-1]] if task["runs"] else None
         run = {"id": identifier, "task_id": task["id"], "state": "reserved", "backend": backend,
@@ -1106,7 +1126,8 @@ def _dispatch(store, state, request):
                "reported_model": None, "reported_effort": None, "backend_handle": None,
                "continuation": prior.get("backend_handle") if prior else None,
                "reserved_at": _now(), "external_active": external,
-               "inbox_message_ids": _pending_messages(state, task)}
+               "inbox_message_ids": _pending_messages(state, task), **group_context,
+               **({"focus_outputs": focus} if focus is not None else {})}
         task.update(state="reserved", run_id=identifier)
         task["runs"].append(identifier)
         _touch(task)
@@ -1503,7 +1524,7 @@ def _execute(workspace, request):
                 # projections; a single-task read need not traverse every view,
                 # unrelated delivery, MVP or scheduling candidate.
                 return {"ok": True, "revision": stored["revision"], "delivery_protocol": 2,
-                        "coordination_protocol": 1, "task": task,
+                        "coordination_protocol": 2, "task": task,
                         **{key: deepcopy(stored[key]) for key in ("schema", "project", "relocation")
                            if key in stored}}
             error = None
@@ -1522,7 +1543,7 @@ def _execute(workspace, request):
             else:
                 data = {key: deepcopy(value) for key, value in stored.items() if key not in {"receipts", "inventory"}}
                 data["delivery_protocol"] = 2
-                data["coordination_protocol"] = 1
+                data["coordination_protocol"] = 2
                 data["counts"] = {key: len(stored[key]) for key in ("inventory", "entries", "classes", "tasks", "runs")}
                 data["inventory_counts_by_kind"] = dict(stored["inventory"].manifest["counts_by_kind"])
                 if request.get("full") or request.get("summary") is False:
