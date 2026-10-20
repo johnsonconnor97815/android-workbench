@@ -55,6 +55,8 @@ CLI 是本地文件协调程序，不新增长期占用项目锁的队列任务�
 
 若当前会话有原生子 Agent 工具，可用 `native-next --external-active N`。N 是刚观察到的本工作区以外活跃 Agent 数（包括占位的 Main）。返回 `spawn_agent` 或 `followup_task` 的实际参数，由宿主执行，再 `apply` 提交 `run.started` 和真实 handle。重试时 `recovery:true` 表示已有未确认预约，必须先查宿主实际任务，不能直接重复启动。宿主确认结束及其写入子进程结束后提交 `run.stopped`；仅收到文本“做完了”不够。原生续跑工具不能改变模型，配置不匹配时以新任务运行交接，旧运行必须已确认停止。
 
+确认真实停止后，可把**一个**原有 `run.stopped` 请求保存为 JSON 文件，使用 `native-next --external-active N --stopped-file STOP.json`。它在同一派发锁下登记停止、处理后续待办，再预约下一项，返回 `stopped` 回执及原有启动指令。文件保留真实 `run_id`、`outcome`、`observation.confirmed:true`、`writers_stopped:true` 和实际证据；不能以提交通过代替停止观察。未提供 `request_id` 时按内容生成稳定 ID，重试不会重复停止；已有预约按 `recovery:true` 恢复，仍须核对宿主是否已启动。停止和下一次预约分别持久提交，不是一个事务：后续派发失败不撤销真实停止，先查状态再重试；没有就绪任务也保留停止回执。该选项仅适用于原生后端，不执行宿主启动工具。
+
 ## Agent 文件交互
 
 `coordination/state.json` 是唯一已提交的元数据入口。schema 2 通过哈希引用不可变清单、范围决定和回执；清单分片包含全部原对象，不截断。普通查询使用 `inventory/manifest.json` 和 `status --summary`，单对象使用 `object --id ORIGINAL_OBJECT_ID`。CLI `status` 默认省略大清单，`status --full` 显式返回兼容的完整结果。`inventory/objects.json` 仅在 `export --output inventory/objects.json` 时生成完整快照，其版本可能落后于当前状态。`project.json`、`inventory/`、`classes/`、`tasks/`、`messages/`、`mvp/` 是带版本的可恢复视图，不能直接修改来提交。代码和证据在 `artifacts/` 或已声明的输出工程。
@@ -65,6 +67,8 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project/replica-work apply --file /path/request.json
 ```
 
+`status --task TASK_ID` 直接读当前正式记录，只核对该任务及其所用依赖的产物、输入、类版本和内容标识；不遍历无关交付、MVP 或全局派发候选，也不修复视图。需要修复视图时使用 `recover`，全局进度仍使用 `status --summary`。单任务查询和全局状态返回 `coordination_protocol:1`，交付协议仍为 `delivery_protocol:2`。机械核对不能证明代码语义一致；语义自查仍由责任人执行，Main 针对具体缺口或变化复核，不为普通交接重复原版分析。
+
 `apply` 接受一个 JSON 请求或按顺序执行的请求数组。数组不是一个事务；每个请求有独立 receipt。省略 `request_id` 时按完整内容生成稳定 ID，相同文件重试不会重复执行。需要同样内容作为新事件时显式给新 ID。已提交但视图写出失败时保留 `committed:true`，先 `recover`，不要重做代码/外部动作。
 
 常用请求（完整字段在协议）：
@@ -74,6 +78,16 @@ python3 /path/android-workbench/scripts/app_replica.py --workspace /path/project
 - `class.publish`：`class_id`、`owner`（所属结构任务 ID）、`expected_revision`（首次为 0）、`structure`、`sources`，可选 `writer`。继承/字段/初始化由这个唯一结构负责人维护。
 - `message.send`：`type`、`sender`、`recipient`、`payload`、`evidence`，可选 `task_id`/`related_request_id`/`message_id`。需要已有负责人处理时设置 `wake:true`，recipient 使用该任务 ID；程序在它空闲后安排续跑，同一请求只分派一次。普通备注不唤醒任务。CLI 后端在下一回合提供请求文件，不支持向当前正在运行的回合推送。通知不替代执行和交付。
 - `scope.set`：`object_id`、`disposition`（copy/reuse/platform/exclude/unknown）、`reason`、`evidence`。方法未到达不是排除证据。
+
+### 简单类在一次工作中确认范围与结构
+
+当 `analysis/scope` 已经完整确认一个简单类的声明且决定复制时，可使用 `scope.class.publish`：`task_id`、当前 `run_id`、`expected_revision`、`reason`、完整 `structure` 和非空 `evidence`（每项为实际文件的 `path`、`sha256`）。程序从该任务取得原对象，要求其种类为 `class`、运行状态为 `running`，模型/强度与配置的结构角色相同，并保留已有唯一结构负责人。已有其他结构负责人时操作失败且不改变范围，不抢占或批量重建任务。
+
+这个请求同时保存 `copy` 决策与类声明，原 `analysis/scope` 任务成为结构负责人。声明应覆盖身份、修饰符、继承/接口、泛型、注解、成员和初始化等实际相关内容；空方法体不是完整证据。若有尚未解释的复杂结构，继续原来的独立 `class/structure` 路线。
+
+发布后仍须正常提交与确认停止；提交的 `class_revisions` 必须包含刚发布且实际使用的类版本，发布时的证据散列自动加入交付 `inputs`。自查失败、未知、原文件变化或仍有活动写入者都不会产生可复用交付。重复 `task.discover` 复用原分析任务，不额外创建结构负责人。为该对象添加 Sol `class/code` 任务时，程序自动保留类声明和这个结构负责人的交付依赖；消费者必须提交实际消费的 `dependency_tokens`，不能用旧任务 revision 代替这个合并结构依赖，以免原版输入变化只影响负责人而漏掉下游。其他旧依赖格式不变，原角色分工和唯一代码写入者不变。
+
+当前会话的切换步骤与可直接转发的提示词见 [协调流程更新](../../../../docs/app-replica-coordination-upgrade.md)。旧任务不需要批量迁移。
 
 App 已确认的调度顺序通过 `dispatch.set` 生效；`project.update` 中的入口/顺序说明只是规划记录。先在 `status --summary` 读取顶层 `dispatch_policy.revision`（未设置为 `0`），把批准的现有任务 ID 按顺序写进请求文件：
 

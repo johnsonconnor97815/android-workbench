@@ -39,10 +39,8 @@ def _apply(workspace, request):
 
 
 def _task(workspace, identifier):
-    snapshot = execute(workspace, {"op": "status", "summary": True})
-    if identifier not in snapshot["tasks"]:
-        raise ReplicaError(f"Unknown task: {identifier}")
-    return snapshot, snapshot["tasks"][identifier]
+    snapshot = execute(workspace, {"op": "status", "task_id": identifier})
+    return snapshot, snapshot["task"]
 
 
 def _reserve_outputs(workspace, task, paths):
@@ -144,6 +142,7 @@ def parser():
     native.add_argument("--external-active", required=True, type=int,
                         help="Observed host agents outside this workflow, including Main if it uses a slot")
     native.add_argument("--task")
+    native.add_argument("--stopped-file", help="One run.stopped JSON request with actual native host stop evidence")
     return result
 
 
@@ -220,14 +219,15 @@ def dispatch(args):
     if args.command in {"status", "coverage", "recover"}:
         summary = (not args.full if args.command == "status" else bool(getattr(args, "summary", False)))
         summary = bool(summary or getattr(args, "task", None))
-        result = execute(workspace, {"op": args.command, "summary": summary})
+        result = execute(workspace, {"op": args.command, "summary": summary,
+                                    **({"task_id": args.task} if args.command == "status" and args.task else {})})
         if args.command == "status" and args.task:
-            if args.task not in result["tasks"]:
-                raise ReplicaError(f"Unknown task: {args.task}")
-            return {"ok": result["ok"], "revision": result["revision"], "task": result["tasks"][args.task]}
+            return {key: result[key] for key in
+                    ("ok", "revision", "delivery_protocol", "coordination_protocol", "task")}
         if args.command == "status" and args.summary:
             return {"ok": result["ok"], "revision": result["revision"], "project": result["project"],
-                    "delivery_protocol": result["delivery_protocol"], "occupied": result["occupied"],
+                    "delivery_protocol": result["delivery_protocol"],
+                    "coordination_protocol": result["coordination_protocol"], "occupied": result["occupied"],
                     "capacity": result["capacity"], "dispatch_policy": result["dispatch_policy"],
                     "inventory_status": result["inventory_status"],
                     "counts": result["counts"], "inventory_counts_by_kind": result["inventory_counts_by_kind"],
@@ -293,7 +293,8 @@ def dispatch(args):
                                  "requires": _json(args.requires, workspace),
                                  "checkpoint": {"path": str(checkpoint), "sha256": hashlib.sha256(read_regular(checkpoint)).hexdigest()}})
     if args.command == "native-next":
-        return native_next(workspace, external_active=args.external_active, task_id=args.task)
+        return native_next(workspace, external_active=args.external_active, task_id=args.task,
+                           stopped=_json(args.stopped_file, workspace) if args.stopped_file else None)
     runner = Runner(workspace, host_capacity=args.host_capacity, slots_path=args.slots_file, executable=args.codex)
     if args.command == "step":
         return runner.step()

@@ -599,6 +599,39 @@ with patch.object(HostSlots, 'default_path', return_value=Path(slots)), patch('o
             from workbench.app_replica.ids import canonical_json
             self.assertEqual(receipt['fingerprint'], sha(canonical_json(raw).encode()))
 
+    def test_combined_scope_and_stop_next_resolve_adopted_paths(self):
+        import contextlib, io
+        self.adopt()
+        task = self.call('task.discover', task_id='app-owner', target='obj-source',
+                         source={'path': str(self.old / 'original.java'), 'line': 19})['task']
+        run = self.call('task.claim', backend='native', task_id=task['id'])['run']
+        self.call('run.started', run_id=run['id'], backend_handle={'target': 'fixture-scope'})
+        evidence = {**self.reference(self.clone / 'output/code.txt'),
+                    'path': str(self.old / 'output/code.txt')}
+        published = self.call('scope.class.publish', task_id=task['id'], run_id=run['id'],
+            expected_revision=0, reason='Synthetic complete declaration',
+            structure={'kind': 'interface', 'name': 'Original', 'members': []}, evidence=[evidence])
+        self.assertEqual(published['class']['sources'][0]['path'], str(self.clone / 'output/code.txt'))
+        self.call('task.submit', task_id=task['id'], run_id=run['id'], artifacts=[],
+            class_revisions={'obj-source': 1}, unresolved=[],
+            self_checks=[{'name': 'host declaration fixture', 'result': 'pass', 'evidence': ['host only']}])
+        writer = self.call('task.add', task={'role': 'class', 'mode': 'code', 'object_id': 'obj-source',
+            'class_id': 'obj-source', 'description': 'Adopted fixture implementation',
+            'outputs': [str(self.old / 'output/Original.java')]})['task']
+        stop = self.clone / 'stop.json'
+        stop.write_text(json.dumps({'op': 'run.stopped', 'run_id': run['id'], 'outcome': 'delivered',
+            'observation': {'confirmed': True, 'writers_stopped': True, 'evidence': ['synthetic host fixture']}}))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main(['--workspace', str(self.workspace), 'native-next', '--external-active', '1',
+                           '--task', writer['id'], '--stopped-file', str(self.old / 'stop.json')])
+        self.assertEqual(result, 0, stdout.getvalue())
+        self.assertEqual(json.loads(stdout.getvalue())['task_id'], writer['id'])
+        self.assertTrue(json.loads(stdout.getvalue())['stopped']['released'])
+        self.assertIsNotNone(self.call('status', task_id=task['id'])['task']['delivery_token'])
+        (self.clone / 'output/code.txt').write_text('changed structural input')
+        self.assertIsNone(self.call('status', task_id=task['id'])['task']['delivery_token'])
+
     def test_R12_fresh_native_nine_message_handoff_preserves_old_inbox_handle(self):
         messages = []
         for i in range(9):

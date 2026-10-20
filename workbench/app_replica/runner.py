@@ -57,6 +57,7 @@ def _resume_ready(workspace):
                  evidence=[{"task_revision": task["revision"], "requires": task["requires"],
                             "message_wake": identifier in snapshot.get("wake_task_ids", []),
                             "planning_wake_message_ids": snapshot.get("planning_wake_messages", {}).get(identifier, [])}])
+    return execute(workspace, {"op": "status", "summary": True}) if identifiers else snapshot
 
 
 class Runner:
@@ -148,9 +149,8 @@ class Runner:
                     continue
                 self._observe(run, observation)
                 events.append({"run_id": run["id"], "state": observation["state"]})
-            _resume_ready(self.workspace)
+            available = _resume_ready(self.workspace)
             while True:
-                available = execute(self.workspace, {"op": "status", "summary": True})
                 if not available["ready_task_ids"] or available["occupied"] >= available["capacity"]:
                     break
                 result = mutation(self.workspace, "task.claim", backend="codex", task_id=available["ready_task_ids"][0])
@@ -164,6 +164,7 @@ class Runner:
                     break
                 self._observe(run, observation)
                 events.append({"run_id": run["id"], "task_id": task["id"], "state": observation["state"]})
+                available = execute(self.workspace, {"op": "status", "summary": True})
             final = execute(self.workspace, {"op": "status", "summary": True})
             active = [run["id"] for run in final["runs"].values() if run["state"] != "stopped"]
             unknown = [item for item in events if item["state"] == "unknown"]
@@ -187,11 +188,25 @@ class Runner:
             time.sleep(interval)
 
 
-def native_next(workspace, *, external_active, task_id=None):
-    """Reserve one task and return a host action; never pretend to execute it."""
+def native_next(workspace, *, external_active, task_id=None, stopped=None):
+    """Record an observed stop, optionally, then reserve one host action."""
     with dispatch_lock(workspace):
-        _resume_ready(workspace)
-        snapshot = execute(workspace, {"op": "status", "summary": True})
+        if type(external_active) is not int or external_active < 0:
+            raise ReplicaError("external_active must be a nonnegative integer")
+        stop_result = {}
+        if stopped is not None:
+            if not isinstance(stopped, dict) or stopped.get("op") != "run.stopped":
+                raise ReplicaError("stopped must be one run.stopped request")
+            with Store(workspace).locked() as state:
+                run = state["runs"].get(stopped.get("run_id")) if state else None
+                if not run or run.get("backend") != "native":
+                    raise ReplicaError("native-next can only record a native run stop")
+            request = dict(stopped)
+            request.setdefault("request_id", stable_id("request", request))
+            # Use the normal stop path, including Git saving, validation,
+            # followup settlement and the durable idempotent receipt.
+            stop_result["stopped"] = mutation(workspace, **request)
+        snapshot = _resume_ready(workspace)
         # Recovery reoffers the existing reservation, not a second launch.
         pending = [run for run in snapshot["runs"].values()
                    if run["state"] == "reserved" and run.get("backend") == "native"]
@@ -203,7 +218,7 @@ def native_next(workspace, *, external_active, task_id=None):
             result = mutation(workspace, "task.claim", backend="native", external_active=external_active,
                               **({"task_id": task_id} if task_id else {}))
             if not result.get("task"):
-                return result
+                return {**result, **stop_result}
             run, task, recovery = result["run"], result["task"], False
         prior = run.get("continuation") if isinstance(run.get("continuation"), dict) else {}
         reuse = prior.get("target") and prior.get("requested") == {"model": run["model"], "effort": run["effort"]}
@@ -213,5 +228,6 @@ def native_next(workspace, *, external_active, task_id=None):
                                              task_name="replica_" + run["id"].replace("-", "_"),
                                              message=task_prompt(workspace, effective_project(workspace, snapshot), task, run))
         return {"ok": True, "task_id": task["id"], "run_id": run["id"], "directive": directive,
+                **stop_result,
                 "recovery": recovery,
                 "next": "If recovery=true, reconcile actual host launch before repeating. Execute the host directive, then record run.started with the actual handle. Record run.stopped only after the host confirms it and any writer children stopped."}

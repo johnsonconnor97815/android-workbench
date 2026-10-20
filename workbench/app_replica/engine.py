@@ -310,6 +310,9 @@ def _task_add(store, state, raw):
     if class_id and (role == "function" or (role == "class" and mode == "code")):
         _ensure_structure(store, state, class_id, associations)
         _merge_list(result["requires"], [{"class_id": class_id, "revision": 1}])
+        scope_owner = state["classes"][class_id].get("scope_task_id")
+        if scope_owner:
+            _merge_list(result["requires"], [{"task_id": scope_owner}])
     return result
 
 
@@ -371,6 +374,10 @@ def _replace_requirements(store, state, request):
                                  (task["role"] == "class" and task["mode"] == "code")):
         if not any(item.get("class_id") == task["class_id"] for item in requirements):
             raise ReplicaError("Implementation must retain its own class declaration prerequisite")
+        scope_owner = state["classes"][task["class_id"]].get("scope_task_id")
+        if scope_owner and not any(item.get("task_id") == scope_owner
+                                   and item.get("when", "delivered") == "delivered" for item in requirements):
+            raise ReplicaError("Implementation must retain its combined scope/structure delivery prerequisite")
     reason = _text(request.get("reason"), "requirement replacement reason")
     evidence = [_requirement_evidence(store, state, item) for item in
                 _array(request.get("evidence"), "requirement replacement evidence")]
@@ -440,8 +447,11 @@ def _revisions(state, mapping, collection):
 
 def _task_contract(task):
     # Lifecycle revision, callers, inbox and timestamps are not source inputs.
-    return {key: deepcopy(task.get(key)) for key in
-            ("role", "mode", "object_id", "class_id", "outputs", "requires")}
+    result = {key: deepcopy(task.get(key)) for key in
+              ("role", "mode", "object_id", "class_id", "outputs", "requires")}
+    if "scope_structure" in task:
+        result["scope_structure"] = deepcopy(task["scope_structure"])
+    return result
 
 
 def _delivery_token(task, delivery):
@@ -478,11 +488,17 @@ def _delivery_issues(store, state, task, delivery, *, visiting=(), cache=None):
         if not state["classes"][task["class_id"]]["revision"]:
             issues.append("Class structure has not been published")
     required_classes = {req["class_id"] for req in task["requires"] if "class_id" in req}
+    if task.get("scope_structure"):
+        required_classes.add(task["scope_structure"]["class_id"])
     if task.get("class_id") and task["role"] in {"function", "class"} and task["mode"] != "structure":
         required_classes.add(task["class_id"])
     for identifier in required_classes:
         if identifier not in delivery["class_revisions"]:
             issues.append(f"Missing required class revision: {identifier}")
+        scope_owner = state["classes"].get(identifier, {}).get("scope_task_id")
+        if (scope_owner and scope_owner != task["id"]
+                and scope_owner not in delivery.get("dependency_tokens", {})):
+            issues.append(f"Combined scope/structure requires a delivery token: {scope_owner}")
     for req in task["requires"]:
         if "task_id" in req and req.get("when", "delivered") == "delivered":
             if req["task_id"] not in delivery["dependency_revisions"] and req["task_id"] not in delivery.get("dependency_tokens", {}):
@@ -945,6 +961,35 @@ def _dispatch(store, state, request):
         obj["scope"] = {"disposition": disposition, "reason": reason, "evidence": evidence or []}
         state["inventory"].set_scope(obj["id"], obj["scope"])
         return {"object": obj}
+    if op == "scope.class.publish":
+        task, run = _live_run(state, request.get("task_id"), request.get("run_id"))
+        if (task["role"], task["mode"], run["state"]) != ("analysis", "scope", "running"):
+            raise ReplicaError("Combined scope/structure requires a running analysis/scope task")
+        obj = _get(state, "inventory", task.get("object_id"))
+        if obj["kind"] != "class":
+            raise ReplicaError("Combined scope/structure is only for an original class")
+        for field in ("model", "effort"):
+            if (run[field] != state["models"]["class"][field]
+                    or run.get("reported_" + field) not in {None, run[field]}):
+                raise ReplicaError("Combined scope/structure requires the configured structure model/effort")
+        structure = _mapping(request.get("structure"), "structure")
+        if not structure:
+            raise ReplicaError("Combined scope/structure needs complete declarations")
+        evidence = [_requirement_evidence(store, state, item) for item in
+                    _array(request.get("evidence"), "scope/structure evidence")]
+        if not evidence:
+            raise ReplicaError("Combined scope/structure needs hashed file evidence")
+        # class.publish enforces the existing owner and revision. Both updates
+        # commit together; a conflict never leaves a partial scope decision.
+        published = _dispatch(store, state, {"op": "class.publish", "class_id": obj["id"],
+            "owner": task["id"], "expected_revision": request.get("expected_revision"),
+            "structure": structure, "sources": evidence})
+        decision = _dispatch(store, state, {"op": "scope.set", "object_id": obj["id"],
+            "disposition": "copy", "reason": request.get("reason"), "evidence": evidence})
+        published["class"]["scope_task_id"] = task["id"]
+        task["scope_structure"] = {"class_id": obj["id"], "evidence": evidence}
+        _touch(task)
+        return {**published, **decision, "task": task}
     if op == "inventory.import":
         result = _dispatch(store, state, {**request, "op": "inventory.add"})
         entries = _array(request.get("entries"), "entries")
@@ -996,6 +1041,10 @@ def _dispatch(store, state, request):
         spec = {"object_id": obj["id"], "sources": [source], "origins": [discovery],
                 "entry_ids": list(dict.fromkeys(entry_ids)), "mvp_ids": list(dict.fromkeys(mvp_ids))}
         if disposition == "unknown":
+            spec.update(role="analysis", mode="scope", description="Resolve discovered object's unknown scope")
+        elif obj["kind"] == "class" and state["classes"].get(obj["id"], {}).get("scope_task_id"):
+            # Reuse the same logical owner after its combined publication.
+            # Rediscovery must not create a second structural owner.
             spec.update(role="analysis", mode="scope", description="Resolve discovered object's unknown scope")
         elif obj["kind"] in {"class", "native_module", "native_library", "resource", "resource_group", "engineering", "manifest", "dex"}:
             spec.update(role="class", mode="structure", class_id=obj["id"], description="Establish discovered structure")
@@ -1139,7 +1188,8 @@ def _dispatch(store, state, request):
                     "class_revisions": _revisions(state, request.get("class_revisions", {}), "classes"),
                     "dependency_revisions": revisions, "dependency_tokens": tokens,
                     "inputs": [_requirement_evidence(store, state, item) for item in
-                               _array(request.get("inputs", []), "delivery inputs")],
+                               _array(request.get("inputs", []), "delivery inputs")
+                               + task.get("scope_structure", {}).get("evidence", [])],
                     "format": 2, "scope": scope, "task_contract": _task_contract(task),
                     "followups": followups, "addresses_followups": addressed,
                     "submitted_at": _now()}
@@ -1441,6 +1491,21 @@ def _execute(workspace, request):
         if op in READS:
             if stored is None:
                 raise ReplicaError("Replica workspace is not initialized")
+            if op == "status" and request.get("task_id") is not None:
+                task = deepcopy(_get(stored, "tasks", request["task_id"]))
+                cache = {}
+                task["current_delivery"] = _delivery_current(store, stored, task, cache=cache)
+                task["current_delivery_issues"] = (_delivery_issues(
+                    store, stored, task, task["deliveries"][-1], cache=cache) if task["deliveries"] else [])
+                task["delivery_token"] = (_delivery_token(task, task["deliveries"][-1])
+                                          if task["current_delivery"] else None)
+                # Read authority directly. Full status/recover still repairs all
+                # projections; a single-task read need not traverse every view,
+                # unrelated delivery, MVP or scheduling candidate.
+                return {"ok": True, "revision": stored["revision"], "delivery_protocol": 2,
+                        "coordination_protocol": 1, "task": task,
+                        **{key: deepcopy(stored[key]) for key in ("schema", "project", "relocation")
+                           if key in stored}}
             error = None
             try:
                 store.publish(stored)
@@ -1457,6 +1522,7 @@ def _execute(workspace, request):
             else:
                 data = {key: deepcopy(value) for key, value in stored.items() if key not in {"receipts", "inventory"}}
                 data["delivery_protocol"] = 2
+                data["coordination_protocol"] = 1
                 data["counts"] = {key: len(stored[key]) for key in ("inventory", "entries", "classes", "tasks", "runs")}
                 data["inventory_counts_by_kind"] = dict(stored["inventory"].manifest["counts_by_kind"])
                 if request.get("full") or request.get("summary") is False:

@@ -74,6 +74,7 @@ New messages assigned to this run: {run.get('inbox_message_ids', [])}. Read thei
 Requested execution: {run['model']} / {run['effort']}.
 Workflow workspace: {workspace}
 Workbench source: {root}
+Coordination workflow: 1. Use the current source role contract above, including on a resumed host thread.
 Read the task record, project.json, relevant class records and original sources.
 Read {root / 'skills/android-workbench/components/app-replica/README.md'} for the command protocol.
 Read {root / 'skills/android-workbench/SKILL.md'} and only relevant references for analysis/device tools.
@@ -82,6 +83,7 @@ All source material needed for your task is available for direct reading; there 
 Use this command prefix (paths are already shell-quoted):
 {command}
 Use status --task {task['id']} for the current record, apply --file REQUEST.json for a durable request, discover/submit/wait for common task actions. The CLI fills request IDs when omitted; keep request files unchanged when retrying. Do not edit project/classes/tasks/messages projections: coordination/state.json is the authority and only the program updates it.
+Single-task status validates this task and its consumed dependencies without auditing unrelated deliveries or repairing projections. Use recover for projection repair. Routine acknowledgment does not require another original-source audit; preserve actual failures, unknowns and semantic gaps for their existing owner.
 For completed dependencies, save status --task DEPENDENCY's delivery_token when consuming its artifacts, then submit --dependency-tokens with that exact ID:token JSON map. Lifecycle revision is not content identity; legacy --dependency-revisions remains strict. Never copy current tokens over inputs that you have not reviewed. Use --inputs for hashes of relevant configuration/analysis/check files. A changed artifact, contract, class, check input or transitive dependency invalidates reuse.
 For a completed implementation use --scope source. Future downstream verification uses --followups with existing task owners; genuine source gaps stay in --unresolved and failed/unknown checks remain blocking. Followups already notify their responsible task. Owners submit --addresses-followups and stage-specific self-checks; build/assembly claims settle after actual stop, runtime claims need followup.resolve with a current paired MVP. Read the component guide for the exact fields. Do not infer build or runtime success from source acceptance.
 Do not spawn agents independently. Submit task.add/task.discover; the shared runner uses actual free slots. You are not alone; never revert other writers. Code and evidence stay within your assigned output paths. Additional artifact paths can be reserved by repeating task.add with the same identity and outputs.
