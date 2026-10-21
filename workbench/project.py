@@ -380,7 +380,7 @@ def builtin_operations():
         "script": BUNDLE_PREFIX + "scripts/recover_host_lease.py",
         "source": BUNDLE_PREFIX + "scripts",
         "readonly": True,
-        "mutates_environment": True,
+        "adb_exclusive": True,
         "recovery": True,
         "recovery_for": ["host.lease", "project.recover_host_lease", "environment.recover_host_lease"],
         "outputs": ["--output"],

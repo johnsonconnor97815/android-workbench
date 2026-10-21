@@ -48,8 +48,10 @@ def seed_app(workspace):
     })
 
 
-def _resume_ready(workspace):
-    snapshot = execute(workspace, {"op": "status", "summary": True})
+def _resume_ready(workspace, *, task_id=None):
+    request = ({"op": "dispatch.inspect", "task_id": task_id} if task_id is not None
+               else {"op": "status", "summary": True})
+    snapshot = execute(workspace, request)
     identifiers = list(dict.fromkeys(snapshot.get("resumable_task_ids", []) + snapshot.get("wake_task_ids", [])))
     for identifier in identifiers:
         task = snapshot["tasks"][identifier]
@@ -58,7 +60,7 @@ def _resume_ready(workspace):
                  evidence=[{"task_revision": task["revision"], "requires": task["requires"],
                             "message_wake": identifier in snapshot.get("wake_task_ids", []),
                             "planning_wake_message_ids": snapshot.get("planning_wake_messages", {}).get(identifier, [])}])
-    return execute(workspace, {"op": "status", "summary": True}) if identifiers else snapshot
+    return execute(workspace, request) if identifiers else snapshot
 
 
 class Runner:
@@ -207,7 +209,7 @@ def native_next(workspace, *, external_active, task_id=None, stopped=None, group
             # Use the normal stop path, including Git saving, validation,
             # followup settlement and the durable idempotent receipt.
             stop_result["stopped"] = mutation(workspace, **request)
-        snapshot = _resume_ready(workspace)
+        snapshot = _resume_ready(workspace, task_id=task_id if group_id is None else None)
         # Recovery reoffers the existing reservation, not a second launch.
         pending = [run for run in snapshot["runs"].values()
                    if run["state"] == "reserved" and run.get("backend") == "native"]

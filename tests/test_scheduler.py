@@ -1198,7 +1198,8 @@ class SchedulerTest(unittest.TestCase):
 
         dead_process, dead_result = run_recovery(dead_identity)
         self.assertEqual(dead_process.returncode, 1, dead_process.stderr)
-        self.assertIn("process tree closure is unknown", dead_result["cleanup_errors"][0])
+        self.assertIn("process tree closure is unknown", dead_result["errors"][0])
+        self.assertEqual(dead_result["cleanup_errors"], [])
 
         closed_process, closed_result = run_recovery(dead_identity, closed=True)
         self.assertEqual(closed_process.returncode, 0, closed_process.stderr)
@@ -1209,7 +1210,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(alive_process.returncode, 1)
         self.assertFalse(alive_result["pass"])
         self.assertIn(
-            "Original lease owner is still alive", alive_result["cleanup_errors"][0]
+            "Original lease owner is still alive", alive_result["errors"][0]
         )
 
     def test_empty_host_lease_recovery_is_idempotent(self):
@@ -1577,6 +1578,33 @@ proxy(sys.argv[1], sys.argv[2], [sys.executable, sys.argv[4]])
         self.assertIn(lease["id"], recovered["result"]["reconciled_jobs"])
         self.assertEqual(self.a.wait(next_job["id"], 8)["state"], "succeeded")
         self.assertEqual(self.a.call("resources.state"), [])
+
+    def test_refused_host_lease_recovery_fails_without_new_environment_faults(self):
+        from workbench.project import generate
+
+        manifest = generate(self.project, ROOT, Path(sys.executable))
+        manifest["mcp_environments"] = manifest["environments"] = ["environment"]
+        atomic_json(self.project / "workbench.project.json", manifest)
+        owner = self.external_owner()
+        lease = self.a.submit(operation="host.lease", lease_owner=owner, lease_mode="environment", timeout=10)
+        self.wait_state(lease, {"running"})
+        self.external_owners[-1].kill()
+        self.external_owners[-1].wait(timeout=5)
+        self.assertFalse(self.a.wait(lease["id"], 8)["result"]["cleanup_ok"])
+        before = self.a.call("resources.state")
+        repair = self.a.submit(operation="environment.recover_host_lease", recovery_jobs=[lease["id"]])
+        refused = self.a.wait(repair["id"], 8)
+        self.assertEqual(refused["state"], "failed")
+        self.assertEqual(refused["result"]["exit_code"], 1)
+        self.assertTrue(refused["result"]["cleanup_ok"])
+        self.assertEqual(self.a.call("resources.state"), before)
+        normalized = json.loads((self.state / "jobs" / repair["id"] / "normalized.json").read_text())
+        self.assertNotIn("path:" + str(self.project / "environment"),
+                         [item["key"] for item in normalized["resources"]])
+        self.assertIn("path:" + str(Path(sys.executable).parent.parent),
+                      [item["key"] for item in normalized["resources"]])
+        record = json.loads((Path(normalized["outputs"][0]) / "result.json").read_text())
+        self.assertIn("process tree closure is unknown", record["errors"][0])
 
     def test_incomplete_mcp_and_duplicate_receipts_require_safe_release(self):
         owner = self.external_owner()

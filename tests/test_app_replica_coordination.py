@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from workbench.app_replica import engine
 from workbench.app_replica.cli import main
-from workbench.app_replica.runner import native_next
+from workbench.app_replica.runner import dispatch_lock, native_next
 from workbench.app_replica.store import ReplicaError, Store
 
 
@@ -236,6 +236,142 @@ class CoordinationTests(unittest.TestCase):
         self.assertEqual(state["occupied"], 1)
         self.assertEqual(state["runs"][run]["state"], "stopped")
         self.assertEqual(state["runs"][next_run["run_id"]]["state"], "reserved")
+
+    def test_targeted_dispatch_checks_dependencies_without_global_audits(self):
+        source = self.file("needed.txt", "required input")
+        dependency = self.task("dependency")
+        run = self.start(dependency)
+        self.submit(dependency, run, inputs=[source])
+        self.stop(run)
+        selected = self.task("selected", requires=[{"task_id": dependency["id"]}])
+        unrelated = self.task("unrelated")
+        run = self.start(unrelated)
+        other = self.file("unrelated.txt", "old input")
+        self.submit(unrelated, run, inputs=[other])
+        self.stop(run)
+        Path(other["path"]).unlink()
+        reads = []
+        original = engine._requirement_evidence
+
+        def observe(store, state, item):
+            reads.append(item["path"])
+            return original(store, state, item)
+
+        with patch.object(Store, "publish", side_effect=AssertionError("Projection audit")):
+            snapshot = self.call("dispatch.inspect", task_id=selected["id"])
+        self.assertEqual(snapshot["scope"], "targeted_dispatch")
+        self.assertNotIn("current_delivery", snapshot["tasks"][selected["id"]])
+        with patch.object(engine, "_requirement_evidence", side_effect=observe), \
+             patch.object(engine, "_ready_tasks", side_effect=AssertionError("Global scheduling")), \
+             patch.object(engine, "_followup_summary", side_effect=AssertionError("Global followups")), \
+             patch.object(engine, "_mvp_current", side_effect=AssertionError("Global MVP audit")):
+            result = native_next(self.workspace, external_active=1, task_id=selected["id"])
+        self.assertEqual(result["task_id"], selected["id"])
+        self.assertIn(source["path"], reads)
+        self.assertNotIn(other["path"], reads)
+
+    def test_targeted_dispatch_rejects_changed_and_missing_transitive_inputs(self):
+        source = self.file("transitive.txt", "original")
+        first = self.task("first")
+        run = self.start(first)
+        self.submit(first, run, inputs=[source])
+        self.stop(run)
+        token = self.call("status", task_id=first["id"])["task"]["delivery_token"]
+        second = self.task("second", requires=[{"task_id": first["id"]}])
+        run = self.start(second)
+        self.submit(second, run, dependency_tokens={first["id"]: token})
+        self.stop(run)
+        selected = self.task("selected", requires=[{"task_id": second["id"]}])
+        for missing in (False, True):
+            with self.subTest(missing=missing):
+                path = Path(source["path"])
+                path.unlink() if missing else path.write_text("changed")
+                self.assertNotIn(selected["id"], self.call("status")["ready_task_ids"])
+                result = native_next(self.workspace, external_active=0, task_id=selected["id"])
+                self.assertIsNone(result["run"])
+                self.assertEqual(result["reason"], "no_ready_task")
+
+    def test_targeted_dispatch_revalidates_after_scheduling_snapshot(self):
+        from workbench.app_replica.runner import _resume_ready
+
+        source = self.file("racing-input.txt", "original")
+        dependency = self.task("dependency")
+        run = self.start(dependency)
+        self.submit(dependency, run, inputs=[source])
+        self.stop(run)
+        selected = self.task("selected", requires=[{"task_id": dependency["id"]}])
+
+        def change_after_read(*args, **kwargs):
+            snapshot = _resume_ready(*args, **kwargs)
+            Path(source["path"]).write_text("changed after snapshot")
+            return snapshot
+
+        with patch("workbench.app_replica.runner._resume_ready", side_effect=change_after_read):
+            result = native_next(self.workspace, external_active=0, task_id=selected["id"])
+        self.assertIsNone(result["run"])
+        self.assertIsNone(self.call("status", task_id=selected["id"])["task"]["run_id"])
+
+    def test_targeted_dispatch_recovers_any_pending_run_and_preserves_prompt(self):
+        selected = self.task("selected", outputs=["artifacts/a", "artifacts/b"])
+        self.task("other")
+        first = native_next(self.workspace, external_active=1, task_id=selected["id"])
+        for target in ("other", "not-yet-registered"):
+            recovered = native_next(self.workspace, external_active=1, task_id=target)
+            self.assertTrue(recovered["recovery"])
+            self.assertEqual(recovered["run_id"], first["run_id"])
+            self.assertEqual(recovered["directive"], first["directive"])
+        global_recovery = native_next(self.workspace, external_active=1)
+        self.assertEqual(global_recovery["directive"], first["directive"])
+        self.assertEqual(len(self.call("status")["runs"]), 1)
+
+    def test_targeted_dispatch_only_resumes_requested_waiter(self):
+        for identifier in ("selected", "other"):
+            task = self.task(identifier)
+            run = self.start(task)
+            self.call("task.wait", task_id=identifier, run_id=run,
+                      requires=[{"message_id": identifier + "-ready"}], checkpoint="waiting")
+            self.call(**{**self.stop_request(run), "outcome": "waiting"})
+            self.call("message.send", message_id=identifier + "-ready", type="answer",
+                      sender="main", recipient=identifier, payload={})
+        first = native_next(self.workspace, external_active=1, task_id="selected")
+        self.assertEqual(first["task_id"], "selected")
+        self.assertEqual(self.call("status", task_id="other")["task"]["state"], "waiting")
+        recovered = native_next(self.workspace, external_active=1, task_id="selected")
+        self.assertEqual(first["run_id"], recovered["run_id"])
+        self.assertEqual(len(self.call("status", task_id="selected")["task"]["runs"]), 2)
+
+    def test_targeted_dispatch_preserves_capacity_and_dispatch_lock(self):
+        occupied, selected = self.task("occupied"), self.task("selected")
+        self.start(occupied)
+        result = native_next(self.workspace, external_active=1, task_id=selected["id"])
+        self.assertEqual(result["reason"], "capacity")
+        self.assertIsNone(result["run"])
+        with dispatch_lock(self.workspace), self.assertRaisesRegex(ReplicaError, "Another dispatcher"):
+            native_next(self.workspace, external_active=0, task_id=selected["id"])
+        with self.assertRaisesRegex(ReplicaError, "Unknown tasks id"):
+            native_next(self.workspace, external_active=0, task_id="missing")
+
+    def test_targeted_planning_wake_keeps_explicit_reply_dependency(self):
+        app, child = self.task("app", role="app", mode="plan"), self.task("child")
+        run = self.start(app)
+        self.call("task.wait", task_id=app["id"], run_id=run,
+                  requires=[{"task_id": child["id"], "when": "stopped"}, {"message_id": "specific-reply"}],
+                  checkpoint="waiting for concrete result")
+        self.call(**{**self.stop_request(run), "outcome": "waiting"})
+        self.start(child)
+        self.call("message.send", message_id="new-request", type="request", sender="main",
+                  recipient=app["id"], wake=True, payload={})
+        self.assertEqual(self.call("dispatch.inspect", task_id=app["id"])["resumable_task_ids"], [])
+        blocked = native_next(self.workspace, external_active=0, task_id=app["id"])
+        self.assertEqual(blocked["reason"], "no_ready_task")
+        self.call("message.send", message_id="specific-reply", type="answer", sender="main",
+                  recipient=app["id"], payload={})
+        targeted = self.call("dispatch.inspect", task_id=app["id"])
+        whole = self.call("status")
+        self.assertEqual(targeted["resumable_task_ids"], whole["resumable_task_ids"])
+        self.assertEqual(targeted["planning_wake_messages"], whole["planning_wake_messages"])
+        started = native_next(self.workspace, external_active=0, task_id=app["id"])
+        self.assertEqual(started["task_id"], app["id"])
 
     def test_native_stop_next_rejects_other_backend_and_invalid_external_count(self):
         task = self.task("worker")

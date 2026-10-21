@@ -272,7 +272,18 @@ def normalize(request, config, directory, *, manual_return=None):
             raise WorkbenchError("UI condition values must be short strings")
     spec["python"] = project.get("python", sys.executable)
     from .toolchains import worker_environment
-    spec["env"], tool_bindings = worker_environment(root, project)
+    recovery_entry = project.get("operations", {}).get(operation, {})
+    metadata_recovery = (
+        recovery_entry.get("script") == "@workbench/scripts/recover_host_lease.py"
+        and recovery_entry.get("source") == "@workbench/scripts"
+        and recovery_entry.get("recovery") is True
+    )
+    # This bundled verifier reads scheduler records and /proc, not SDK/tool
+    # environments. Its actual interpreter and source remain locked below.
+    if metadata_recovery:
+        spec["env"], tool_bindings = dict(project.get("env", {})), {}
+    else:
+        spec["env"], tool_bindings = worker_environment(root, project)
     spec["toolchain_bindings"] = tool_bindings
     spec["directory"] = str(directory)
     spec["readonly"] = False
@@ -422,6 +433,11 @@ def normalize(request, config, directory, *, manual_return=None):
         entry = project.get("operations", {}).get(operation)
         if entry is None:
             raise WorkbenchError(f"Unknown registered operation: {operation}")
+        if metadata_recovery:
+            entry = {**entry, "mutates_environment": False, "adb_exclusive": True}
+            spec["resources"].append(
+                resource(path_resource(Path(spec["python"]).parent.parent), "read")
+            )
         shared_outputs = entry.get("shared_outputs", [])
         if not isinstance(shared_outputs, list) or not all(
             isinstance(flag, str) and flag for flag in shared_outputs
@@ -578,7 +594,7 @@ def normalize(request, config, directory, *, manual_return=None):
 
         spec["readonly"] = spec["readonly"] or readonly_package_query(spec) or readonly_hal_query(spec) or readonly_property_query(spec)
         mode = "write" if entry.get("mutates_environment") else "read"
-        for location in project.get("environments", []):
+        for location in ([] if metadata_recovery else project.get("environments", [])):
             spec["resources"].append(resource(path_resource(root / location), mode))
         spec["resources"].append(resource(path_resource(source), "read"))
         if entry.get("host_execution"):

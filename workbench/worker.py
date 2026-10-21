@@ -943,11 +943,13 @@ class Runner:
                 )
         if code == 0:
             if self.spec.get("recovery"):
+                from .results import recoverable_resources
+
                 for identifier in self.spec.get("recovery_targets", []):
                     folder = Path(self.grant["state"]) / "jobs" / identifier
                     old = json.loads((folder / "normalized.json").read_text())
                     self.reconciled_jobs.append(identifier)
-                    self.recovered_resources.extend(old.get("resources", []))
+                    self.recovered_resources.extend(recoverable_resources(old))
             return "succeeded", code
         if code in entry.get("partial_codes", []):
             output = self.spec.get("outputs", [])

@@ -4,7 +4,18 @@ import json
 import importlib.util
 from pathlib import Path
 import re
-from .common import WorkbenchError, file_hash
+from .common import WorkbenchError, file_hash, overlap
+
+
+def inherited_recovery_health(spec):
+    """Repairing a failed repair does not establish that its ancestors were repaired."""
+    return spec.get("recovery_health", []) if spec.get("recovery") else []
+
+
+def recoverable_resources(spec):
+    inherited = inherited_recovery_health(spec)
+    return [item for item in spec.get("resources", [])
+            if not any(overlap(item["key"], row["key"]) for row in inherited)]
 
 
 def verify_ota_prepare_handover(folder, spec):

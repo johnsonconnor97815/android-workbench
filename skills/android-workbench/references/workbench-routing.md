@@ -25,6 +25,7 @@
 - 运行来源核对：`jobs_verify_runtime` 核对认证项目内真实任务、完整任务执行窗口和可信发布文件的 SHA-256；`analysis.plan_update` 与 `analysis.plan_check` 也重新调用服务核对。服务或可信发布记录缺失时保留未核验，不能自行填写任务 JSON 批准运行结论。格式见 [样本完成检查](sample-analysis.md) 和 [REA 使用说明](../../../docs/rea-adoption-usage.md)。
 
 - 环境安装及分析 MCP：读取 `components/static-env/README.md`。修改环境要等实际使用者收尾。只读宿主访问因已退出进程留下故障占用时，使用 `environment.recover_host_lease` 核验并恢复；仍存活或未知的进程不能清锁。
+- 恢复检查拒绝证明旧任务已清理时，检查本身保持失败，但不会因此误标未操作的工具环境。恢复一次失败的恢复检查，只能解除该检查新增且已验证的故障；原任务的故障继续保留，完全相同的资源恢复原故障来源，父子路径重叠仍然阻塞。
 - APK 权限与代码用途审计：读取 `components/permission-audit/README.md`，通过 `static.permission_audit` 提交 base APK 和全部 split APK；可以用 `--source-dir` 复用已有反编译源码。输出权限清单、代码证据和报告草稿后继续人工或模型审阅，草稿不能直接当作最终报告。输入文件哈希、源码目录、工具环境和输出目录参与队列检查，纯静态操作不申请手机。
 - 分析请求路由、包概览、Manifest 组件、资源、包内预览、JADX 反编译、源码导航、签名、字符串、知识检索、Python 计算/session 状态、持久 scratchpad 和宿主执行：读取 `components/analysis-agent/README.md`。先用 `analysis.route` 获得模式、上下文预算和候选操作，再按需执行 `analysis.overview`、`analysis.files`、`analysis.entry_points`、`analysis.manifest`、`analysis.resources`、`analysis.preview`、`analysis.decompile`、`analysis.code`、`analysis.signature`、`analysis.strings`、`analysis.snapshot`、`analysis.knowledge`、`analysis.python`、`analysis.scratchpad` 或 `analysis.exec`。
 - 已安装 App 的 APK：读取 `components/apk-export/README.md`，通过 `apk.pull` 操作提交原有 `pull` 参数；保留拆分、签名与来源校验。

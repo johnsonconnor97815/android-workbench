@@ -1646,14 +1646,34 @@ class Service:
         self.store.db.execute("BEGIN IMMEDIATE")
         try:
             if job["spec"].get("recovery") and state == "succeeded" and cleanup:
+                from .results import inherited_recovery_health, recoverable_resources
+
+                recovered_by_source = {}
+                inherited_by_source = {}
+                for identifier in reconciled:
+                    old_spec = self.store.job(identifier)["spec"]
+                    recovered_by_source[identifier] = {
+                        item["key"] for item in recoverable_resources(old_spec)
+                    }
+                    inherited_by_source[identifier] = inherited_recovery_health(old_spec)
                 for row in self.store.rows("SELECT * FROM resources"):
                     # A new fault, even for the same key, needs a new repair.
                     if row not in job["spec"].get("recovery_health", []):
                         continue
                     source = json.loads(row["detail"]).get("job")
+                    # Restore exact predecessor rows only while this repair still
+                    # owns the frozen fault. Parent/child overlaps remain blocked.
+                    inherited = inherited_by_source.get(source, [])
+                    previous = next((item for item in inherited if item["key"] == row["key"]), None)
+                    if previous is not None:
+                        self.store.db.execute(
+                            "UPDATE resources SET status=?,detail=? WHERE key=?",
+                            (previous["status"], previous["detail"], row["key"]),
+                        )
+                        continue
                     manual_device = (source is None and job["spec"]["operation"] == "device.recover"
                                      and row["key"] == "device:" + job["spec"]["device"])
-                    if manual_device or (source in reconciled and any(
+                    if manual_device or (row["key"] in recovered_by_source.get(source, set()) and any(
                         r["key"] == row["key"] for r in result.get("recovered_resources", [])
                     )):
                         self.store.db.execute("DELETE FROM resources WHERE key=?", (row["key"],))

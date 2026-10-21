@@ -40,11 +40,59 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from workbench.common import process_status, process_group_status
+from workbench.common import file_hash, process_status, process_group_status
+
+
+TREE_CLOSURE_REFUSAL = (
+    "RuntimeError: Host lease process tree closure is unknown; vanished roots do not prove cleanup"
+)
+# Historical bundled verifier whose refusal only wrote its own result. Do not
+# accept arbitrary scripts merely because they print the same error message.
+READONLY_REFUSAL_SOURCE = "b62e46b226f0b8aee809032831ddd55038fcf760831a8627274ea4e569a724f1"
 
 
 def read_json(path):
     return json.loads(path.read_text())
+
+
+def verify_readonly_refusal(folder, normalized, old_result):
+    expected = READONLY_REFUSAL_SOURCE
+    copied = folder / "source/recover_host_lease.py"
+    if (normalized.get("readonly") is not True or normalized.get("recovery") is not True
+            or normalized.get("device") is not None
+            or normalized.get("source_hash") != expected
+            or normalized.get("script_copy") != str(copied)
+            or file_hash(copied) != expected):
+        raise RuntimeError("Failed recovery is not the verified read-only checker")
+    manifest = normalized.get("source_manifest", {})
+    if manifest.get("recover_host_lease.py") != expected:
+        raise RuntimeError("Read-only recovery source manifest is missing")
+    for relative, digest in manifest.items():
+        path = folder / "source" / relative
+        if not path.resolve().is_relative_to((folder / "source").resolve()) or file_hash(path) != digest:
+            raise RuntimeError("Read-only recovery source snapshot changed")
+    if (old_result.get("exit_code") != 1 or old_result.get("reason") is not None
+            or old_result.get("functional_result") != "failed"
+            or old_result.get("cleanup_errors") != [TREE_CLOSURE_REFUSAL]):
+        raise RuntimeError("Read-only recovery did not exit with the verified refusal")
+    outputs = normalized.get("outputs", [])
+    if len(outputs) != 1 or normalized.get("entry", {}).get("result_file") != "result.json":
+        raise RuntimeError("Read-only recovery result location is ambiguous")
+    path = Path(outputs[0]) / "result.json"
+    published = read_json(folder / "artifacts.json")
+    hashes = [item.get("sha256") for output in published.get("external_outputs", [])
+              for item in output.get("files", []) if item.get("path") == str(path)]
+    if hashes != [file_hash(path)]:
+        raise RuntimeError("Read-only recovery result differs from published evidence")
+    collection = read_json(path)
+    if (collection.get("pass") is not False or collection.get("checked_jobs") != []
+            or collection.get("cleanup_errors") != [TREE_CLOSURE_REFUSAL]
+            or not normalized.get("recovery_targets")
+            or not set(collection.get("reconciled_without_release", [])) <= set(normalized["recovery_targets"])):
+        raise RuntimeError("Read-only recovery refusal record is inconsistent")
+    active = read_json(folder / "active-process.json")
+    if process_group_status(active.get("identity")) != "dead":
+        raise RuntimeError("Read-only recovery process group is alive or unknown")
 
 
 def main():
@@ -57,6 +105,7 @@ def main():
     result = {
         "pass": False,
         "cleanup_errors": [],
+        "errors": [],
         "checked_jobs": [],
         "reconciled_without_release": [],
         "checks": [],
@@ -105,6 +154,8 @@ def main():
                     collection = read_json(folder / "host-lease-recovery/result.json")
                     if collection.get("pass") is not False or collection.get("checked_jobs") != []:
                         raise RuntimeError("Empty recovery check was not confirmed")
+                elif errors == [TREE_CLOSURE_REFUSAL]:
+                    verify_readonly_refusal(folder, normalized, old_result)
                 elif errors != ["RuntimeError: Host lease was not explicitly released"]:
                     raise RuntimeError("Unexpected recovery-check failure")
 
@@ -128,7 +179,9 @@ def main():
         ] if targets else ["no_affected_leases"]
         result["pass"] = True
     except BaseException as error:
-        result["cleanup_errors"].append(type(error).__name__ + ": " + str(error))
+        # Refusing to certify an older job is not an unclean mutation by this
+        # read-only verifier. Worker supervision still detects real residuals.
+        result["errors"].append(type(error).__name__ + ": " + str(error))
     finally:
         result["completedUtc"] = datetime.now(timezone.utc).isoformat()
         (args.output / "result.json").write_text(

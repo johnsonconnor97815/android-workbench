@@ -10,6 +10,7 @@ import uuid
 from workbench.common import WorkbenchError, process_identity
 from workbench.service import DEFAULTS, Service
 from workbench.store import Store
+from workbench.results import recoverable_resources
 
 
 class RecoveryScopeTest(unittest.TestCase):
@@ -117,6 +118,44 @@ class RecoveryScopeTest(unittest.TestCase):
         self.assertEqual(self.service.store.job(first)["state"], "failed")
         self.assertEqual(self.service.store.job(second)["state"], "needs_recovery")
         self.assertEqual(len(self.service.store.rows("SELECT * FROM resources")), 1)
+
+    def test_failed_repair_preserves_ancestor_and_only_clears_added_resources(self):
+        ancestor = self.insert(self.spec(operation="host.lease"))
+        self.fault(ancestor)
+        inherited = self.service.store.rows("SELECT * FROM resources")
+        old_spec = self.spec()
+        old_spec.update(recovery=True, recovery_health=inherited)
+        old_spec["resources"] += [{"key": "service:adb", "mode": "write"}]
+        failed_repair = self.insert(old_spec)
+        self.fault(failed_repair)
+        self.fault(failed_repair, "service:adb")
+        spec = self.repair([failed_repair])
+        # Even an overbroad worker result cannot erase the ancestor's fault.
+        self.complete(spec, resources=old_spec["resources"])
+        self.assertEqual(self.service.store.rows("SELECT * FROM resources"), inherited)
+        self.assertEqual(recoverable_resources(old_spec), [{"key": "service:adb", "mode": "write"}])
+
+    def test_nested_recovery_respects_parent_child_overlap(self):
+        for old_key, inherited_key in [("path:/env", "path:/env/tool"),
+                                       ("path:/env/tool", "path:/env")]:
+            with self.subTest(old_key=old_key):
+                spec = {"recovery": True, "resources": [{"key": old_key, "mode": "write"}],
+                        "recovery_health": [{"key": inherited_key}]}
+                self.assertEqual(recoverable_resources(spec), [])
+
+    def test_nested_recovery_does_not_restore_over_new_fault(self):
+        ancestor = self.insert(self.spec(operation="host.lease"))
+        self.fault(ancestor)
+        old_spec = self.spec()
+        old_spec.update(recovery=True, recovery_health=self.service.store.rows("SELECT * FROM resources"))
+        failed_repair = self.insert(old_spec)
+        self.fault(failed_repair)
+        spec = self.repair([failed_repair])
+        later = self.insert(self.spec())
+        self.fault(later)
+        expected = self.service.store.rows("SELECT * FROM resources")
+        self.complete(spec)
+        self.assertEqual(self.service.store.rows("SELECT * FROM resources"), expected)
 
     def test_unknown_result_target_cannot_clear_health(self):
         old = self.insert(self.spec())

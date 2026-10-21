@@ -20,7 +20,7 @@ from .paths import lexical, no_symlinks, read_regular
 from .store import ReplicaError, Store
 
 
-READS = {"status", "recover", "coverage", "inventory.get", "inventory.export", "path.resolve"}
+READS = {"status", "recover", "coverage", "inventory.get", "inventory.export", "path.resolve", "dispatch.inspect"}
 DISPOSITIONS = {"copy", "reuse", "platform", "exclude", "unknown"}
 ROLES = {"main", "app", "analysis", "class", "function"}
 
@@ -796,6 +796,38 @@ def _continuation_prerequisites(store, state, task):
                           defer_terminal_waits=bool(_planning_wake_messages(state, task)))
 
 
+def _targeted_dispatch_snapshot(store, state, task_id):
+    """Inspect one continuation; this is not a delivery or project audit.
+
+    Resume and claim still revalidate under their normal authority locks.
+    Any existing native reservation takes precedence, including a reservation
+    for a different requested task, so retries never create a second launch.
+    """
+    pending = [run for run in state["runs"].values()
+               if run["state"] == "reserved" and run.get("backend") == "native"]
+    selected = None if pending else _get(state, "tasks", task_id)
+    task_ids = {run["task_id"] for run in pending}
+    resumable, wake, planning = [], [], {}
+    if selected:
+        task_ids.add(selected["id"])
+        if (not selected["run_id"] and selected["state"] in {"waiting", "failed", "delivered"}
+                and _continuation_prerequisites(store, state, selected)):
+            if selected["state"] == "waiting":
+                resumable.append(selected["id"])
+            elif _pending_messages(state, selected):
+                wake.append(selected["id"])
+            messages = _planning_wake_messages(state, selected)
+            if messages and not _prerequisites(store, state, selected):
+                planning[selected["id"]] = messages
+    return {"ok": True, "revision": state["revision"], "scope": "targeted_dispatch",
+            "requested_task_id": task_id,
+            **{key: deepcopy(state[key]) for key in ("schema", "project", "relocation") if key in state},
+            "tasks": {identifier: deepcopy(state["tasks"][identifier]) for identifier in task_ids},
+            "runs": deepcopy(state["runs"]),
+            "resumable_task_ids": resumable, "wake_task_ids": wake,
+            "planning_wake_messages": planning}
+
+
 def _prerequisites(store, state, task, *, defer_terminal_waits=False):
     for req in task["requires"]:
         if "task_id" in req:
@@ -1512,6 +1544,8 @@ def _execute(workspace, request):
         if op in READS:
             if stored is None:
                 raise ReplicaError("Replica workspace is not initialized")
+            if op == "dispatch.inspect":
+                return _targeted_dispatch_snapshot(store, stored, request.get("task_id"))
             if op == "status" and request.get("task_id") is not None:
                 task = deepcopy(_get(stored, "tasks", request["task_id"]))
                 cache = {}
