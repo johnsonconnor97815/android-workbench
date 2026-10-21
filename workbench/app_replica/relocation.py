@@ -64,7 +64,20 @@ def composed_bindings(state, request):
     return rules
 
 
+def workbench_binding(state, request):
+    value = request.get('workbench_source', state.get('relocation', {}).get('workbench_source'))
+    if value is None:
+        return {}
+    path = no_symlinks(lexical(value))
+    if str(path) != value or not path.is_dir():
+        raise ReplicaError('Workbench source must be an existing normalized absolute checkout')
+    for name in ('scripts/app_replica.py', 'agents/app-replica/app.toml'):
+        read_regular(path / name)
+    return {'workbench_source': value}
+
+
 def validate_plan(store, state, request, source):
+    workbench_binding(state, request)
     if (type(request.get('expected_schema')) is not int or request['expected_schema'] not in {2, 3}
             or state.get('schema') != request['expected_schema']):
         raise ReplicaError('Relocation expected_schema must match current schema 2 or 3')
@@ -248,7 +261,8 @@ def verify_snapshot_references(store, state, request, resolver):
     for receipt in state['receipts'].values():
         store.receipt(receipt)
     adopted = {**state, 'schema': 3, 'relocation': {'format': 1, 'binding_revision': resolver.revision,
-        'target_workspace': str(store.workspace), 'bindings': composed_bindings(state, request), 'continuation_backend': 'native'}}
+        'target_workspace': str(store.workspace), 'bindings': composed_bindings(state, request),
+        'continuation_backend': 'native', **workbench_binding(state, request)}}
     project = effective_project(store.workspace, adopted)
     index = effective_writer_index(store.workspace, adopted)
     from .engine import _output_path
@@ -321,6 +335,7 @@ def verify_replay(store, state, request, fingerprint):
             or binding.get('backup') != f'coordination/relocations/backups/{request["expected_sha256"]}.json'
             or binding.get('source_run_ids') != report.get('fence', {}).get('active_run_ids')
             or binding['bindings'] != composed_bindings(previous, request)
+            or binding.get('workbench_source') != workbench_binding(previous, request).get('workbench_source')
             or any(binding.get(key) != request.get(key) for key in ('origin_workspace', 'target_workspace', 'continuation_backend'))):
         raise ReplicaError('Relocation plan/binding integrity mismatch')
     with os.fdopen(os.open(store.authority, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as stream:
@@ -377,6 +392,7 @@ def relocate(workspace, request, *, dry_run=False):
         plan_ref = store.write_blob('relocations/plans', request)
         report_ref = store.write_blob('relocations/reports', report)
         binding = {'format': 1, 'binding_revision': resolver.revision, 'request_id': identifier, 'fingerprint': fingerprint,
+            **workbench_binding(state, request),
             'origin_workspace': request['origin_workspace'], 'target_workspace': request['target_workspace'],
             'bindings': composed_bindings(state, request), 'continuation_backend': 'native',
             'source_guard': {'schema': request['expected_schema'], 'revision': request['expected_revision'], 'sha256': request['expected_sha256']},

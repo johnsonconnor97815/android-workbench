@@ -93,6 +93,27 @@ class RelocationTests(unittest.TestCase):
     def adopt(self):
         return relocate(self.workspace, self.plan)
 
+    def test_workbench_checkout_rebinding_preserves_origin_and_rejects_missing_source(self):
+        import shutil
+        from workbench.app_replica.paths import effective_project
+        from workbench.app_replica.roles import source_root
+        checkout=self.root/'new-workbench'
+        for name in ('scripts/app_replica.py','agents/app-replica/app.toml'):
+            target=checkout/name;target.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(ROOT/name,target)
+        plan=deepcopy(self.plan);plan['workbench_source']=str(checkout)
+        before=self.disk()
+        dry=relocate(self.workspace,plan,dry_run=True)
+        self.assertEqual(str(checkout),dry['validation']['effective_project']['workbench_source'])
+        self.assertEqual(before,self.disk())
+        result=relocate(self.workspace,plan)
+        self.assertEqual(str(ROOT),self.disk()['project']['workbench_source'])
+        self.assertEqual(checkout,source_root(effective_project(self.workspace,self.disk())))
+        self.assertEqual(result['revision'],relocate(self.workspace,plan)['revision'])
+        (checkout/'agents/app-replica/app.toml').unlink()
+        with self.assertRaises((FileNotFoundError,ReplicaError)):
+            relocate(self.workspace,plan)
+
     def active_backend(self, *, live=False):
         run = self.call('task.claim', backend='codex', task_id='app-owner')['run']
         identifier = run['id']

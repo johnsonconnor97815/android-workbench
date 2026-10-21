@@ -57,6 +57,8 @@ CLI 是本地文件协调程序，不新增长期占用项目锁的队列任务�
 
 指定 `--task` 且未指定 `--group` 时，派发只检查并恢复该任务，避免先巡检所有无关交付、MVP 和视图；它不会顺带唤醒其他等待任务。内部 `dispatch.inspect` 返回带范围标记的调度快照，不代表交付或全项目检查通过。当前依赖仍由正常的 `task.resume`、`task.claim` 在受保护的状态中重新校验；全局并发、派发锁及已有预约的恢复规则不变。普通 `status`、全局派发和分组派发保留完整检查行为。
 
+搬迁到另一台机器时，`workspace.relocate` 可指定 `workbench_source` 为新机器上实际存在的维护 checkout 绝对路径。迁移计划校验其入口和角色文件，并将它记入迁移绑定；后续提示使用这个位置，原始 project 字段和历史文件来源保持不变。此选项不安装工具或启动服务，也不改变目录内嵌的旧命令参数。
+
 `coordination_protocol:2` 提供完整输出清单引用与 `task.group`。提示只展开当前新增/明确指定的路径，完整授权仍保留在可核验清单和正式状态中；`--focus-output` 不改变权限。实际相关、尚未启动的同角色简单类可以通过 `native-next --group GROUP` 依次复用原生线程，保留每类的唯一负责人、原依赖和独立验收。不能跨角色、跳过真实停止或借组名取得别人的文件。具体字段、复用检查格式与升级边界见[执行流程更新](../../../../docs/app-replica-execution-upgrade.md)。
 
 确认真实停止后，可把**一个**原有 `run.stopped` 请求保存为 JSON 文件，使用 `native-next --external-active N --stopped-file STOP.json`。它在同一派发锁下登记停止、处理后续待办，再预约下一项，返回 `stopped` 回执及原有启动指令。文件保留真实 `run_id`、`outcome`、`observation.confirmed:true`、`writers_stopped:true` 和实际证据；不能以提交通过代替停止观察。未提供 `request_id` 时按内容生成稳定 ID，重试不会重复停止；已有预约按 `recovery:true` 恢复，仍须核对宿主是否已启动。停止和下一次预约分别持久提交，不是一个事务：后续派发失败不撤销真实停止，先查状态再重试；没有就绪任务也保留停止回执。该选项仅适用于原生后端，不执行宿主启动工具。

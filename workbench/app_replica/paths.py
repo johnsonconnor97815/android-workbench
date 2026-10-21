@@ -147,6 +147,8 @@ def effective_project(workspace, state):
         if isinstance(project.get(key), str):
             # Workbench can already be a registered current checkout outside the clone.
             project[key] = str(resolver.path(project[key], operational=key != 'workbench_source'))
+    if state['relocation'].get('workbench_source'):
+        project['workbench_source'] = state['relocation']['workbench_source']
     for key in ('source_paths', 'output_paths'):
         if isinstance(project.get(key), list):
             project[key] = [str(resolver.path(item)) for item in project[key]]
