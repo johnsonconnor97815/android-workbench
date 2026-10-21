@@ -267,7 +267,9 @@ def verify_snapshot_references(store, state, request, resolver):
     index = effective_writer_index(store.workspace, adopted)
     from .engine import _output_path
     for raw in state['writers']:
-        _output_path(store, adopted, raw)
+        # The guarded state is unchanged throughout this check. Reuse its
+        # projected project instead of copying it for every output claim.
+        _output_path(store, adopted, raw, project=project)
     sources = list(project.get('source_paths', []))
     if project.get('source_path'):
         sources.append(project['source_path'])

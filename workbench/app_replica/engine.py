@@ -185,13 +185,14 @@ def _class(state, identifier):
     return state["classes"][identifier]
 
 
-def _output_path(store, state, value):
+def _output_path(store, state, value, *, project=None):
     path = resolve_path(store.workspace, state, _text(value, "output path"))
     artifact_root = (store.workspace / "artifacts").resolve()
     if not artifact_root.is_relative_to(store.workspace):
         raise ReplicaError("Artifacts directory escapes workspace")
     roots = [artifact_root]
-    project = effective_project(store.workspace, state)
+    if project is None:
+        project = effective_project(store.workspace, state)
     configured = project.get("output_paths", [])
     if isinstance(configured, str):
         configured = [configured]

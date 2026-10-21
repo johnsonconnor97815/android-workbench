@@ -461,6 +461,22 @@ with patch.object(HostSlots, 'default_path', return_value=Path(slots)), patch('o
             self.adopt()
         self.assertEqual(self.disk()['schema'], 2)
 
+    def test_relocation_validates_each_claim_with_project_output_rules(self):
+        original = deepcopy(self.disk()['writers'])
+        for path, broad, message in [
+                (self.old / 'outside.txt', False, 'outside artifacts'),
+                (self.old_workspace / 'coordination/state.json', True, 'overlaps workflow metadata')]:
+            with self.subTest(path=path):
+                with Store(self.workspace).locked() as state:
+                    state['writers'] = {**original, str(path): 'writer'}
+                    state['project']['output_paths'] = [str(self.old)] if broad else []
+                    Store(self.workspace).commit(state)
+                self.plan = self.make_plan()
+                before = self.disk()
+                with self.assertRaisesRegex(ReplicaError, message):
+                    self.adopt()
+                self.assertEqual(before, self.disk())
+
     def test_R08_nested_external_destination_is_supported(self):
         external = self.clone / 'external/source-apks'
         external.mkdir(parents=True)
